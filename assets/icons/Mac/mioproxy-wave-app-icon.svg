@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="MioProxy wave route icon">
+  <defs>
+    <!-- Background color variables: low-saturation light-blue glass feel -->
+    <linearGradient id="wave-bg" x1="72" y1="56" x2="440" y2="456" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F4FBFF"/>
+      <stop offset="0.52" stop-color="#DDEEFF"/>
+      <stop offset="1" stop-color="#CFE4FF"/>
+    </linearGradient>
+
+    <!-- Primary route gradient: #0F9BD7 -> #2C7CFF -> #6B53FF -->
+    <linearGradient id="wave-route" x1="112" y1="170" x2="408" y2="354" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0F9BD7"/>
+      <stop offset="0.52" stop-color="#2C7CFF"/>
+      <stop offset="1" stop-color="#6B53FF"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="48" y="48" width="416" height="416" rx="112" fill="url(#wave-bg)"/>
+  <rect x="68" y="68" width="376" height="376" rx="94" fill="#FFFFFF" opacity="0.32"/>
+
+  <!-- Subtle route echoes -->
+  <path
+    d="M132 216 C174 162 212 162 250 218"
+    fill="none"
+    stroke="#2C7CFF"
+    stroke-width="22"
+    stroke-linecap="round"
+    opacity="0.18"
+  />
+  <path
+    d="M264 318 C306 374 348 374 390 318"
+    fill="none"
+    stroke="#6B53FF"
+    stroke-width="22"
+    stroke-linecap="round"
+    opacity="0.16"
+  />
+
+  <!-- Continuous wave M route -->
+  <path
+    d="M112 338 C146 204 184 154 228 272 C252 338 260 338 284 272 C328 154 366 204 400 338"
+    fill="none"
+    stroke="url(#wave-route)"
+    stroke-width="54"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Route nodes -->
+  <circle cx="112" cy="338" r="22" fill="#0F9BD7"/>
+  <circle cx="256" cy="324" r="18" fill="#2C7CFF"/>
+  <circle cx="400" cy="338" r="22" fill="#6B53FF"/>
+</svg>

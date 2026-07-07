@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="MioProxy icon">
+  <defs>
+    <!-- Brand gradient: #0A84FF -> #18C1F8 -> #4DE6C1 -->
+    <linearGradient id="mioproxy-bg" x1="72" y1="64" x2="440" y2="448" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0A84FF"/>
+      <stop offset="0.52" stop-color="#18C1F8"/>
+      <stop offset="1" stop-color="#4DE6C1"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="48" y="48" width="416" height="416" rx="108" fill="url(#mioproxy-bg)"/>
+
+  <path
+    d="M132 360 L132 154 L256 292 L380 154 L380 360"
+    fill="none"
+    stroke="#FFFFFF"
+    stroke-width="58"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <circle cx="132" cy="360" r="34" fill="#FFFFFF"/>
+  <circle cx="256" cy="292" r="34" fill="#FFFFFF"/>
+  <circle cx="380" cy="360" r="34" fill="#FFFFFF"/>
+</svg>

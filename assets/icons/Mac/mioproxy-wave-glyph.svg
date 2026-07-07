@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="MioProxy wave glyph icon">
+  <!-- Monochrome glyph color for GitHub/tray use -->
+  <path
+    d="M108 344 C144 198 184 150 228 274 C252 340 260 340 284 274 C328 150 368 198 404 344"
+    fill="none"
+    stroke="#111827"
+    stroke-width="64"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <circle cx="108" cy="344" r="30" fill="#111827"/>
+  <circle cx="404" cy="344" r="30" fill="#111827"/>
+</svg>
