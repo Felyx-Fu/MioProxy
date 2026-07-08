@@ -90,6 +90,15 @@ pnpm test
 pnpm build
 ```
 
+Optional local migration validation can be run against a real Clash Party data
+directory and a real Mihomo binary:
+
+```powershell
+$env:MIOPROXY_CLASH_PARTY_SOURCE = "C:\path\to\mihomo-party"
+$env:MIOPROXY_MIHOMO_BINARY = "C:\path\to\mihomo.exe"
+pnpm test:integration:local
+```
+
 Run the Electron app in development:
 
 ```bash
@@ -240,11 +249,14 @@ directory:
 - Run `pnpm build`, then set `MIOPROXY_ELECTRON_SMOKE=1` and run
   `pnpm exec vitest run src/main/electronSmoke.integration.test.ts` to launch a
   hidden production Electron window against a temporary userData directory.
-- Set `MIOPROXY_CLASH_PARTY_SOURCE` to run read-only import validation.
-- Set both `MIOPROXY_CLASH_PARTY_SOURCE` and `MIOPROXY_MIHOMO_BINARY` to render
-  from imported cache, run `mihomo -t`, promote `active.yaml` through the
-  prepare path, start a real core, and check controller health on temporary
-  loopback ports.
+- Set `MIOPROXY_CLASH_PARTY_SOURCE` and run `pnpm test:integration:import` to
+  run read-only import validation.
+- Set both `MIOPROXY_CLASH_PARTY_SOURCE` and `MIOPROXY_MIHOMO_BINARY`, then run
+  `pnpm test:integration:cache` to render from imported cache and validate with
+  `mihomo -t`.
+- With both variables set, run `pnpm test:integration:connection` to promote
+  `active.yaml`, start a real core, and check controller health on temporary
+  loopback ports without changing the system proxy.
 - Set `MIOPROXY_TEST_SYSTEM_PROXY=1` only when you intentionally want to mutate
   and restore the current Windows user proxy settings in an integration test.
 
@@ -256,9 +268,14 @@ Pushes to `main`, pull requests, and manual runs execute:
 pnpm install --frozen-lockfile
 pnpm lint
 pnpm test
+pnpm test:integration:local
 pnpm build
 pnpm pack:win
 ```
+
+The local integration script skips tests when the required environment variables
+are absent. It performs real import/cache/core validation when
+`MIOPROXY_CLASH_PARTY_SOURCE` and `MIOPROXY_MIHOMO_BINARY` are set.
 
 Pushes to `main` and manual CI runs upload an unpacked Windows app artifact named
 `MioProxy-win-unpacked-<commit>`. Pull request runs validate packaging but do
