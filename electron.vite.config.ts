@@ -3,7 +3,11 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [
+      externalizeDepsPlugin({
+        exclude: ["@mioproxy/config-pipeline", "@mioproxy/core-runtime"]
+      })
+    ],
     build: {
       rollupOptions: {
         input: "src/main/main.ts"

@@ -269,6 +269,11 @@ directory:
 - `pnpm lint`
 - `pnpm test`
 - `pnpm build`
+- `pnpm package:win`
+
+`pnpm package:win` creates an unpacked Windows app under `dist/win-unpacked`
+using the production Electron build and the MioProxy Windows icon. It is meant
+as the first local distribution artifact before signed installer/update work.
 
 ## Security Notes
 
