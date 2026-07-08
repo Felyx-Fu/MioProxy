@@ -40,6 +40,9 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Check optional integration entrypoints
+        run: pnpm test:integration:local
+
       - name: Build
         run: pnpm build
 

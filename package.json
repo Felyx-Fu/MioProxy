@@ -14,6 +14,10 @@
     "package:win": "pnpm build && pnpm pack:win",
     "lint": "pnpm typecheck",
     "test": "pnpm --filter @mioproxy/config-pipeline build && pnpm --filter @mioproxy/core-runtime build && vitest run",
+    "test:integration:import": "vitest run src/main/migration/clashPartyImportService.integration.test.ts",
+    "test:integration:cache": "vitest run src/main/pipeline/profilePipelineService.integration.test.ts",
+    "test:integration:connection": "vitest run src/main/activation/connectionService.integration.test.ts",
+    "test:integration:local": "vitest run src/main/migration/clashPartyImportService.integration.test.ts src/main/pipeline/profilePipelineService.integration.test.ts src/main/activation/connectionService.integration.test.ts",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit && pnpm --filter @mioproxy/config-pipeline typecheck && pnpm --filter @mioproxy/core-runtime typecheck"
   },
   "dependencies": {

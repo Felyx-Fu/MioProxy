@@ -203,11 +203,16 @@ directory:
   smoke check verifies that the Electron Vite production renderer loads, the
   renderer CSS bundle is applied, the subscription schedule UI is present, and
   the preload `window.mioproxy` bridge is available.
-- Set `MIOPROXY_CLASH_PARTY_SOURCE` to run read-only import validation.
-- Set both `MIOPROXY_CLASH_PARTY_SOURCE` and `MIOPROXY_MIHOMO_BINARY` to render
-  from imported cache, run `mihomo -t`, promote `active.yaml` through the
-  prepare path, start a real core, and check controller health on temporary
-  loopback ports. These tests skip system proxy mutation by default and also
-  validate controller log streaming.
+- Set `MIOPROXY_CLASH_PARTY_SOURCE` and run `pnpm test:integration:import` to
+  run read-only import validation.
+- Set both `MIOPROXY_CLASH_PARTY_SOURCE` and `MIOPROXY_MIHOMO_BINARY`, then run
+  `pnpm test:integration:cache` to render from imported cache and validate with
+  `mihomo -t`.
+- With both variables set, run `pnpm test:integration:connection` to promote
+  `active.yaml`, start a real core, check controller health on temporary
+  loopback ports, and validate controller log streaming. This path skips system
+  proxy mutation by default.
+- Run `pnpm test:integration:local` with both variables set to execute the
+  import, cache validation, and real core health checks together.
 - Set `MIOPROXY_TEST_SYSTEM_PROXY=1` only when you intentionally want to mutate
   and restore the current Windows user proxy settings in an integration test.
