@@ -275,6 +275,10 @@ directory:
 using the production Electron build and the MioProxy Windows icon. It is meant
 as the first local distribution artifact before signed installer/update work.
 
+Pushes to `main` and manual CI runs also upload the same unpacked Windows app as
+a GitHub Actions artifact named `MioProxy-win-unpacked-<commit>`. Pull request
+runs validate packaging but do not upload artifacts.
+
 ## Security Notes
 
 - `active.yaml` must be generated through the render pipeline, not edited directly.
