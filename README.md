@@ -47,7 +47,7 @@ Implemented:
   selection.
 - Clash Party profile import.
 - Windows user WinINET system proxy enable, disable, and restore.
-- Windows unpacked app packaging through Electron Builder.
+- Windows unpacked app and release zip packaging through Electron Builder.
 
 Deliberately deferred:
 
@@ -112,6 +112,15 @@ pnpm package:win
 ```
 
 The unpacked app is written to `dist/win-unpacked`.
+
+Create a local Windows release zip:
+
+```bash
+pnpm release:win
+```
+
+The release zip is written under `dist/`. Git tags matching `v*` run the release
+workflow, create a GitHub Release, and upload the same unsigned portable zip.
 
 ## App Surface
 
@@ -280,6 +289,10 @@ are absent. It performs real import/cache/core validation when
 Pushes to `main` and manual CI runs upload an unpacked Windows app artifact named
 `MioProxy-win-unpacked-<commit>`. Pull request runs validate packaging but do
 not upload artifacts.
+
+Version tags matching `v*` run the release workflow. It validates the same MVP
+checks, builds a Windows zip with `pnpm release:win`, uploads it as a workflow
+artifact, and attaches it to a GitHub Release.
 
 ## Security Notes
 
