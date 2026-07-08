@@ -1,0 +1,31 @@
+{
+  "name": "mioproxy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "out/main/main.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "pnpm --filter @mioproxy/config-pipeline build && pnpm --filter @mioproxy/core-runtime build && electron-vite build",
+    "lint": "pnpm typecheck",
+    "test": "pnpm --filter @mioproxy/config-pipeline build && pnpm --filter @mioproxy/core-runtime build && vitest run",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit && pnpm --filter @mioproxy/config-pipeline typecheck && pnpm --filter @mioproxy/core-runtime typecheck"
+  },
+  "dependencies": {
+    "@mioproxy/config-pipeline": "workspace:*",
+    "@mioproxy/core-runtime": "workspace:*",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.2",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "electron": "^39.2.7",
+    "electron-vite": "^4.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.7",
+    "vitest": "^4.0.15"
+  }
+}
