@@ -251,8 +251,9 @@ directory:
 - Run `pnpm build`, then set `MIOPROXY_ELECTRON_SMOKE=1` and run
   `pnpm exec vitest run src/main/electronSmoke.integration.test.ts` to launch a
   hidden production Electron window against a temporary userData directory. The
-  smoke check verifies that the renderer loads, the subscription schedule UI is
-  present, and the preload `window.mioproxy` bridge is available.
+  smoke check verifies that the Electron Vite production renderer loads, the
+  renderer CSS bundle is applied, the subscription schedule UI is present, and
+  the preload `window.mioproxy` bridge is available.
 - Set `MIOPROXY_CLASH_PARTY_SOURCE` to run read-only import validation.
 - Set both `MIOPROXY_CLASH_PARTY_SOURCE` and `MIOPROXY_MIHOMO_BINARY` to render
   from imported cache, run `mihomo -t`, promote `active.yaml` through the

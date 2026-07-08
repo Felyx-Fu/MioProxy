@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PipelineRunInput } from "../../shared/pipelineTypes.js";
+import type { PipelinePrepareResponse, PipelineRunInput } from "../../shared/pipelineTypes.js";
 import { createSubscriptionUpdateService } from "./subscriptionUpdateService.js";
 
 let tempDir: string;
@@ -189,6 +189,53 @@ describe("createSubscriptionUpdateService", () => {
       lastTickAt: "2026-07-08T01:00:00.000Z",
       lastTickStatus: "success"
     });
+  });
+
+  it("does not start duplicate background updates for a profile already in flight", async () => {
+    let resolvePrepare: ((value: PipelinePrepareResponse) => void) | undefined;
+    const runner = {
+      prepareProfile: vi.fn(
+        () =>
+          new Promise<PipelinePrepareResponse>((resolve) => {
+            resolvePrepare = resolve;
+          })
+      )
+    };
+    const service = createSubscriptionUpdateService({
+      appDataDir: tempDir,
+      now: () => currentTime,
+      runner
+    });
+    await service.saveSchedule({
+      profileId: "default",
+      enabled: true,
+      intervalMinutes: 60
+    });
+    service.arm({
+      profileId: "default",
+      pipelineInput: buildPipelineInput()
+    });
+    currentTime = new Date("2026-07-08T01:00:00.000Z");
+
+    const firstTick = service.tickDueSchedules();
+    await vi.waitUntil(() => runner.prepareProfile.mock.calls.length === 1);
+    await expect(service.tickDueSchedules()).resolves.toEqual([]);
+    resolvePrepare?.({
+      ok: true,
+      stage: "promoted",
+      activePath: "active.yaml",
+      candidatePath: "candidate.yaml",
+      warnings: []
+    });
+
+    await expect(firstTick).resolves.toMatchObject([
+      {
+        ok: true,
+        status: "success",
+        stage: "promoted"
+      }
+    ]);
+    expect(runner.prepareProfile).toHaveBeenCalledOnce();
   });
 
   it("clears the armed timestamp when a profile is disarmed", async () => {

@@ -29,6 +29,7 @@ describe.skipIf(!runSmoke)("Electron smoke", () => {
       hasAppShell: true,
       hasSubscriptionSchedule: true,
       hasRuntimeStatus: true,
+      hasRendererCss: true,
       hasPreloadBridge: true,
       platform: process.platform
     });

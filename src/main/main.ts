@@ -26,6 +26,7 @@ interface ElectronSmokeResult {
   hasAppShell: boolean;
   hasSubscriptionSchedule: boolean;
   hasRuntimeStatus: boolean;
+  hasRendererCss: boolean;
   hasPreloadBridge: boolean;
   platform: string | null;
 }
@@ -77,6 +78,16 @@ async function runElectronSmoke(
           hasAppShell: Boolean(document.querySelector(".app-shell")),
           hasSubscriptionSchedule: body.includes("Subscription schedule"),
           hasRuntimeStatus: body.includes("Runtime:") && body.includes("not armed"),
+          hasRendererCss: Array.from(document.styleSheets).some((sheet) => {
+            try {
+              return Array.from(sheet.cssRules).some((rule) =>
+                rule.cssText.includes(".workspace-grid") &&
+                  rule.cssText.includes("grid-template-columns")
+              );
+            } catch {
+              return false;
+            }
+          }),
           hasPreloadBridge: Boolean(
             bridge &&
               typeof bridge.loadSubscriptionSchedule === "function" &&
@@ -110,6 +121,7 @@ function allSmokeChecksPassed(result: ElectronSmokeResult): boolean {
     result.hasAppShell &&
     result.hasSubscriptionSchedule &&
     result.hasRuntimeStatus &&
+    result.hasRendererCss &&
     result.hasPreloadBridge &&
     typeof result.platform === "string" &&
     result.platform.length > 0
