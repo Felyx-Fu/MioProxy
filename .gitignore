@@ -12,3 +12,14 @@ Thumbs.db
 *.log
 tmp/
 temp/
+
+# Node / build output
+node_modules/
+dist/
+out/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# Local runtime data
+.mioproxy/

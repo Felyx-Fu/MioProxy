@@ -1,15 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="MioProxy tray icon">
-  <!-- Tray glyph color: change #FFFFFF for dark/light tray themes -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="MioProxy tray wave route icon">
   <path
-    d="M112 368 L112 140 L256 300 L400 140 L400 368"
+    d="M112 338 C146 204 184 154 228 272 C252 338 260 338 284 272 C328 154 366 204 400 338"
     fill="none"
     stroke="#FFFFFF"
-    stroke-width="66"
+    stroke-width="54"
     stroke-linecap="round"
     stroke-linejoin="round"
   />
-
-  <circle cx="112" cy="368" r="36" fill="#FFFFFF"/>
-  <circle cx="256" cy="300" r="36" fill="#FFFFFF"/>
-  <circle cx="400" cy="368" r="36" fill="#FFFFFF"/>
+  <circle cx="112" cy="338" r="22" fill="#FFFFFF"/>
+  <circle cx="256" cy="324" r="18" fill="#FFFFFF"/>
+  <circle cx="400" cy="338" r="22" fill="#FFFFFF"/>
 </svg>
