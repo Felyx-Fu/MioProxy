@@ -1,0 +1,396 @@
+# Instincts generated from https://github.com/Felyx-Fu/MioProxy
+# Generated: 2026-07-08T13:36:52.941Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: MioProxy-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/Felyx-Fu/MioProxy
+---
+
+# MioProxy Commit Length
+
+## Action
+
+Keep commit messages concise (~17 characters)
+
+## Evidence
+
+- Average commit message length: 17 chars
+- Based on 1 commits
+
+---
+id: MioProxy-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Felyx-Fu/MioProxy
+---
+
+# MioProxy Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: MioProxy-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Felyx-Fu/MioProxy
+---
+
+# MioProxy Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: MioProxy-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Felyx-Fu/MioProxy
+---
+
+# MioProxy Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: MioProxy-test-colocate
+trigger: "when writing tests"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Felyx-Fu/MioProxy
+---
+
+# MioProxy Test Colocate
+
+## Action
+
+Place test file next to the source file (e.g., Button.test.tsx next to Button.tsx)
+
+## Evidence
+
+- Colocated test pattern detected
+- Tests live alongside source files
+
+---
+id: MioProxy-test-framework
+trigger: "when writing tests"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Felyx-Fu/MioProxy
+---
+
+# MioProxy Test Framework
+
+## Action
+
+Use vitest as the test framework
+
+## Evidence
+
+- Test framework detected: vitest
+- File pattern: *.test.ts
+
+---
+id: MioProxy-test-naming
+trigger: "when creating a test file"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Felyx-Fu/MioProxy
+---
+
+# MioProxy Test Naming
+
+## Action
+
+Name test files using the pattern: *.test.ts
+
+## Evidence
+
+- File pattern: *.test.ts
+- Consistent across test files
+
+---
+id: MioProxy-test-types
+trigger: "when planning tests for a feature"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Felyx-Fu/MioProxy
+---
+
+# MioProxy Test Types
+
+## Action
+
+Write unit, integration tests to match project standards
+
+## Evidence
+
+- Test types detected: unit, integration
+- Coverage config: no
+
+---
+id: mioproxy-instinct-file-naming-camelcase
+trigger: "When creating a new TypeScript file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Felyx-Fu/MioProxy
+---
+
+# Mioproxy Instinct File Naming Camelcase
+
+## Action
+
+Name the file using camelCase
+
+## Evidence
+
+- Pattern in namingConventions.files
+
+---
+id: mioproxy-instinct-function-naming-camelcase
+trigger: "When defining a new function"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: Felyx-Fu/MioProxy
+---
+
+# Mioproxy Instinct Function Naming Camelcase
+
+## Action
+
+Name the function using camelCase
+
+## Evidence
+
+- Pattern in namingConventions.functions
+
+---
+id: mioproxy-instinct-class-naming-pascalcase
+trigger: "When defining a new class"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: Felyx-Fu/MioProxy
+---
+
+# Mioproxy Instinct Class Naming Pascalcase
+
+## Action
+
+Name the class using PascalCase
+
+## Evidence
+
+- Pattern in namingConventions.classes
+
+---
+id: mioproxy-instinct-constant-naming-screaming-snake-case
+trigger: "When defining a constant"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Felyx-Fu/MioProxy
+---
+
+# Mioproxy Instinct Constant Naming Screaming Snake Case
+
+## Action
+
+Name the constant using SCREAMING_SNAKE_CASE
+
+## Evidence
+
+- Pattern in namingConventions.constants
+
+---
+id: mioproxy-instinct-import-relative
+trigger: "When importing a module"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Felyx-Fu/MioProxy
+---
+
+# Mioproxy Instinct Import Relative
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in importStyle
+
+---
+id: mioproxy-instinct-export-named
+trigger: "When exporting from a module"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Felyx-Fu/MioProxy
+---
+
+# Mioproxy Instinct Export Named
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in exportStyle
+
+---
+id: mioproxy-instinct-test-file-pattern
+trigger: "When creating a test file"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: Felyx-Fu/MioProxy
+---
+
+# Mioproxy Instinct Test File Pattern
+
+## Action
+
+Name the file with the pattern *.test.ts
+
+## Evidence
+
+- Pattern in testing.filePattern
+
+---
+id: mioproxy-instinct-test-framework-vitest
+trigger: "When writing tests"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: Felyx-Fu/MioProxy
+---
+
+# Mioproxy Instinct Test Framework Vitest
+
+## Action
+
+Use the vitest testing framework
+
+## Evidence
+
+- Pattern in testing.framework
+
+---
+id: mioproxy-instinct-test-types-unit-integration
+trigger: "When designing tests"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: Felyx-Fu/MioProxy
+---
+
+# Mioproxy Instinct Test Types Unit Integration
+
+## Action
+
+Write both unit and integration tests
+
+## Evidence
+
+- Pattern in testing.testTypes
+
+---
+id: mioproxy-instinct-test-colocation
+trigger: "When adding tests for a module"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: Felyx-Fu/MioProxy
+---
+
+# Mioproxy Instinct Test Colocation
+
+## Action
+
+Colocate test files with their respective source files
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation
+
+---
+id: mioproxy-instinct-commit-freeform-short
+trigger: "When writing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: Felyx-Fu/MioProxy
+---
+
+# Mioproxy Instinct Commit Freeform Short
+
+## Action
+
+Use a short, freeform message without a specific prefix
+
+## Evidence
+
+- Pattern in commits.type
+- Example: 'Build Windows MVP'
+- commits.averageLength
+
+---
+id: mioproxy-instinct-error-handling-try-catch
+trigger: "When handling errors in code"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Felyx-Fu/MioProxy
+---
+
+# Mioproxy Instinct Error Handling Try Catch
+
+## Action
+
+Use try-catch blocks for error handling
+
+## Evidence
+
+- Pattern in errorHandling.style
+
