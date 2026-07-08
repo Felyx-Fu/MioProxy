@@ -1,11 +1,62 @@
 # MioProxy
 
-Windows-first Mihomo desktop controller.
+> Windows-first Mihomo desktop controller with a deterministic, rollback-safe
+> configuration pipeline.
 
-The first milestone is intentionally narrow: build a deterministic configuration
-pipeline before adding complex UI, TUN, Smart Core defaults, or updater logic.
+MioProxy is building the boring but critical part of a proxy desktop app first:
+turning subscriptions and overrides into a validated `active.yaml`, applying it
+to Mihomo safely, and giving the user enough diagnostics to recover when
+something goes wrong.
 
-## MVP Pipeline
+The current milestone is intentionally narrow. It favors predictable config
+generation, authenticated controller access, local rollback, and Windows system
+proxy restoration before adding heavier UI layers, TUN defaults, updater logic,
+or experimental Smart Core behavior.
+
+## Why Watch This Project
+
+- **Safe config promotion** - render to `candidate.yaml`, validate with
+  `mihomo -t`, then promote to `active.yaml` only after the offline check passes.
+- **Rollback-first activation** - connection setup composes core process,
+  controller logs, system proxy enablement, and reverse-order rollback on
+  failures.
+- **Clash Party migration path** - import profiles, overrides, and cached profile
+  YAML without mutating the source directory or copying secrets.
+- **Controller operations without secret persistence** - health, traffic,
+  connections, proxy groups, rules, and delay checks use request-scoped Bearer
+  authentication.
+- **Shareable diagnostics** - failed runs can export redacted bundles with stage
+  metadata, command/controller output, compact history, and recent core logs.
+
+## Current Status
+
+MioProxy is an early Windows MVP. It is useful for contributors interested in
+the pipeline, runtime safety model, and Electron integration. It is not yet a
+polished end-user proxy client.
+
+Implemented:
+
+- Subscription download with stale-cache fallback.
+- YAML and JavaScript override execution.
+- Mihomo compatibility sanitization, including stable-core downgrade behavior
+  for Smart and relay groups.
+- Candidate validation, promotion, apply, hot reload, restart fallback, and
+  rollback.
+- Core process management and normalized core/controller log collection.
+- Profile settings, subscription schedules, pipeline history, and override
+  selection.
+- Clash Party profile import.
+- Windows user WinINET system proxy enable, disable, and restore.
+- Windows unpacked app packaging through Electron Builder.
+
+Deliberately deferred:
+
+- Default TUN enablement.
+- Default experimental Smart Core behavior.
+- Signed installers and auto-update.
+- Cross-platform desktop support.
+
+## Pipeline
 
 ```text
 raw subscription
@@ -18,18 +69,70 @@ raw subscription
   -> rollback to last-known-good on failure
 ```
 
+`active.yaml` is treated as generated state. Do not edit it directly; change the
+source subscription, imported overrides, or pipeline inputs instead.
+
+## Quick Start
+
+Requirements:
+
+- Windows for the desktop/runtime target.
+- Node.js compatible with the CI setup.
+- pnpm 11.7.0.
+- A Mihomo binary for local runtime or integration testing.
+
+Install and validate:
+
+```bash
+pnpm install
+pnpm lint
+pnpm test
+pnpm build
+```
+
+Run the Electron app in development:
+
+```bash
+pnpm dev
+```
+
+Create a local unpacked Windows app:
+
+```bash
+pnpm package:win
+```
+
+The unpacked app is written to `dist/win-unpacked`.
+
+## App Surface
+
+The current renderer is a compact manual operations panel, not a finished
+consumer UI. It exposes the workflows needed to exercise the MVP:
+
+- Run, prepare, validate, promote, and apply a profile pipeline.
+- Save and load non-secret profile settings.
+- Import Clash Party profile metadata and override selections.
+- Manage subscription update schedules for the current app session.
+- Start and stop the Mihomo core.
+- Read controller health, traffic, connections, proxy groups, rules, and delays.
+- Connect and disconnect with Windows system proxy rollback.
+- Stream controller logs and export redacted failure reports.
+
+For lower-level package, IPC, state, and integration-test details, see
+[`docs/mvp-architecture.md`](docs/mvp-architecture.md).
+
 ## Repository Layout
 
-- `src/main` - Electron main process.
-- `src/preload` - isolated preload bridge.
-- `src/renderer` - React renderer.
-- `packages/config-pipeline` - subscription download, YAML parsing, override
-  execution, Mihomo sanitizer.
-- `packages/core-runtime` - config store, offline checker, future core manager.
-- `assets/icons/Win` - Windows app, tray, and glyph SVG assets.
-- `assets/icons/Mac` - reserved for future macOS support.
+```text
+src/main                  Electron main process, IPC, state, runtime services
+src/preload               Isolated preload bridge
+src/renderer              React renderer
+packages/config-pipeline  Subscription, overrides, sanitize, render pipeline
+packages/core-runtime     Config store, validation, core process, controller API
+assets/icons              Windows app/tray/glyph assets and reserved macOS icons
+```
 
-## Current Package APIs
+## Package APIs
 
 `@mioproxy/config-pipeline` exports:
 
@@ -57,192 +160,78 @@ raw subscription
   `mihomo -d <workdir> -f <active.yaml>`, attaches stdout/stderr to the core log
   collector, and supports graceful stop with SIGTERM/SIGKILL fallback.
 - `createControllerClient` - calls Mihomo external-controller with a required
-  Bearer secret. It supports `PUT /configs?force=true` for reload and
-  `POST /restart` for controller restart, reads `/traffic` and `/connections`
-  snapshots for runtime observation, reads `/proxies` for proxy group status,
-  switches proxy groups through `PUT /proxies/{name}`, runs proxy delay checks
-  through `/proxies/{name}/delay`, reads `/rules` and `/providers/rules`, and
-  rejects `0.0.0.0` controller addresses.
+  Bearer secret, supports reload/restart, runtime observation, proxy group
+  reads and switches, delay checks, rules reads, and rejects `0.0.0.0`
+  controller addresses.
 - `renderAndStage` - accepts an injected renderer, writes rendered YAML to
-  `candidate.yaml`, and keeps `active.yaml` untouched until a later validation
-  and promote step.
-- `validateCandidate` - runs offline validation against `candidate.yaml` via
-  the `mihomo -t -f <candidate> -d <workdir>` contract and returns stdout/stderr
-  without changing `active.yaml`.
+  `candidate.yaml`, and keeps `active.yaml` untouched until validation and
+  promotion.
+- `validateCandidate` - runs offline validation against `candidate.yaml` and
+  returns stdout/stderr without changing `active.yaml`.
 - `promoteValidatedCandidate` - promotes `candidate.yaml` to `active.yaml` only
-  when offline validation succeeded. It does not update `last-known-good.yaml`;
-  that is reserved for a later successful reload/restart step.
+  when offline validation succeeded.
 - `applyActiveConfig` - applies `active.yaml` through the controller. It tries
-  hot reload first, falls back to controller restart, marks `last-known-good.yaml`
-  only after a successful apply, and rolls back to the previous
-  `last-known-good.yaml` when both apply paths fail.
-- `renderValidatePromoteAndApply` - the current full pipeline entrypoint. It
-  receives an injected renderer, writes `candidate.yaml`, runs the offline check,
-  promotes `active.yaml`, applies through the controller, and returns the first
-  failed stage with collected intermediate results.
+  hot reload first, falls back to restart, marks `last-known-good.yaml` only
+  after a successful apply, and rolls back when both apply paths fail.
+- `renderValidatePromoteAndApply` - the full pipeline entrypoint. It writes
+  `candidate.yaml`, runs the offline check, promotes `active.yaml`, applies
+  through the controller, and returns the first failed stage with intermediate
+  results.
 - `saveFailureBundle` - writes a redacted `failure.json` for failed pipeline
-  runs. The current bundle records structured stage/error metadata and command
-  or controller outputs; it does not write raw subscription or rendered config
-  contents.
+  runs. It records structured stage/error metadata and command/controller
+  outputs without writing raw subscription or rendered config contents.
 - `exportFailureReport` - creates a user-shareable diagnostics directory from a
-  managed failure bundle, recent core logs, and compact run history. It refuses
-  bundle paths outside MioProxy's diagnostics directory.
+  managed failure bundle, recent core logs, and compact run history.
 - `runProfilePipeline` - application-level entrypoint around the full pipeline.
-  It returns successful apply results directly and saves a redacted failure
-  bundle automatically when the pipeline fails.
-- `parseProcessLogLine` / `parseControllerLogMessage` - normalize process
-  stdout/stderr and Mihomo controller log messages into `CoreLogEvent`.
+- `parseProcessLogLine` / `parseControllerLogMessage` - normalize process and
+  controller log messages into `CoreLogEvent`.
 - `createCoreLogStore` - append-only JSONL store for normalized core log events
   under `logs/core/<profileId>.jsonl`.
-- `createProcessLogCollector` - attaches to Mihomo stdout/stderr streams,
-  normalizes lines through `parseProcessLogLine`, and appends them to the core
-  log store.
+- `createProcessLogCollector` - attaches to Mihomo stdout/stderr streams and
+  appends normalized lines to the core log store.
 
-## Electron Integration
+## Electron IPC
 
-The main process registers a minimal IPC command:
+The preload bridge exposes `window.mioproxy` APIs for:
 
-- `pipeline:run-profile` - exposed to the renderer as
-  `window.mioproxy.runProfilePipeline(input)`.
-  It renders, validates, promotes, and applies through an already reachable
-  Mihomo controller.
-- `pipeline:prepare-profile` - exposed as `window.mioproxy.prepareProfile(input)`.
-  It renders, validates, and promotes `active.yaml` without calling the
-  controller. Connect uses this path before starting the core, which avoids a
-  first-run dependency on an already running controller.
-- `pipeline:list-history` - exposed as `window.mioproxy.listPipelineHistory()`.
-- `pipeline:list-core-logs` - exposed as `window.mioproxy.listCoreLogs(profileId)`.
-- `pipeline:export-failure-report` - exposed as
-  `window.mioproxy.exportFailureReport({ historyId })` and creates a redacted
-  problem report for a failed history record.
-- `profile-settings:load` - exposed as
-  `window.mioproxy.loadProfileSettings(profileId)`.
-- `profile-settings:save` - exposed as
-  `window.mioproxy.saveProfileSettings(input)`. It persists non-secret profile
-  settings only.
-- `subscription-schedule:load` - exposed as
-  `window.mioproxy.loadSubscriptionSchedule(profileId)`.
-- `subscription-schedule:save` - exposed as
-  `window.mioproxy.saveSubscriptionSchedule(input)`. It persists only schedule
-  enabled state, interval, next run time, and the last result.
-- `subscription-schedule:tick` - exposed as
-  `window.mioproxy.tickSubscriptionSchedule(input)`. It runs the safe prepare
-  path when due or forced by the UI; the renderer must provide the current
-  pipeline input so controller secrets are not stored.
-- `subscription-schedule:arm` / `subscription-schedule:disarm` - exposed as
-  `window.mioproxy.armSubscriptionSchedule(input)` and
-  `window.mioproxy.disarmSubscriptionSchedule(profileId)`. Arming keeps the
-  current pipeline input in main-process memory only, allowing the background
-  timer to run due updates during this app session.
-- `subscription-schedule:runtime-status` - exposed as
-  `window.mioproxy.getSubscriptionScheduleRuntimeStatus(profileId)`.
-- `clash-party:import` - exposed as `window.mioproxy.importClashParty(input)`.
-  It reads Clash Party `profile.yaml`, `override.yaml`, `config.yaml`, and
-  `mihomo.yaml`, then imports MioProxy profile settings, old profile cache, and
-  override metadata.
-- `overrides:get-state` - exposed as `window.mioproxy.getOverrideSettings()`.
-  It returns imported override metadata plus selected override ids per profile.
-- `overrides:set-selection` - exposed as
-  `window.mioproxy.setOverrideSelection(input)` and persists which imported
-  overrides should apply to a profile.
-- `controller-health:check` - exposed as
-  `window.mioproxy.checkControllerHealth(input)` and reads Mihomo `/version`
-  plus `/configs` through authenticated controller requests.
-- `controller-observation:snapshot` - exposed as
-  `window.mioproxy.getControllerObservations(input)` and reads Mihomo
-  `/traffic` plus `/connections` through authenticated controller requests.
-- `controller-proxies:snapshot` - exposed as
-  `window.mioproxy.getControllerProxies(input)` and reads Mihomo `/proxies`
-  through authenticated controller requests.
-- `controller-proxies:switch` - exposed as
-  `window.mioproxy.switchControllerProxy(input)` and switches a strategy group
-  through authenticated `PUT /proxies/{name}`.
-- `controller-proxies:delay` - exposed as
-  `window.mioproxy.testControllerProxyDelay(input)` and runs an authenticated
-  `/proxies/{name}/delay` check for a single proxy.
-- `controller-rules:snapshot` - exposed as
-  `window.mioproxy.getControllerRules(input)` and reads `/rules` plus
-  `/providers/rules` through authenticated controller requests.
-- `core:start` - exposed as `window.mioproxy.startCore(input)` and starts the
-  generated `active.yaml` for a profile.
-- `core:stop` - exposed as `window.mioproxy.stopCore(profileId)`.
-- `core:status` - exposed as `window.mioproxy.getCoreStatus(profileId)`.
-- `controller-logs:start` - exposed as
-  `window.mioproxy.startControllerLogs(input)` and streams Mihomo `/logs` into
-  the core log store.
-- `controller-logs:stop` - exposed as
-  `window.mioproxy.stopControllerLogs(profileId)`.
-- `controller-logs:status` - exposed as
-  `window.mioproxy.getControllerLogStatus(profileId)`.
-- `system-proxy:status` - exposed as `window.mioproxy.getSystemProxyStatus()`.
-- `system-proxy:enable` - exposed as `window.mioproxy.enableSystemProxy(input)`.
-  It stores the current WinINET proxy snapshot before changing user settings.
-- `system-proxy:disable` - exposed as `window.mioproxy.disableSystemProxy()`.
-- `system-proxy:restore` - exposed as `window.mioproxy.restoreSystemProxy()`
-  and restores the managed snapshot saved before enable.
-- `activation:connect` - exposed as `window.mioproxy.connectProfile(input)`.
-  It starts the core, waits for controller health, starts controller log
-  collection, and enables the Windows system proxy in that order.
-- `activation:disconnect` - exposed as
-  `window.mioproxy.disconnectProfile(profileId)`. It restores system proxy
-  state, stops controller logs, and stops the core.
-- `activation:status` - exposed as `window.mioproxy.getActivationStatus(profileId)`.
+- Pipeline: `runProfilePipeline`, `prepareProfile`, `listPipelineHistory`,
+  `exportFailureReport`.
+- Profile settings: `loadProfileSettings`, `saveProfileSettings`.
+- Subscription schedules: `loadSubscriptionSchedule`,
+  `saveSubscriptionSchedule`, `tickSubscriptionSchedule`,
+  `armSubscriptionSchedule`, `disarmSubscriptionSchedule`,
+  `getSubscriptionScheduleRuntimeStatus`.
+- Clash Party import and overrides: `importClashParty`, `getOverrideSettings`,
+  `setOverrideSelection`.
+- Controller reads and actions: `checkControllerHealth`,
+  `getControllerObservations`, `getControllerProxies`,
+  `switchControllerProxy`, `testControllerProxyDelay`, `getControllerRules`.
+- Core runtime: `startCore`, `stopCore`, `getCoreStatus`.
+- Controller logs: `startControllerLogs`, `stopControllerLogs`,
+  `getControllerLogStatus`, `listCoreLogs`.
+- Windows system proxy: `getSystemProxyStatus`, `enableSystemProxy`,
+  `disableSystemProxy`, `restoreSystemProxy`.
+- Activation: `connectProfile`, `disconnectProfile`, `getActivationStatus`.
 
-The IPC handler uses `src/main/pipeline/profilePipelineService.ts` to inject
-`config-pipeline.renderProfile` into `core-runtime.runProfilePipeline`, store raw
-subscription cache under `profiles/<profileId>/raw.yaml`, and write failure
-bundles under `logs/bundles`.
+The main process injects `config-pipeline.renderProfile` into
+`core-runtime.runProfilePipeline`, stores raw subscription cache under
+`profiles/<profileId>/raw.yaml`, and writes failure bundles under
+`logs/bundles`.
 
-The renderer currently includes a minimal manual run panel for the same command.
-Its form state is converted to typed IPC input by
-`src/renderer/src/pipelineForm.ts`.
+## State And Secret Handling
 
-Pipeline run summaries are persisted to `state/pipeline-history.json` and exposed
-through `window.mioproxy.listPipelineHistory()`. History records store profile,
-stage, mode, bundle path, and subscription host only; controller secrets and full
-subscription URLs are not persisted.
+- Pipeline history is persisted to `state/pipeline-history.json`.
+- Profile settings are persisted under `state/profiles/<profileId>.json`.
+- Subscription schedules are persisted under `state/subscription-schedules.json`.
+- Imported override metadata is persisted under `state/overrides.json`.
+- Core logs are stored under `logs/core/<profileId>.jsonl`.
+- Failure reports are exported under `logs/exports`.
 
-Profile settings are persisted under `state/profiles/<profileId>.json`. They
-store subscription URL without query/hash secrets, Mihomo paths, controller URL,
-and system proxy defaults. Controller secrets are never saved by this store.
-Subscription update schedules are persisted under
-`state/subscription-schedules.json`. They store profile id, enabled state,
-interval, next run time, and last update result only; the subscription update
-tick still requires the current in-memory pipeline input from the renderer.
-When the renderer saves an enabled schedule, or forces an update while the saved
-schedule is enabled, it arms that profile for the current app session with the
-current form input. After an app restart, the persisted schedule remains, but it
-will not run in the background until the renderer arms it again; this avoids
-persisting controller secrets.
-The Clash Party importer is read-only against the source directory. It does not
-copy override file contents or controller secrets. Imported override metadata is
-stored under `state/overrides.json`; during a pipeline run, MioProxy materializes
-global override files plus the override files selected for the active profile,
-preserves their Clash Party order, and passes them into the render pipeline
-before writing `candidate.yaml`. Existing Clash Party profile YAML cache is
-imported into `profiles/<profileId>/raw.yaml`, so the pipeline can continue from
-old cache when the subscription URL cannot be fetched.
+Controller secrets are never persisted by the profile store or schedule store.
+Subscription URLs are stored without query or hash components. Scheduled updates
+use the current renderer-supplied pipeline input for the active app session.
 
-Core logs are currently read on demand from `logs/core/<profileId>.jsonl` and
-shown in the renderer log panel. The renderer can also check controller health
-through `/version` and `/configs`, and can read traffic plus connection
-snapshots through `/traffic` and `/connections`, without persisting the
-controller secret. Proxy group status is read on demand through `/proxies`,
-summarizing group type, current selection, and available option counts. Strategy
-group switching is explicit and request-scoped; the controller secret is not
-persisted. Proxy delay checks are also request-scoped and clamp timeout values
-before calling Mihomo. Rule and rule-provider summaries are read on demand from
-the controller and are not persisted.
-Process stdout/stderr collection is wired into the main-process core manager.
-Controller `/logs?format=structured&level=info` streaming is wired into the same
-event store with Bearer authentication. Windows system proxy management writes
-only current-user WinINET registry values and keeps a managed snapshot for
-restore. Activation connect/disconnect composes core process, controller health,
-controller logs, and system proxy steps with reverse-order rollback on failure.
-Failed history records can export a problem report under `logs/exports` with
-redacted failure metadata, compact history, and recent core log events.
-The main process stops running cores and controller log collectors during app
-quit before allowing Electron to exit.
+## Optional Integration Tests
 
 Optional local integration tests can validate migration against a real Clash
 Party data directory and a real Mihomo binary without writing to the source
@@ -250,49 +239,55 @@ directory:
 
 - Run `pnpm build`, then set `MIOPROXY_ELECTRON_SMOKE=1` and run
   `pnpm exec vitest run src/main/electronSmoke.integration.test.ts` to launch a
-  hidden production Electron window against a temporary userData directory. The
-  smoke check verifies that the Electron Vite production renderer loads, the
-  renderer CSS bundle is applied, the subscription schedule UI is present, and
-  the preload `window.mioproxy` bridge is available.
+  hidden production Electron window against a temporary userData directory.
 - Set `MIOPROXY_CLASH_PARTY_SOURCE` to run read-only import validation.
 - Set both `MIOPROXY_CLASH_PARTY_SOURCE` and `MIOPROXY_MIHOMO_BINARY` to render
   from imported cache, run `mihomo -t`, promote `active.yaml` through the
   prepare path, start a real core, and check controller health on temporary
-  loopback ports. These tests skip system proxy mutation by default and also
-  validate controller log streaming.
+  loopback ports.
 - Set `MIOPROXY_TEST_SYSTEM_PROXY=1` only when you intentionally want to mutate
   and restore the current Windows user proxy settings in an integration test.
 
-## Commands
+## CI
 
-- `pnpm install`
-- `pnpm lint`
-- `pnpm test`
-- `pnpm build`
-- `pnpm package:win`
+Pushes to `main`, pull requests, and manual runs execute:
 
-`pnpm package:win` creates an unpacked Windows app under `dist/win-unpacked`
-using the production Electron build and the MioProxy Windows icon. It is meant
-as the first local distribution artifact before signed installer/update work.
+```bash
+pnpm install --frozen-lockfile
+pnpm lint
+pnpm test
+pnpm build
+pnpm pack:win
+```
 
-Pushes to `main` and manual CI runs also upload the same unpacked Windows app as
-a GitHub Actions artifact named `MioProxy-win-unpacked-<commit>`. Pull request
-runs validate packaging but do not upload artifacts.
+Pushes to `main` and manual CI runs upload an unpacked Windows app artifact named
+`MioProxy-win-unpacked-<commit>`. Pull request runs validate packaging but do
+not upload artifacts.
 
 ## Security Notes
 
-- `active.yaml` must be generated through the render pipeline, not edited directly.
+- `active.yaml` must be generated through the render pipeline, not edited
+  directly.
 - Controller requests must use `Authorization: Bearer <secret>`.
 - The controller must not bind to `0.0.0.0` by default.
-- Profile settings must not persist controller secrets. Subscription URLs are
-  stored without query or hash components.
+- Profile settings must not persist controller secrets.
 - Subscription schedules must not persist controller secrets or raw subscription
-  tokens; scheduled updates use the current renderer-supplied pipeline input.
+  tokens.
 - Clash Party import must not copy override script contents or controller
-  secrets; imported override data is metadata for review.
+  secrets.
 - System proxy changes must snapshot the previous user WinINET proxy state and
   provide a restore path.
 - Smart-related behavior is treated as compatibility downgrade unless a future
   explicit experimental mode enables it.
-- SVG assets are static vector files and should not include scripts, event
-  handlers, external resource references, embedded data URIs, or secrets.
+- SVG assets must not include scripts, event handlers, external resource
+  references, embedded data URIs, or secrets.
+
+## Contributing Focus
+
+The highest-value contributions right now are:
+
+- More pipeline edge-case tests.
+- Better diagnostics for failed Mihomo validation or controller apply.
+- UI improvements that make the existing safety model easier to understand.
+- Windows packaging polish before signed installer/update work.
+- Documentation for real-world migration from Clash Party profiles.
