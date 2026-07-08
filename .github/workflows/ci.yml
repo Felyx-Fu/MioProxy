@@ -45,3 +45,12 @@ jobs:
 
       - name: Package Windows app
         run: pnpm pack:win
+
+      - name: Upload Windows app artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MioProxy-win-unpacked-${{ github.sha }}
+          path: dist/win-unpacked
+          if-no-files-found: error
+          retention-days: 14
