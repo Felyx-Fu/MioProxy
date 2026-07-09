@@ -24,11 +24,17 @@ if (process.env.MIOPROXY_ELECTRON_SMOKE_USER_DATA_DIR) {
 interface ElectronSmokeResult {
   title: string;
   hasAppShell: boolean;
+  hasMainContent: boolean;
+  initialHash: string;
   hasDashboard: boolean;
   hasDashboardGrid: boolean;
-  hasProfileManagement: boolean;
   hasActionLabels: boolean;
-  sidebarNavigationOpensManagement: boolean;
+  hasSidebarStatusCards: boolean;
+  hasSidebarNavigation: boolean;
+  profilesHash: string;
+  profilesPageRendered: boolean;
+  dashboardHiddenAfterNavigation: boolean;
+  hasActiveProfilesNav: boolean;
   hasSubscriptionSchedule: boolean;
   hasRendererCss: boolean;
   hasPreloadBridge: boolean;
@@ -81,30 +87,40 @@ async function runElectronSmoke(
     await load;
     const rendererResult = (await window.webContents.executeJavaScript(`
       (async () => {
-        const body = document.body?.innerText ?? "";
         const bridge = window.mioproxy;
-        const nodesButton = Array.from(document.querySelectorAll(".sidebar-nav button"))
-          .find((button) => button.textContent?.trim() === "Nodes");
-        const profileManagement = document.querySelector(".profile-management-panel");
-        if (nodesButton instanceof HTMLElement) {
-          nodesButton.click();
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const dashboardBody = document.body?.innerText ?? "";
+        const profilesLink = document.querySelector('.sidebar-nav a[href="#/profiles"]');
+        const initialHash = window.location.hash;
+        if (profilesLink instanceof HTMLElement) {
+          profilesLink.click();
         }
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const profilesBody = document.body?.innerText ?? "";
         return {
           title: document.title,
           hasAppShell: Boolean(document.querySelector(".app-shell")),
-          hasDashboard: body.includes("Dashboard") && body.includes("Core Status"),
-          hasDashboardGrid: Boolean(document.querySelector(".dashboard-grid")),
-          hasProfileManagement: Boolean(profileManagement),
-          hasActionLabels: body.includes("Validate & Promote") && body.includes("Run Pipeline"),
-          sidebarNavigationOpensManagement: Boolean(
-            profileManagement instanceof HTMLDetailsElement && profileManagement.open
-          ),
+          hasMainContent: Boolean(document.querySelector(".main-content")),
+          initialHash,
+          hasDashboard: dashboardBody.includes("Dashboard") && dashboardBody.includes("Core Status"),
+          hasDashboardGrid: Boolean(document.querySelector(".dashboard-grid")) || dashboardBody.includes("Core Status"),
+          hasActionLabels: dashboardBody.includes("Validate & Promote") &&
+            dashboardBody.includes("Run Pipeline"),
+          hasSidebarStatusCards: document.querySelectorAll(".sidebar-status-card").length >= 3,
+          hasSidebarNavigation: Boolean(profilesLink),
+          profilesHash: window.location.hash,
+          profilesPageRendered: profilesBody.includes("Profiles") &&
+            profilesBody.includes("Profile settings") &&
+            profilesBody.includes("Subscription schedule"),
+          dashboardHiddenAfterNavigation: !profilesBody.includes("Core Status") &&
+            !Boolean(document.querySelector(".dashboard-grid")),
+          hasActiveProfilesNav: Boolean(document.querySelector('.sidebar-nav a.active[href="#/profiles"]')),
           hasSubscriptionSchedule: Boolean(document.querySelector(".subscription-schedule-section")),
           hasRendererCss: Array.from(document.styleSheets).some((sheet) => {
             try {
               return Array.from(sheet.cssRules).some((rule) =>
-                rule.cssText.includes(".dashboard-grid") &&
+                rule.cssText.includes(".app-shell") &&
+                  rule.cssText.includes("280px") &&
                   rule.cssText.includes("grid-template-columns")
               );
             } catch {
@@ -146,11 +162,17 @@ function allSmokeChecksPassed(result: ElectronSmokeResult): boolean {
   return (
     result.title === "MioProxy" &&
     result.hasAppShell &&
+    result.hasMainContent &&
+    result.initialHash.endsWith("/dashboard") &&
     result.hasDashboard &&
     result.hasDashboardGrid &&
-    result.hasProfileManagement &&
     result.hasActionLabels &&
-    result.sidebarNavigationOpensManagement &&
+    result.hasSidebarStatusCards &&
+    result.hasSidebarNavigation &&
+    result.profilesHash.endsWith("/profiles") &&
+    result.profilesPageRendered &&
+    result.dashboardHiddenAfterNavigation &&
+    result.hasActiveProfilesNav &&
     result.hasSubscriptionSchedule &&
     result.hasRendererCss &&
     result.hasPreloadBridge &&
