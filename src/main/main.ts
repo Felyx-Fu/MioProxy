@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, Menu } from "electron";
 import { join } from "node:path";
 import { createConfigStore } from "@mioproxy/core-runtime";
 import { registerClashPartyImportIpc } from "./ipc/clashPartyImportIpc.js";
@@ -24,10 +24,15 @@ if (process.env.MIOPROXY_ELECTRON_SMOKE_USER_DATA_DIR) {
 interface ElectronSmokeResult {
   title: string;
   hasAppShell: boolean;
+  hasDashboard: boolean;
+  hasDashboardGrid: boolean;
+  hasProfileManagement: boolean;
+  hasActionLabels: boolean;
+  sidebarNavigationOpensManagement: boolean;
   hasSubscriptionSchedule: boolean;
-  hasRuntimeStatus: boolean;
   hasRendererCss: boolean;
   hasPreloadBridge: boolean;
+  hasHiddenApplicationMenu: boolean;
   platform: string | null;
 }
 
@@ -39,7 +44,8 @@ function createMainWindow(): BrowserWindow {
     minHeight: 640,
     show: !isElectronSmokeMode(),
     title: "MioProxy",
-    backgroundColor: "#f7f8fa",
+    backgroundColor: "#f6f8fb",
+    autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, "../preload/preload.js"),
       contextIsolation: true,
@@ -63,25 +69,42 @@ function isElectronSmokeMode(): boolean {
   return process.env.MIOPROXY_ELECTRON_SMOKE === "1";
 }
 
+function shouldHideApplicationMenu(): boolean {
+  return process.env.MIOPROXY_SHOW_APPLICATION_MENU !== "1";
+}
+
 async function runElectronSmoke(
   window: BrowserWindow,
   load: Promise<void>
 ): Promise<void> {
   try {
     await load;
-    const result = (await window.webContents.executeJavaScript(`
-      (() => {
+    const rendererResult = (await window.webContents.executeJavaScript(`
+      (async () => {
         const body = document.body?.innerText ?? "";
         const bridge = window.mioproxy;
+        const nodesButton = Array.from(document.querySelectorAll(".sidebar-nav button"))
+          .find((button) => button.textContent?.trim() === "Nodes");
+        const profileManagement = document.querySelector(".profile-management-panel");
+        if (nodesButton instanceof HTMLElement) {
+          nodesButton.click();
+        }
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         return {
           title: document.title,
           hasAppShell: Boolean(document.querySelector(".app-shell")),
-          hasSubscriptionSchedule: body.includes("Subscription schedule"),
-          hasRuntimeStatus: body.includes("Runtime:") && body.includes("not armed"),
+          hasDashboard: body.includes("Dashboard") && body.includes("Core Status"),
+          hasDashboardGrid: Boolean(document.querySelector(".dashboard-grid")),
+          hasProfileManagement: Boolean(profileManagement),
+          hasActionLabels: body.includes("Validate & Promote") && body.includes("Run Pipeline"),
+          sidebarNavigationOpensManagement: Boolean(
+            profileManagement instanceof HTMLDetailsElement && profileManagement.open
+          ),
+          hasSubscriptionSchedule: Boolean(document.querySelector(".subscription-schedule-section")),
           hasRendererCss: Array.from(document.styleSheets).some((sheet) => {
             try {
               return Array.from(sheet.cssRules).some((rule) =>
-                rule.cssText.includes(".workspace-grid") &&
+                rule.cssText.includes(".dashboard-grid") &&
                   rule.cssText.includes("grid-template-columns")
               );
             } catch {
@@ -97,7 +120,11 @@ async function runElectronSmoke(
           platform: bridge?.platform ?? null
         };
       })();
-    `)) as ElectronSmokeResult;
+    `)) as Omit<ElectronSmokeResult, "hasHiddenApplicationMenu">;
+    const result: ElectronSmokeResult = {
+      ...rendererResult,
+      hasHiddenApplicationMenu: Menu.getApplicationMenu() === null
+    };
 
     console.log(`${ELECTRON_SMOKE_RESULT_PREFIX}${JSON.stringify(result)}`);
     app.exit(allSmokeChecksPassed(result) ? 0 : 1);
@@ -119,16 +146,25 @@ function allSmokeChecksPassed(result: ElectronSmokeResult): boolean {
   return (
     result.title === "MioProxy" &&
     result.hasAppShell &&
+    result.hasDashboard &&
+    result.hasDashboardGrid &&
+    result.hasProfileManagement &&
+    result.hasActionLabels &&
+    result.sidebarNavigationOpensManagement &&
     result.hasSubscriptionSchedule &&
-    result.hasRuntimeStatus &&
     result.hasRendererCss &&
     result.hasPreloadBridge &&
+    result.hasHiddenApplicationMenu &&
     typeof result.platform === "string" &&
     result.platform.length > 0
   );
 }
 
 void app.whenReady().then(() => {
+  if (shouldHideApplicationMenu()) {
+    Menu.setApplicationMenu(null);
+  }
+
   const userDataDir = app.getPath("userData");
   registerPipelineIpc(userDataDir);
   registerClashPartyImportIpc(userDataDir);

@@ -124,8 +124,9 @@ workflow, create a GitHub Release, and upload the same unsigned portable zip.
 
 ## App Surface
 
-The current renderer is a compact manual operations panel, not a finished
-consumer UI. It exposes the workflows needed to exercise the MVP:
+The current renderer is a dashboard-first desktop client surface with a sidebar,
+status cards, recent activity, and a compact pipeline stepper. A collapsible
+profile management panel still exposes the workflows needed to exercise the MVP:
 
 - Run, prepare, validate, promote, and apply a profile pipeline.
 - Save and load non-secret profile settings.

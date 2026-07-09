@@ -27,10 +27,15 @@ describe.skipIf(!runSmoke)("Electron smoke", () => {
     expect(result.payload).toMatchObject({
       title: "MioProxy",
       hasAppShell: true,
+      hasDashboard: true,
+      hasDashboardGrid: true,
+      hasProfileManagement: true,
+      hasActionLabels: true,
+      sidebarNavigationOpensManagement: true,
       hasSubscriptionSchedule: true,
-      hasRuntimeStatus: true,
       hasRendererCss: true,
       hasPreloadBridge: true,
+      hasHiddenApplicationMenu: true,
       platform: process.platform
     });
   }, 30_000);

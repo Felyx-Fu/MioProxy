@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import brandMarkUrl from "../../../assets/icons/Win/mioproxy-app-icon.svg";
 import type {
@@ -31,15 +31,48 @@ import {
 } from "./pipelineForm";
 import "./styles.css";
 
+const navigationItems = [
+  { label: "Dashboard", targetId: "dashboard" },
+  { label: "Profiles", targetId: "profile-management", opensManagement: true },
+  { label: "Nodes", targetId: "proxy-groups", opensManagement: true },
+  { label: "Rules", targetId: "rules", opensManagement: true },
+  { label: "Overrides", targetId: "overrides", opensManagement: true },
+  { label: "Logs", targetId: "core-logs", opensManagement: true },
+  { label: "Settings", targetId: "pipeline-inputs", opensManagement: true }
+];
+
 const pipelineSteps = [
-  "Download or reuse subscription cache",
-  "Apply YAML/JS overrides",
-  "Sanitize Mihomo config",
-  "Write candidate.yaml",
-  "Run mihomo -t",
-  "Promote active.yaml",
-  "Prepare, connect, or hot reload",
-  "Rollback on failure"
+  { label: "Download", detail: "subscription cache" },
+  { label: "Override", detail: "YAML / JS" },
+  { label: "Sanitize", detail: "Mihomo compat" },
+  { label: "Stage", detail: "candidate.yaml" },
+  { label: "Validate", detail: "mihomo -t" },
+  { label: "Promote", detail: "active.yaml" },
+  { label: "Apply", detail: "reload / restart" },
+  { label: "Rollback", detail: "last-known-good" }
+];
+
+const fallbackActivityItems = [
+  {
+    title: "Subscription cache ready",
+    detail: "Waiting for the first render",
+    tone: "neutral" as const
+  },
+  {
+    title: "Override chain available",
+    detail: "YAML/JS overrides will run during validation",
+    tone: "neutral" as const
+  },
+  {
+    title: "Compatibility sanitizer ready",
+    detail: "Mihomo downgrade checks run before staging",
+    tone: "neutral" as const
+  },
+  {
+    title: "Rollback path available",
+    detail: "Successful applies update last-known-good",
+    tone: "neutral" as const
+  }
 ];
 
 function App() {
@@ -89,6 +122,7 @@ function App() {
   const [history, setHistory] = useState<PipelineRunHistoryRecord[]>([]);
   const [logs, setLogs] = useState<CoreLogViewEvent[]>([]);
   const [diagnosticResult, setDiagnosticResult] = useState<string>("No diagnostic report exported");
+  const [isManagementOpen, setIsManagementOpen] = useState(false);
 
   useEffect(() => {
     void refreshHistory();
@@ -132,6 +166,36 @@ function App() {
     } finally {
       setIsRunning(false);
     }
+  }
+
+  async function validateProfile() {
+    setIsRunning(true);
+    setResult("Validating");
+    try {
+      const response = await window.mioproxy.prepareProfile(buildPipelineInput(form));
+      if (response.ok) {
+        setResult(`Validated and promoted\nactive: ${response.activePath}`);
+      } else {
+        setResult(`Validation failed at ${response.stage}\n${response.error.message}`);
+      }
+      await Promise.all([refreshHistory(), refreshLogs(), refreshCoreStatus()]);
+    } catch (error) {
+      setResult(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsRunning(false);
+    }
+  }
+
+  function navigateToSection(targetId: string, opensManagement?: boolean) {
+    if (opensManagement) {
+      setIsManagementOpen(true);
+    }
+    window.requestAnimationFrame(() => {
+      document.getElementById(targetId)?.scrollIntoView({
+        block: "start",
+        behavior: "smooth"
+      });
+    });
   }
 
   async function loadProfileSettings() {
@@ -635,43 +699,117 @@ function App() {
     }
   }
 
+  const latestRun = history.find((item) => item.profileId === form.profileId) ?? history[0];
+  const lastUpdated = latestRun
+    ? new Date(latestRun.createdAt).toLocaleString()
+    : "No pipeline runs yet";
+  const configStatus = latestRun
+    ? latestRun.ok
+      ? `Passed: ${latestRun.stage}`
+      : `Failed: ${latestRun.stage}`
+    : "Not checked";
+  const coreStatusLabel = coreStatus?.running ? "Running" : "Stopped";
+  const configHealthLabel = latestRun ? (latestRun.ok ? "Healthy" : "Needs attention") : "Unchecked";
+  const systemProxyLabel = systemProxyStatus?.supported === false
+    ? "Unsupported"
+    : systemProxyStatus?.enabled
+      ? "Enabled"
+      : "Disabled";
+  const activityItems = history.length
+    ? history.slice(0, 4).map((item) => ({
+        title: item.ok ? "Pipeline completed" : "Pipeline failed",
+        detail: `${item.profileId} / ${item.stage} / ${new Date(item.createdAt).toLocaleString()}`,
+        tone: item.ok ? ("success" as const) : ("warning" as const)
+      }))
+    : fallbackActivityItems;
+
   return (
-    <main className="app-shell">
-      <aside className="sidebar">
-        <img src={brandMarkUrl} alt="" className="brand-mark" />
+    <AppShell onNavigate={navigateToSection}>
+      <header className="dashboard-header" id="dashboard">
         <div>
-          <h1>MioProxy</h1>
-          <p>Windows-first Mihomo controller</p>
+          <p className="eyebrow">Dashboard</p>
+          <h2>Dashboard</h2>
+          <p>Monitor profiles, core status, and recent configuration activity.</p>
         </div>
-      </aside>
+        <div className="header-badges" aria-label="Application status">
+          <span className="status-badge">MVP</span>
+          <span className={`status-badge ${coreStatus?.running ? "success" : "neutral"}`}>
+            {coreStatusLabel}
+          </span>
+        </div>
+      </header>
 
-      <section className="content">
-        <header className="content-header">
-          <div>
-            <h2>Profile control</h2>
-            <p>Import, validate, connect, and recover Mihomo profiles on Windows.</p>
-          </div>
-          <span className="status">MVP</span>
-        </header>
+      <section className="status-grid" aria-label="Runtime overview">
+        <StatusCard
+          title="Core Status"
+          value={coreStatusLabel}
+          detail={coreStatus?.pid ? `PID ${coreStatus.pid}` : "No core process is active"}
+          tone={coreStatus?.running ? "success" : "neutral"}
+        />
+        <StatusCard
+          title="Active Profile"
+          value={form.profileId || "default"}
+          detail={lastUpdated}
+        />
+        <StatusCard
+          title="Config Health"
+          value={configHealthLabel}
+          detail={configStatus}
+          tone={latestRun?.ok ? "success" : latestRun ? "warning" : "neutral"}
+        />
+        <StatusCard
+          title="System Proxy"
+          value={systemProxyLabel}
+          detail={
+            systemProxyStatus?.managedSnapshot
+              ? "Managed snapshot available"
+              : "No managed snapshot"
+          }
+          tone={systemProxyStatus?.enabled ? "success" : "neutral"}
+        />
+      </section>
 
-        <div className="workspace-grid">
-          <ol className="pipeline-list">
-            {pipelineSteps.map((step, index) => (
-              <li key={step}>
-                <span>{String(index + 1).padStart(2, "0")}</span>
-                {step}
-              </li>
-            ))}
-          </ol>
+      <section className="dashboard-grid">
+        <ProfileSummaryCard
+          profileId={form.profileId}
+          controllerBaseUrl={form.controllerBaseUrl}
+          lastUpdated={lastUpdated}
+          configStatus={configStatus}
+          onUpdate={() => void updateSubscriptionNow()}
+          updateDisabled={isScheduleBusy}
+          updateLabel={isScheduleBusy ? "Updating" : "Update Now"}
+          onValidate={() => void validateProfile()}
+          validateDisabled={isRunning}
+          onReload={() => void runPipeline()}
+          reloadDisabled={isRunning}
+        />
+        <ActivityList items={activityItems} />
+        <PipelineStepper steps={pipelineSteps} />
+      </section>
 
-          <form
-            className="run-panel"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void runPipeline();
-            }}
-          >
-            <section className="profile-settings-section">
+      <form
+        className="management-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void runPipeline();
+        }}
+      >
+        <details
+          className="profile-management-panel"
+          id="profile-management"
+          open={isManagementOpen}
+          onToggle={(event) => setIsManagementOpen(event.currentTarget.open)}
+        >
+          <summary>
+            <span>
+              <strong>Profile Management</strong>
+              <small>Profile settings, schedules, overrides, controller tools, and logs</small>
+            </span>
+            <span className="summary-action">Open panel</span>
+          </summary>
+
+          <div className="management-grid">
+            <section className="management-card profile-settings-section">
               <div className="section-title-row">
                 <h3>Profile settings</h3>
                 <div className="inline-actions">
@@ -716,7 +854,7 @@ function App() {
               <pre className="result-box compact">{profileSettingsResult}</pre>
             </section>
 
-            <section className="subscription-schedule-section">
+            <section className="management-card subscription-schedule-section">
               <div className="section-title-row">
                 <h3>Subscription schedule</h3>
                 <div className="inline-actions">
@@ -760,13 +898,12 @@ function App() {
                 {isScheduleBusy ? "Updating" : "Update now"}
               </button>
               <p>
-                Runtime:{" "}
-                <strong>{scheduleRuntimeStatus?.armed ? "armed" : "not armed"}</strong>
+                Runtime: <strong>{scheduleRuntimeStatus?.armed ? "armed" : "not armed"}</strong>
               </p>
               <pre className="result-box compact">{scheduleResult}</pre>
             </section>
 
-            <section className="override-section">
+            <section className="management-card override-section" id="overrides">
               <div className="section-title-row">
                 <h3>Overrides</h3>
                 <div className="inline-actions">
@@ -808,72 +945,78 @@ function App() {
               )}
               <pre className="result-box compact">{overrideResult}</pre>
             </section>
-            <label>
-              Subscription URL
-              <input
-                value={form.subscriptionUrl}
-                onChange={(event) => updateField("subscriptionUrl", event.target.value)}
-                placeholder="https://example.test/sub.yaml"
-              />
-            </label>
-            <label>
-              Mihomo binary
-              <input
-                value={form.mihomoBinaryPath}
-                onChange={(event) => updateField("mihomoBinaryPath", event.target.value)}
-              />
-            </label>
-            <label>
-              Mihomo data dir
-              <input
-                value={form.mihomoDataDir}
-                onChange={(event) => updateField("mihomoDataDir", event.target.value)}
-              />
-            </label>
-            <label>
-              Controller URL
-              <input
-                value={form.controllerBaseUrl}
-                onChange={(event) => updateField("controllerBaseUrl", event.target.value)}
-              />
-            </label>
-            <label>
-              Controller secret
-              <input
-                type="password"
-                value={form.controllerSecret}
-                onChange={(event) => updateField("controllerSecret", event.target.value)}
-              />
-            </label>
-            <div className="field-row">
-              <label>
-                System proxy host
-                <input
-                  value={form.systemProxyHost}
-                  onChange={(event) => updateField("systemProxyHost", event.target.value)}
-                />
-              </label>
-              <label>
-                System proxy port
-                <input
-                  value={form.systemProxyPort}
-                  onChange={(event) => updateField("systemProxyPort", event.target.value)}
-                />
-              </label>
-            </div>
-            <label>
-              System proxy bypass
-              <input
-                value={form.systemProxyBypass}
-                onChange={(event) => updateField("systemProxyBypass", event.target.value)}
-              />
-            </label>
-            <button type="submit" disabled={isRunning}>
-              {isRunning ? "Running" : "Run pipeline"}
-            </button>
-            <pre className="result-box">{result}</pre>
 
-            <section className="activation-section">
+            <section className="management-card pipeline-inputs-section" id="pipeline-inputs">
+              <div className="section-title-row">
+                <h3>Pipeline inputs</h3>
+                <button type="submit" disabled={isRunning}>
+                  {isRunning ? "Running" : "Run pipeline"}
+                </button>
+              </div>
+              <label>
+                Subscription URL
+                <input
+                  value={form.subscriptionUrl}
+                  onChange={(event) => updateField("subscriptionUrl", event.target.value)}
+                  placeholder="https://example.test/sub.yaml"
+                />
+              </label>
+              <label>
+                Mihomo binary
+                <input
+                  value={form.mihomoBinaryPath}
+                  onChange={(event) => updateField("mihomoBinaryPath", event.target.value)}
+                />
+              </label>
+              <label>
+                Mihomo data dir
+                <input
+                  value={form.mihomoDataDir}
+                  onChange={(event) => updateField("mihomoDataDir", event.target.value)}
+                />
+              </label>
+              <label>
+                Controller URL
+                <input
+                  value={form.controllerBaseUrl}
+                  onChange={(event) => updateField("controllerBaseUrl", event.target.value)}
+                />
+              </label>
+              <label>
+                Controller secret
+                <input
+                  type="password"
+                  value={form.controllerSecret}
+                  onChange={(event) => updateField("controllerSecret", event.target.value)}
+                />
+              </label>
+              <div className="field-row">
+                <label>
+                  System proxy host
+                  <input
+                    value={form.systemProxyHost}
+                    onChange={(event) => updateField("systemProxyHost", event.target.value)}
+                  />
+                </label>
+                <label>
+                  System proxy port
+                  <input
+                    value={form.systemProxyPort}
+                    onChange={(event) => updateField("systemProxyPort", event.target.value)}
+                  />
+                </label>
+              </div>
+              <label>
+                System proxy bypass
+                <input
+                  value={form.systemProxyBypass}
+                  onChange={(event) => updateField("systemProxyBypass", event.target.value)}
+                />
+              </label>
+              <pre className="result-box">{result}</pre>
+            </section>
+
+            <section className="management-card activation-section">
               <div className="section-title-row">
                 <h3>Activation</h3>
                 <button type="button" onClick={() => void refreshActivationStatus()}>
@@ -899,7 +1042,7 @@ function App() {
               <pre className="result-box compact">{activationResult}</pre>
             </section>
 
-            <section className="health-section">
+            <section className="management-card health-section">
               <div className="section-title-row">
                 <h3>Controller health</h3>
                 <button
@@ -913,7 +1056,7 @@ function App() {
               <pre className="result-box compact">{healthResult}</pre>
             </section>
 
-            <section className="observation-section">
+            <section className="management-card observation-section">
               <div className="section-title-row">
                 <h3>Controller observations</h3>
                 <button
@@ -927,7 +1070,7 @@ function App() {
               <pre className="result-box compact">{observationResult}</pre>
             </section>
 
-            <section className="proxy-groups-section">
+            <section className="management-card proxy-groups-section" id="proxy-groups">
               <div className="section-title-row">
                 <h3>Proxy groups</h3>
                 <button
@@ -956,24 +1099,26 @@ function App() {
                   />
                 </label>
               </div>
-              <button
-                type="button"
-                onClick={() => void switchControllerProxy()}
-                disabled={isProxySwitching}
-              >
-                {isProxySwitching ? "Switching" : "Switch proxy"}
-              </button>
-              <button
-                type="button"
-                onClick={() => void testControllerProxyDelay()}
-                disabled={isProxyDelayChecking}
-              >
-                {isProxyDelayChecking ? "Testing" : "Test delay"}
-              </button>
+              <div className="core-actions">
+                <button
+                  type="button"
+                  onClick={() => void switchControllerProxy()}
+                  disabled={isProxySwitching}
+                >
+                  {isProxySwitching ? "Switching" : "Switch proxy"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void testControllerProxyDelay()}
+                  disabled={isProxyDelayChecking}
+                >
+                  {isProxyDelayChecking ? "Testing" : "Test delay"}
+                </button>
+              </div>
               <pre className="result-box compact">{proxyResult}</pre>
             </section>
 
-            <section className="rules-section">
+            <section className="management-card rules-section" id="rules">
               <div className="section-title-row">
                 <h3>Rules</h3>
                 <button
@@ -987,7 +1132,7 @@ function App() {
               <pre className="result-box compact">{ruleResult}</pre>
             </section>
 
-            <section className="system-proxy-section">
+            <section className="management-card system-proxy-section">
               <div className="section-title-row">
                 <h3>System proxy</h3>
                 <button type="button" onClick={() => void refreshSystemProxyStatus()}>
@@ -1024,7 +1169,7 @@ function App() {
               <pre className="result-box compact">{systemProxyResult}</pre>
             </section>
 
-            <section className="core-section">
+            <section className="management-card core-section">
               <div className="section-title-row">
                 <h3>Core process</h3>
                 <button type="button" onClick={() => void refreshCoreStatus()}>
@@ -1050,7 +1195,7 @@ function App() {
               <pre className="result-box compact">{coreResult}</pre>
             </section>
 
-            <section className="history-section">
+            <section className="management-card history-section">
               <h3>Recent runs</h3>
               <pre className="result-box compact">{diagnosticResult}</pre>
               {history.length === 0 ? (
@@ -1078,14 +1223,11 @@ function App() {
               )}
             </section>
 
-            <section className="logs-section">
+            <section className="management-card logs-section" id="core-logs">
               <div className="section-title-row">
                 <h3>Core logs</h3>
                 <div className="inline-actions">
-                  <button
-                    type="button"
-                    onClick={() => void refreshControllerLogStatus()}
-                  >
+                  <button type="button" onClick={() => void refreshControllerLogStatus()}>
                     Status
                   </button>
                   <button type="button" onClick={() => void refreshLogs()}>
@@ -1125,10 +1267,207 @@ function App() {
                 </ol>
               )}
             </section>
-          </form>
-        </div>
-      </section>
+          </div>
+        </details>
+      </form>
+    </AppShell>
+  );
+}
+
+function AppShell({
+  children,
+  onNavigate
+}: {
+  children: ReactNode;
+  onNavigate: (targetId: string, opensManagement?: boolean) => void;
+}) {
+  return (
+    <main className="app-shell">
+      <Sidebar onNavigate={onNavigate} />
+      <section className="content">{children}</section>
     </main>
+  );
+}
+
+function Sidebar({
+  onNavigate
+}: {
+  onNavigate: (targetId: string, opensManagement?: boolean) => void;
+}) {
+  return (
+    <aside className="sidebar">
+      <div className="brand-block">
+        <img src={brandMarkUrl} alt="" className="brand-mark" />
+        <div>
+          <h1>MioProxy</h1>
+          <p>Windows-first Mihomo Controller</p>
+        </div>
+      </div>
+      <nav className="sidebar-nav" aria-label="Primary">
+        {navigationItems.map((item) => (
+          <button
+            key={item.label}
+            type="button"
+            className={item.label === "Dashboard" ? "active" : ""}
+            aria-current={item.label === "Dashboard" ? "page" : undefined}
+            onClick={() => onNavigate(item.targetId, item.opensManagement)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </nav>
+      <div className="sidebar-footer">
+        <span>MVP channel</span>
+        <strong>Local runtime</strong>
+      </div>
+    </aside>
+  );
+}
+
+function StatusCard({
+  title,
+  value,
+  detail,
+  tone = "neutral"
+}: {
+  title: string;
+  value: string;
+  detail: string;
+  tone?: "neutral" | "success" | "warning";
+}) {
+  return (
+    <article className={`status-card tone-${tone}`}>
+      <div className="status-card-topline">
+        <span>{title}</span>
+        <i aria-hidden="true" />
+      </div>
+      <strong>{value}</strong>
+      <p>{detail}</p>
+    </article>
+  );
+}
+
+function ActivityList({
+  items
+}: {
+  items: Array<{
+    title: string;
+    detail: string;
+    tone: "neutral" | "success" | "warning";
+  }>;
+}) {
+  return (
+    <section className="dashboard-card activity-card">
+      <div className="card-heading">
+        <div>
+          <h3>Recent Activity</h3>
+          <p>Latest configuration pipeline events.</p>
+        </div>
+      </div>
+      <ol className="activity-list">
+        {items.map((item) => (
+          <li key={`${item.title}-${item.detail}`} className={`tone-${item.tone}`}>
+            <span aria-hidden="true" />
+            <div>
+              <strong>{item.title}</strong>
+              <p>{item.detail}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function PipelineStepper({
+  steps
+}: {
+  steps: Array<{
+    label: string;
+    detail: string;
+  }>;
+}) {
+  return (
+    <section className="dashboard-card pipeline-stepper-card">
+      <div className="card-heading">
+        <div>
+          <h3>Pipeline</h3>
+          <p>Compact render, validate, promote, and apply flow.</p>
+        </div>
+      </div>
+      <ol className="pipeline-stepper">
+        {steps.map((step, index) => (
+          <li key={step.label}>
+            <span>{String(index + 1).padStart(2, "0")}</span>
+            <strong>{step.label}</strong>
+            <p>{step.detail}</p>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function ProfileSummaryCard({
+  profileId,
+  controllerBaseUrl,
+  lastUpdated,
+  configStatus,
+  onUpdate,
+  updateDisabled,
+  updateLabel,
+  onValidate,
+  validateDisabled,
+  onReload,
+  reloadDisabled
+}: {
+  profileId: string;
+  controllerBaseUrl: string;
+  lastUpdated: string;
+  configStatus: string;
+  onUpdate: () => void;
+  updateDisabled: boolean;
+  updateLabel: string;
+  onValidate: () => void;
+  validateDisabled: boolean;
+  onReload: () => void;
+  reloadDisabled: boolean;
+}) {
+  return (
+    <section className="dashboard-card profile-summary-card">
+      <div className="card-heading">
+        <div>
+          <h3>Active Profile</h3>
+          <p>{controllerBaseUrl || "Controller URL not configured"}</p>
+        </div>
+        <span className="card-badge">Current</span>
+      </div>
+      <div className="profile-summary-body">
+        <div>
+          <span>Profile</span>
+          <strong>{profileId || "default"}</strong>
+        </div>
+        <div>
+          <span>Last update</span>
+          <strong>{lastUpdated}</strong>
+        </div>
+        <div>
+          <span>Configuration check</span>
+          <strong>{configStatus}</strong>
+        </div>
+      </div>
+      <div className="profile-actions">
+        <button type="button" onClick={onUpdate} disabled={updateDisabled}>
+          {updateLabel}
+        </button>
+        <button type="button" onClick={onValidate} disabled={validateDisabled}>
+          Validate & Promote
+        </button>
+        <button type="button" onClick={onReload} disabled={reloadDisabled}>
+          Run Pipeline
+        </button>
+      </div>
+    </section>
   );
 }
 
