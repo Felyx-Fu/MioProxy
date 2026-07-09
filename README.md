@@ -291,9 +291,10 @@ Pushes to `main` and manual CI runs upload an unpacked Windows app artifact name
 `MioProxy-win-unpacked-<commit>`. Pull request runs validate packaging but do
 not upload artifacts.
 
-Version tags matching `v*` run the release workflow. It validates the same MVP
-checks, builds a Windows zip with `pnpm release:win`, uploads it as a workflow
-artifact, and attaches it to a GitHub Release.
+Version tags matching `v*` run the release workflow. The tag must match
+`v<package.json version>`. The workflow validates the same MVP checks, builds a
+Windows zip with `pnpm release:win`, uploads it as a workflow artifact, and
+attaches it to a GitHub Release.
 
 ## Security Notes
 

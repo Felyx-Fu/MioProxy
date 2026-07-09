@@ -32,6 +32,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Validate release version
+        run: |
+          $package = Get-Content package.json | ConvertFrom-Json
+          $expectedTag = "v$($package.version)"
+          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
+            throw "Release tag $env:GITHUB_REF_NAME does not match package version $($package.version). Expected $expectedTag."
+          }
+
       - name: Typecheck
         run: pnpm lint
 
