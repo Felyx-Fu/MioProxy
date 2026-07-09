@@ -323,3 +323,11 @@ The highest-value contributions right now are:
 - UI improvements that make the existing safety model easier to understand.
 - Windows packaging polish before signed installer/update work.
 - Documentation for real-world migration from Clash Party profiles.
+
+## License
+
+MioProxy is licensed under the Apache License 2.0.
+
+See [LICENSE](LICENSE) for details.
+
+Third-party notices are available in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
