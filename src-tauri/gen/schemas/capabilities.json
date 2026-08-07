@@ -1,0 +1,1 @@
+{"main-capability":{"identifier":"main-capability","description":"Capabilities for the main Felyx Proxy window","local":true,"windows":["main"],"permissions":["core:default"]}}

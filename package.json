@@ -1,64 +1,27 @@
 {
-  "name": "mioproxy",
-  "version": "0.1.1",
-  "description": "Windows-first Mihomo desktop controller.",
-  "author": "Felyx-Fu",
+  "name": "MioProxy",
   "private": true,
-  "license": "Apache-2.0",
+  "version": "0.1.0",
   "type": "module",
-  "packageManager": "pnpm@11.7.0",
-  "main": "out/main/main.js",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "pnpm --filter @mioproxy/config-pipeline build && pnpm --filter @mioproxy/core-runtime build && electron-vite build",
-    "pack:win": "electron-builder --win dir --publish never",
-    "pack:win:zip": "electron-builder --win zip --publish never",
-    "package:win": "pnpm build && pnpm pack:win",
-    "release:win": "pnpm build && pnpm pack:win:zip",
-    "lint": "pnpm typecheck",
-    "test": "pnpm --filter @mioproxy/config-pipeline build && pnpm --filter @mioproxy/core-runtime build && vitest run",
-    "test:integration:import": "vitest run src/main/migration/clashPartyImportService.integration.test.ts",
-    "test:integration:cache": "vitest run src/main/pipeline/profilePipelineService.integration.test.ts",
-    "test:integration:connection": "vitest run src/main/activation/connectionService.integration.test.ts",
-    "test:integration:local": "vitest run src/main/migration/clashPartyImportService.integration.test.ts src/main/pipeline/profilePipelineService.integration.test.ts src/main/activation/connectionService.integration.test.ts",
-    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit && pnpm --filter @mioproxy/config-pipeline typecheck && pnpm --filter @mioproxy/core-runtime typecheck"
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "mihomo:setup": "powershell -ExecutionPolicy Bypass -File ./scripts/setup-mihomo.ps1"
   },
   "dependencies": {
-    "react": "^19.2.1",
-    "react-dom": "^19.2.1",
-    "react-router-dom": "^7.18.1"
+    "@tauri-apps/api": "^2",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@mioproxy/config-pipeline": "workspace:*",
-    "@mioproxy/core-runtime": "workspace:*",
-    "@types/node": "^25.0.2",
-    "@types/react": "^19.2.7",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.2",
-    "electron": "^39.2.7",
-    "electron-builder": "^26.15.3",
-    "electron-vite": "^4.0.0",
-    "typescript": "^5.9.3",
-    "vite": "^7.2.7",
-    "vitest": "^4.0.15"
-  },
-  "build": {
-    "appId": "app.mioproxy.desktop",
-    "productName": "MioProxy",
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "out/**",
-      "package.json"
-    ],
-    "asar": true,
-    "npmRebuild": false,
-    "win": {
-      "icon": "assets/icons/Win/mioproxy.ico",
-      "target": [
-        "dir"
-      ]
-    }
+    "@tauri-apps/cli": "^2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "~5.7.2",
+    "vite": "^6.0.3"
   }
 }
