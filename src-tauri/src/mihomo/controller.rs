@@ -1,11 +1,16 @@
 use std::{
     fs,
+    io::{ErrorKind, Read, Write},
+    path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
+        Mutex, OnceLock,
     },
     time::Duration,
 };
+
+#[cfg(windows)]
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -19,8 +24,128 @@ use tauri_plugin_shell::{
 use super::{logs, traffic};
 
 pub(crate) const CONTROLLER: &str = "127.0.0.1:9090";
-pub(crate) const SECRET: &str = "mioproxy-v01-local";
+const CONTROLLER_SECRET_FILE: &str = "controller-secret";
+const LEGACY_CONTROLLER_SECRET: &str = "mioproxy-v01-local";
 const DEFAULT_DELAY_URL: &str = "https://www.gstatic.com/generate_204";
+static CONTROLLER_SECRET: OnceLock<String> = OnceLock::new();
+
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+fn read_existing_secret(path: &Path) -> Result<Option<String>, String> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("读取 Mihomo Controller 令牌失败：{error}")),
+    };
+    #[cfg(windows)]
+    {
+        let metadata = file
+            .metadata()
+            .map_err(|e| format!("检查 Mihomo Controller 令牌失败：{e}"))?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err("拒绝读取 Reparse Point 形式的 Mihomo Controller 令牌".to_string());
+        }
+    }
+    let mut value = String::new();
+    file.read_to_string(&mut value)
+        .map_err(|e| format!("读取 Mihomo Controller 令牌失败：{e}"))?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+pub(crate) fn initialize_secret(data_dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(data_dir).map_err(|e| format!("创建 Mihomo 数据目录失败：{e}"))?;
+    let path = data_dir.join(CONTROLLER_SECRET_FILE);
+    let secret = match read_existing_secret(&path)? {
+        Some(secret) => secret,
+        None => {
+            let mut bytes = [0u8; 32];
+            getrandom::fill(&mut bytes)
+                .map_err(|e| format!("生成 Mihomo Controller 令牌失败：{e}"))?;
+            let candidate = bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    if let Err(error) = file
+                        .write_all(candidate.as_bytes())
+                        .and_then(|_| file.flush())
+                    {
+                        drop(file);
+                        let cleanup = fs::remove_file(&path);
+                        return Err(match cleanup {
+                            Ok(()) => format!("保存 Mihomo Controller 令牌失败：{error}"),
+                            Err(cleanup_error) => format!(
+                                "保存 Mihomo Controller 令牌失败：{error}；清理不完整令牌文件失败：{cleanup_error}"
+                            ),
+                        });
+                    }
+                    candidate
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    let mut winner = None;
+                    for _ in 0..100 {
+                        winner = read_existing_secret(&path)?;
+                        if winner.is_some() {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    winner
+                        .ok_or_else(|| "读取并发初始化的 Mihomo Controller 令牌失败".to_string())?
+                }
+                Err(error) => {
+                    return Err(format!("创建 Mihomo Controller 令牌文件失败：{error}"));
+                }
+            }
+        }
+    };
+    if let Some(current) = CONTROLLER_SECRET.get() {
+        if current != &secret {
+            return Err("MioProxy 已使用另一份 Mihomo Controller 令牌初始化".to_string());
+        }
+        return Ok(());
+    }
+    let config_path = data_dir.join("config.yaml");
+    if let Some(content) = crate::config::read_text_file_at(&config_path, "读取 Mihomo 配置")? {
+        if let Ok(mut value) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+            if let Some(map) = value.as_mapping_mut() {
+                map.insert(
+                    serde_yaml::Value::String("secret".to_string()),
+                    serde_yaml::Value::String(secret.clone()),
+                );
+                if let Ok(yaml) = serde_yaml::to_string(&value) {
+                    crate::config::write_atomic(&config_path, yaml.as_bytes())
+                        .map_err(|e| format!("更新 Mihomo Controller 令牌失败：{e}"))?;
+                }
+            }
+        }
+    }
+    CONTROLLER_SECRET
+        .set(secret)
+        .map_err(|_| "初始化 Mihomo Controller 令牌失败".to_string())
+}
+
+pub(crate) fn secret() -> &'static str {
+    CONTROLLER_SECRET.get().map(String::as_str).unwrap_or("")
+}
 
 pub struct CoreState {
     pub child: Mutex<Option<CommandChild>>,
@@ -36,14 +161,14 @@ impl Default for CoreState {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoreStatus {
-    running: bool,
-    controller: String,
-    config_path: String,
-    mixed_port: u16,
-    mode: String,
+    pub running: bool,
+    pub controller: String,
+    pub config_path: String,
+    pub mixed_port: u16,
+    pub mode: String,
 }
 
 #[derive(Deserialize)]
@@ -88,7 +213,7 @@ rules:
   - MATCH,PROXY
 "#,
             controller = CONTROLLER,
-            secret = SECRET,
+            secret = secret(),
         );
         fs::write(&config, yaml).map_err(|e| e.to_string())?;
     }
@@ -103,7 +228,7 @@ pub(crate) async fn api_get(path: &str) -> Result<Value, String> {
         .build()
         .map_err(|e| e.to_string())?
         .get(url)
-        .bearer_auth(SECRET)
+        .bearer_auth(secret())
         .send()
         .await
         .map_err(|e| e.to_string())?
@@ -114,14 +239,14 @@ pub(crate) async fn api_get(path: &str) -> Result<Value, String> {
         .map_err(|e| e.to_string())
 }
 
-pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String> {
+async fn api_put_with_secret(path: &str, payload: Value, bearer: &str) -> Result<Value, String> {
     let url = format!("http://{CONTROLLER}{path}");
     let response = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .map_err(|e| e.to_string())?
         .put(url)
-        .bearer_auth(SECRET)
+        .bearer_auth(bearer)
         .json(&payload)
         .send()
         .await
@@ -135,6 +260,31 @@ pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String>
     serde_json::from_str(&body).map_err(|e| e.to_string())
 }
 
+pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String> {
+    api_put_with_secret(path, payload, secret()).await
+}
+
+async fn migrate_legacy_controller_session(app: &AppHandle) -> Result<bool, String> {
+    let (_, config) = runtime_paths(app)?;
+    if !config.exists() {
+        return Ok(false);
+    }
+    let payload = serde_json::json!({ "path": config.display().to_string() });
+    if api_put_with_secret("/configs?force=true", payload, LEGACY_CONTROLLER_SECRET)
+        .await
+        .is_err()
+    {
+        return Ok(false);
+    }
+    for _ in 0..20 {
+        if is_running().await {
+            return Ok(true);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err("检测到旧版 Mihomo 会话，但切换 Controller 令牌后仍无法连接".to_string())
+}
+
 pub(crate) async fn api_delete(path: &str) -> Result<Value, String> {
     let url = format!("http://{CONTROLLER}{path}");
     let response = Client::builder()
@@ -142,7 +292,7 @@ pub(crate) async fn api_delete(path: &str) -> Result<Value, String> {
         .build()
         .map_err(|e| e.to_string())?
         .delete(url)
-        .bearer_auth(SECRET)
+        .bearer_auth(secret())
         .send()
         .await
         .map_err(|e| e.to_string())?
@@ -172,6 +322,12 @@ pub(crate) fn encode_path_segment(value: &str) -> String {
 
 pub(crate) async fn is_running() -> bool {
     api_get("/version").await.is_ok()
+}
+
+pub(crate) fn owns_core(app: &AppHandle) -> bool {
+    app.try_state::<CoreState>()
+        .and_then(|state| state.child.lock().ok().map(|child| child.is_some()))
+        .unwrap_or(false)
 }
 
 pub(crate) fn mixed_port(app: &AppHandle) -> Result<u16, String> {
@@ -212,6 +368,14 @@ pub async fn mihomo_start(
     app: AppHandle,
     state: State<'_, CoreState>,
 ) -> Result<CoreStatus, String> {
+    if let Some(status) =
+        crate::service::request_core(&app, crate::service::ServiceCommand::Start).await?
+    {
+        traffic::start(&app);
+        logs::start(&app);
+        crate::tray::update_current_node(&app).await;
+        return Ok(status);
+    }
     if is_running().await {
         traffic::start(&app);
         logs::start(&app);
@@ -219,6 +383,13 @@ pub async fn mihomo_start(
         if let Ok(proxy_status) = crate::system_proxy::status(&app).await {
             crate::tray::update_proxy_label(&app, proxy_status.enabled, proxy_status.core_running);
         }
+        return status_for(&app, true);
+    }
+
+    if migrate_legacy_controller_session(&app).await? {
+        traffic::start(&app);
+        logs::start(&app);
+        crate::tray::update_current_node(&app).await;
         return status_for(&app, true);
     }
 
@@ -259,6 +430,7 @@ pub async fn mihomo_start(
                     }
                     traffic::stop(&emitter);
                     logs::stop(&emitter);
+                    crate::tun::on_mihomo_exit(&emitter).await;
                     crate::system_proxy::restore_after_core_exit(&emitter).await;
                     crate::tray::update_current_node(&emitter).await;
                     let stop_requested = emitter
@@ -295,7 +467,7 @@ pub async fn mihomo_start(
         }
     });
 
-    Ok(status_for(&app, true)?)
+    status_for(&app, true)
 }
 
 #[tauri::command]
@@ -303,19 +475,37 @@ pub async fn mihomo_stop(
     app: AppHandle,
     state: State<'_, CoreState>,
 ) -> Result<CoreStatus, String> {
-    state.stop_requested.store(true, Ordering::SeqCst);
+    if !owns_core(&app) {
+        if let Some(status) =
+            crate::service::request_core(&app, crate::service::ServiceCommand::Stop).await?
+        {
+            traffic::stop(&app);
+            logs::stop(&app);
+            crate::system_proxy::restore_for_lifecycle(&app).await?;
+            crate::tray::update_current_node(&app).await;
+            return Ok(status);
+        }
+    }
     traffic::stop(&app);
     logs::stop(&app);
+    crate::tun::restore_for_lifecycle(&app, &app.state::<crate::tun::TunState>()).await?;
+    state.stop_requested.store(true, Ordering::SeqCst);
     if let Some(child) = state.child.lock().map_err(|_| "CoreState 锁异常")?.take() {
         child.kill().map_err(|e| format!("停止 Mihomo 失败：{e}"))?;
     }
     crate::system_proxy::restore_for_lifecycle(&app).await?;
     crate::tray::update_current_node(&app).await;
-    Ok(status_for(&app, false)?)
+    status_for(&app, false)
 }
 
 #[tauri::command]
 pub async fn mihomo_status(app: AppHandle) -> Result<CoreStatus, String> {
+    if let Some(status) = crate::service::request_service_status(&app).await? {
+        if !status.core.running && !status.owns_core {
+            crate::system_proxy::restore_after_core_exit(&app).await;
+        }
+        return Ok(status.core);
+    }
     status_for(&app, is_running().await)
 }
 
@@ -360,6 +550,9 @@ pub async fn current_node() -> Option<String> {
 
 #[tauri::command]
 pub async fn mihomo_reload(app: AppHandle) -> Result<Value, String> {
+    if let Some(result) = crate::service::request_reload(&app).await? {
+        return Ok(result);
+    }
     let (_, config) = runtime_paths(&app)?;
     if !config.exists() {
         return Err("运行配置不存在，请先启动内核".to_string());

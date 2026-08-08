@@ -1,4 +1,4 @@
-# MioProxy V0.1
+# MioProxy V0.7
 
 一个从零搭建的 Windows 桌面代理客户端骨架：**Tauri 2 + React + TypeScript + Rust + Mihomo sidecar**。
 
@@ -21,14 +21,17 @@
 - Controller 代理组节点切换
 - 节点延迟测速
 
-## 暂未实现
+## V0.7 当前实现
 
-- Windows System Proxy
-- 托盘/开机启动
+- Windows System Proxy、托盘与开机启动
 - Connections/Traffic WebSocket
-- TUN + Windows Service
+- TUN 开关、管理员权限检查、启动失败回滚
+- `auto-route`、`auto-detect-interface`、DNS hijack 基础配置
+- TUN 运行前网络快照、异常退出恢复、睡眠/网络变化后重载
+- `MioProxyService` named-pipe IPC、协议/版本校验与 Mihomo 单实例保护
+- Windows Service 管理 Mihomo、TUN 与恢复状态
 
-这些能力仍按 V0.2 → V1.0 逐步加，不在 V0.1 一次塞完。
+Service 默认需要管理员权限安装；详细命令见 `src-tauri/binaries/README.md`。
 
 ## Windows 开发环境
 
@@ -46,6 +49,7 @@
 ```powershell
 npm install
 npm run mihomo:setup
+npm run service:build
 npm run tauri dev
 ```
 
@@ -75,13 +79,16 @@ src-tauri/binaries/mihomo-x86_64-pc-windows-msvc.exe
 React UI
    │ invoke()
    ▼
-Tauri / Rust
-   ├── Core lifecycle
+Tauri / Rust GUI
+   ├── normal-privilege UI
    ├── Controller API client
-   └── config.yaml
+   └── named pipe IPC
           │
           ▼
-       Mihomo
+MioProxy Service (administrator)
+   ├── Mihomo lifecycle
+   ├── TUN / route / DNS recovery
+   └── config.yaml + runtime snapshots
           │
           ▼
        Network
@@ -89,15 +96,11 @@ Tauri / Rust
 
 前端不直接访问 `127.0.0.1:9090`，这样后续可以把 Controller secret、配置校验、日志过滤等统一放在 Rust 层。
 
-## 后续建议
+## 后续验证
 
-1. 本地 Profile 数据模型
-2. 从 URL 下载订阅
-3. 原子写入/校验 YAML
-4. Reload Mihomo config
-5. `/proxies` 节点选择
-6. Delay test
-7. 订阅流量和到期时间
+1. 在目标 Windows 机器安装并启动 `MioProxyService`
+2. 使用真实 Profile 验证 TUN 启停、路由/DNS 恢复
+3. 验证睡眠唤醒、网卡切换与 Service 升级版本协商
 
 ## License / Mihomo
 

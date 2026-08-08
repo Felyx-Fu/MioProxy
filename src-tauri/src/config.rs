@@ -1,7 +1,19 @@
 use std::{
     fs,
+    io::{self, Read, Write},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
+};
+
+#[cfg(windows)]
+use std::os::windows::{
+    ffi::OsStrExt,
+    fs::{MetadataExt, OpenOptionsExt},
+};
+
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{
+    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
 };
 
 use serde::{Deserialize, Serialize};
@@ -32,7 +44,7 @@ pub struct ConfigPreview {
     pub override_active: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigApplyResult {
     pub profile_id: String,
@@ -54,6 +66,12 @@ pub struct DnsSettings {
     pub fake_ip_filter: Vec<String>,
 }
 
+pub(crate) struct BuiltConfig {
+    pub profile: profiles::Profile,
+    pub value: Value,
+    pub override_active: bool,
+}
+
 fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     app.path().app_data_dir().map_err(|e| e.to_string())
 }
@@ -70,6 +88,18 @@ fn candidate_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app_data_dir(app)?.join(CANDIDATE_FILE))
 }
 
+pub(crate) fn config_path_at(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("config.yaml")
+}
+
+pub(crate) fn candidate_path_at(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join(CANDIDATE_FILE)
+}
+
+fn override_path_at(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join(OVERRIDE_FILE)
+}
+
 fn timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -77,15 +107,147 @@ fn timestamp() -> u64 {
         .as_secs()
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        ensure_not_reparse(parent)?;
     }
-    let temp = path.with_extension("tmp");
-    fs::write(&temp, bytes).map_err(|e| e.to_string())?;
-    if path.exists() {
-        fs::remove_file(path).map_err(|e| e.to_string())?;
+    ensure_not_reparse(path)?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("无法生成临时文件名：{}", path.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("无法确定临时文件目录：{}", path.display()))?;
+    let mut temp = None;
+    for _ in 0..8 {
+        let mut random = [0u8; 16];
+        getrandom::fill(&mut random).map_err(|e| format!("生成临时文件名失败：{e}"))?;
+        let suffix = random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let candidate = parent.join(format!(".{file_name}.{suffix}.tmp"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(mut file) => {
+                let result = file
+                    .write_all(bytes)
+                    .and_then(|_| file.flush())
+                    .and_then(|_| file.sync_all());
+                if let Err(error) = result {
+                    drop(file);
+                    let _ = fs::remove_file(&candidate);
+                    return Err(error.to_string());
+                }
+                if let Err(error) = ensure_not_reparse(&candidate) {
+                    drop(file);
+                    let _ = fs::remove_file(&candidate);
+                    return Err(error);
+                }
+                temp = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
     }
+    let temp = temp.ok_or_else(|| "无法创建唯一临时文件".to_string())?;
+    if let Err(error) = replace_file(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+#[cfg(windows)]
+fn ensure_not_reparse(path: &Path) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(format!("拒绝写入 Reparse Point 路径：{}", path.display()));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn ensure_not_reparse(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+pub(crate) fn read_text_file_at(path: &Path, label: &str) -> Result<Option<String>, String> {
+    #[cfg(not(windows))]
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            return Err(format!("拒绝读取 Reparse Point 路径：{}", path.display()));
+        }
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("{label}失败：{error}")),
+    };
+    #[cfg(windows)]
+    {
+        let metadata = file
+            .metadata()
+            .map_err(|e| format!("检查 {label} 路径失败：{e}"))?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(format!("拒绝读取 Reparse Point 路径：{}", path.display()));
+        }
+    }
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .map_err(|e| format!("{label}失败：{e}"))?;
+    Ok(Some(content))
+}
+
+#[cfg(windows)]
+fn replace_file(temp: &Path, path: &Path) -> Result<(), String> {
+    let source = temp
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(temp: &Path, path: &Path) -> Result<(), String> {
     fs::rename(temp, path).map_err(|e| e.to_string())
 }
 
@@ -93,12 +255,11 @@ fn empty_mapping() -> Value {
     Value::Mapping(Mapping::new())
 }
 
-fn read_override_value(app: &AppHandle) -> Result<(Value, String), String> {
-    let path = override_path(app)?;
-    if !path.exists() {
+fn read_override_value_at(data_dir: &Path) -> Result<(Value, String), String> {
+    let path = override_path_at(data_dir);
+    let Some(content) = read_text_file_at(&path, "读取本地 Override")? else {
         return Ok((empty_mapping(), String::new()));
-    }
-    let content = fs::read_to_string(&path).map_err(|e| format!("读取本地 Override 失败：{e}"))?;
+    };
     if content.trim().is_empty() {
         return Ok((empty_mapping(), content));
     }
@@ -108,6 +269,18 @@ fn read_override_value(app: &AppHandle) -> Result<(Value, String), String> {
         return Err("本地 Override 根节点必须是 YAML 对象".to_string());
     }
     Ok((value, content))
+}
+
+fn read_override_value(app: &AppHandle) -> Result<(Value, String), String> {
+    read_override_value_at(&app_data_dir(app)?)
+}
+
+pub(crate) fn override_content_at(data_dir: &Path) -> Result<String, String> {
+    read_override_value_at(data_dir).map(|(_, content)| content)
+}
+
+pub(crate) fn override_content(app: &AppHandle) -> Result<String, String> {
+    read_override_value(app).map(|(_, content)| content)
 }
 
 fn merge_values(base: &mut Value, overlay: Value) {
@@ -202,14 +375,28 @@ fn validate_config(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn build_value(
-    app: &AppHandle,
-    profile_id: &str,
-) -> Result<(profiles::Profile, Value, bool), String> {
-    let (profile, source) = profiles::profile_source(app, profile_id)?;
+pub(crate) fn build_value_at(data_dir: &Path, profile_id: &str) -> Result<BuiltConfig, String> {
+    let profiles_path = data_dir.join("profiles.json");
+    let profiles_content = read_text_file_at(&profiles_path, "读取 Profile 数据")?
+        .ok_or_else(|| "读取 Profile 数据失败：文件不存在".to_string())?;
+    let profile = serde_json::from_str::<Vec<profiles::Profile>>(&profiles_content)
+        .map_err(|e| format!("Profile 数据损坏：{e}"))?
+        .into_iter()
+        .find(|candidate| candidate.id == profile_id)
+        .ok_or_else(|| "找不到这个 Profile".to_string())?;
+    let source_path = profile
+        .file_path
+        .as_ref()
+        .ok_or_else(|| "请先下载这个 Profile".to_string())?;
+    let source_path = profile_source_path_at(data_dir, source_path)?;
+    let source = read_text_file_at(&source_path, "读取 Profile YAML")?
+        .ok_or_else(|| "读取 Profile YAML 失败：文件不存在".to_string())?;
+    if source.trim().is_empty() {
+        return Err("Profile YAML 为空".to_string());
+    }
     let mut base =
         serde_yaml::from_str::<Value>(&source).map_err(|e| format!("Profile YAML 无效：{e}"))?;
-    let (override_value, override_content) = read_override_value(app)?;
+    let (override_value, override_content) = read_override_value_at(data_dir)?;
     merge_values(&mut base, override_value);
     let map = base
         .as_mapping_mut()
@@ -220,10 +407,78 @@ fn build_value(
     );
     map.insert(
         value_key("secret"),
-        Value::String(mihomo::SECRET.to_string()),
+        Value::String(mihomo::secret().to_string()),
     );
     validate_config(&base)?;
-    Ok((profile, base, !override_content.trim().is_empty()))
+    Ok(BuiltConfig {
+        profile,
+        value: base,
+        override_active: !override_content.trim().is_empty(),
+    })
+}
+
+fn profile_source_path_at(
+    data_dir: &Path,
+    source_path: &str,
+) -> Result<std::path::PathBuf, String> {
+    let profiles_dir = data_dir.join("profiles");
+    ensure_not_reparse(&profiles_dir)?;
+    let source_path = Path::new(source_path);
+    if !source_path.is_absolute() || is_network_path(source_path) {
+        return Err("Profile 文件必须位于应用数据目录的 profiles 文件夹内".to_string());
+    }
+    ensure_not_reparse(source_path)?;
+    let profiles_root =
+        fs::canonicalize(&profiles_dir).map_err(|e| format!("解析 Profile 目录失败：{e}"))?;
+    let canonical_source =
+        fs::canonicalize(source_path).map_err(|e| format!("解析 Profile 文件失败：{e}"))?;
+    if !canonical_source.starts_with(&profiles_root) {
+        return Err("Profile 文件必须位于应用数据目录的 profiles 文件夹内".to_string());
+    }
+    Ok(canonical_source)
+}
+
+#[cfg(windows)]
+fn is_network_path(path: &Path) -> bool {
+    let value = path.as_os_str().to_string_lossy().to_ascii_lowercase();
+    value.starts_with(r"\\.\")
+        || value.starts_with(r"\\?\unc\")
+        || (value.starts_with(r"\\") && !value.starts_with(r"\\?\"))
+}
+
+#[cfg(not(windows))]
+fn is_network_path(_path: &Path) -> bool {
+    false
+}
+
+pub(crate) fn configured_tun_enabled_at(data_dir: &Path, profile_id: &str) -> Result<bool, String> {
+    let built = build_value_at(data_dir, profile_id)?;
+    Ok(built
+        .value
+        .as_mapping()
+        .and_then(|map| mapping_value(map, "tun"))
+        .and_then(Value::as_mapping)
+        .and_then(|tun| mapping_value(tun, "enable"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false))
+}
+
+pub(crate) fn restore_profile_config_at(data_dir: &Path, profile_id: &str) -> Result<(), String> {
+    let built = build_value_at(data_dir, profile_id)?;
+    let yaml = serde_yaml::to_string(&built.value).map_err(|e| format!("生成恢复配置失败：{e}"))?;
+    write_atomic(&config_path_at(data_dir), yaml.as_bytes())
+}
+
+pub(crate) fn restore_profile_config(app: &AppHandle, profile_id: &str) -> Result<(), String> {
+    restore_profile_config_at(&app_data_dir(app)?, profile_id)
+}
+
+fn build_value(
+    app: &AppHandle,
+    profile_id: &str,
+) -> Result<(profiles::Profile, Value, bool), String> {
+    let built = build_value_at(&app_data_dir(app)?, profile_id)?;
+    Ok((built.profile, built.value, built.override_active))
 }
 
 fn settings_from_value(value: &Value) -> DnsSettings {
@@ -341,6 +596,86 @@ fn write_override_value(app: &AppHandle, value: &Value) -> Result<OverrideSnapsh
     })
 }
 
+async fn ensure_override_editable(
+    app: &AppHandle,
+) -> Result<tokio::sync::MutexGuard<'static, ()>, String> {
+    let transition = crate::tun::lock_transitions().await;
+    if crate::tun::is_active(app) {
+        return Err("请先关闭 TUN，再编辑 Local Override".to_string());
+    }
+    if let Some(tun) = crate::service::service_tun_status(app).await? {
+        if tun.status != crate::tun::TunStatus::Disabled {
+            return Err("请先关闭 Service 管理的 TUN，再编辑 Local Override".to_string());
+        }
+    }
+    Ok(transition)
+}
+
+pub(crate) fn restore_override_content_at(data_dir: &Path, content: &str) -> Result<(), String> {
+    let value = if content.trim().is_empty() {
+        empty_mapping()
+    } else {
+        serde_yaml::from_str::<Value>(content)
+            .map_err(|e| format!("恢复 Local Override 失败：{e}"))?
+    };
+    if !value.is_mapping() {
+        return Err("恢复的 Local Override 根节点必须是 YAML 对象".to_string());
+    }
+    validate_config(&value)?;
+    let path = override_path_at(data_dir);
+    write_atomic(&path, content.as_bytes())
+}
+
+pub(crate) fn restore_override_content(app: &AppHandle, content: &str) -> Result<(), String> {
+    restore_override_content_at(&app_data_dir(app)?, content)
+}
+
+pub(crate) fn set_tun_enabled_at(data_dir: &Path, enabled: bool) -> Result<(), String> {
+    let (mut value, _) = read_override_value_at(data_dir)?;
+    let map = value
+        .as_mapping_mut()
+        .ok_or_else(|| "本地 Override 根节点必须是 YAML 对象".to_string())?;
+    let existing_tun = map.remove(value_key("tun")).unwrap_or_else(empty_mapping);
+    let mut tun = existing_tun;
+    let tun_map = tun
+        .as_mapping_mut()
+        .ok_or_else(|| "Local Override 的 tun 必须是 YAML 对象".to_string())?;
+    tun_map.insert(value_key("enable"), Value::Bool(enabled));
+    if enabled {
+        let existing_dns = map.remove(value_key("dns")).unwrap_or_else(empty_mapping);
+        let mut dns = existing_dns;
+        let dns_map = dns
+            .as_mapping_mut()
+            .ok_or_else(|| "Local Override 的 dns 必须是 YAML 对象".to_string())?;
+        dns_map.insert(value_key("enable"), Value::Bool(true));
+        map.insert(value_key("dns"), dns);
+        tun_map.insert(value_key("stack"), Value::String("mixed".to_string()));
+        tun_map.insert(value_key("device"), Value::String("MioProxy".to_string()));
+        tun_map.insert(value_key("auto-route"), Value::Bool(true));
+        tun_map.insert(value_key("auto-detect-interface"), Value::Bool(true));
+        tun_map.insert(value_key("strict-route"), Value::Bool(true));
+        tun_map.insert(
+            value_key("dns-hijack"),
+            Value::Sequence(vec![
+                Value::String("any:53".to_string()),
+                Value::String("tcp://any:53".to_string()),
+            ]),
+        );
+    }
+    map.insert(value_key("tun"), tun);
+    let content = if value.as_mapping().is_some_and(Mapping::is_empty) {
+        String::new()
+    } else {
+        serde_yaml::to_string(&value).map_err(|e| format!("生成 Override YAML 失败：{e}"))?
+    };
+    validate_config(&value)?;
+    write_atomic(&override_path_at(data_dir), content.as_bytes())
+}
+
+pub(crate) fn set_tun_enabled(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    set_tun_enabled_at(&app_data_dir(app)?, enabled)
+}
+
 #[tauri::command]
 pub fn override_get(app: AppHandle) -> Result<OverrideSnapshot, String> {
     let (_value, content) = read_override_value(&app)?;
@@ -354,7 +689,8 @@ pub fn override_get(app: AppHandle) -> Result<OverrideSnapshot, String> {
 }
 
 #[tauri::command]
-pub fn override_set(app: AppHandle, content: String) -> Result<OverrideSnapshot, String> {
+pub async fn override_set(app: AppHandle, content: String) -> Result<OverrideSnapshot, String> {
+    let _transition = ensure_override_editable(&app).await?;
     let value = if content.trim().is_empty() {
         empty_mapping()
     } else {
@@ -383,7 +719,10 @@ pub fn config_preview(app: AppHandle, profile_id: String) -> Result<ConfigPrevie
     })
 }
 
-async fn apply_config(app: AppHandle, profile_id: String) -> Result<ConfigApplyResult, String> {
+pub(crate) async fn apply_config(
+    app: AppHandle,
+    profile_id: String,
+) -> Result<ConfigApplyResult, String> {
     let (profile, value, override_active) = build_value(&app, &profile_id)?;
     let yaml = serde_yaml::to_string(&value).map_err(|e| format!("生成最终配置失败：{e}"))?;
     let stable = config_path(&app)?;
@@ -417,7 +756,16 @@ async fn apply_config(app: AppHandle, profile_id: String) -> Result<ConfigApplyR
 }
 
 pub async fn apply_profile(app: AppHandle, profile_id: String) -> Result<String, String> {
-    let result = apply_config(app, profile_id).await?;
+    let _transition = crate::tun::lock_transitions().await;
+    if crate::tun::is_active(&app) {
+        return Err("请先关闭 TUN，再切换 Profile".to_string());
+    }
+    let result =
+        if let Some(result) = crate::service::request_apply_profile(&app, &profile_id).await? {
+            result
+        } else {
+            apply_config(app, profile_id).await?
+        };
     Ok(format!(
         "{} · {} · {}",
         result.profile_name,
@@ -432,6 +780,13 @@ pub async fn apply_profile(app: AppHandle, profile_id: String) -> Result<String,
 
 #[tauri::command]
 pub async fn config_apply(app: AppHandle, profile_id: String) -> Result<ConfigApplyResult, String> {
+    let _transition = crate::tun::lock_transitions().await;
+    if crate::tun::is_active(&app) {
+        return Err("请先关闭 TUN，再应用配置".to_string());
+    }
+    if let Some(result) = crate::service::request_apply_profile(&app, &profile_id).await? {
+        return Ok(result);
+    }
     apply_config(app, profile_id).await
 }
 
@@ -443,7 +798,8 @@ pub fn dns_get(app: AppHandle, profile_id: String) -> Result<DnsSettings, String
 }
 
 #[tauri::command]
-pub fn dns_set(app: AppHandle, settings: DnsSettings) -> Result<OverrideSnapshot, String> {
+pub async fn dns_set(app: AppHandle, settings: DnsSettings) -> Result<OverrideSnapshot, String> {
+    let _transition = ensure_override_editable(&app).await?;
     let (mut value, _) = read_override_value(&app)?;
     let map = value
         .as_mapping_mut()
@@ -457,7 +813,15 @@ pub fn dns_set(app: AppHandle, settings: DnsSettings) -> Result<OverrideSnapshot
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_values, validate_config};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::{
+        merge_values, restore_override_content_at, restore_profile_config_at, set_tun_enabled_at,
+        validate_config,
+    };
     use serde_yaml::Value;
 
     #[test]
@@ -489,5 +853,83 @@ mod tests {
 
         let value = serde_yaml::from_str::<Value>("dns:\n  nameserver: [8]\n").unwrap();
         assert!(validate_config(&value).is_err());
+    }
+
+    #[test]
+    fn writes_tun_route_and_dns_override_without_touching_subscription() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "mioproxy-config-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&data_dir).unwrap();
+        let override_path = data_dir.join("local-override.yaml");
+        fs::write(
+            &override_path,
+            "dns:\n  enable: false\n  nameserver: [1.1.1.1]\n",
+        )
+        .unwrap();
+        set_tun_enabled_at(&data_dir, true).unwrap();
+        let value =
+            serde_yaml::from_str::<Value>(&fs::read_to_string(&override_path).unwrap()).unwrap();
+        assert_eq!(value["dns"]["enable"].as_bool(), Some(true));
+        assert_eq!(value["dns"]["nameserver"][0].as_str(), Some("1.1.1.1"));
+        assert_eq!(value["tun"]["enable"].as_bool(), Some(true));
+        assert_eq!(value["tun"]["auto-route"].as_bool(), Some(true));
+        assert_eq!(value["tun"]["auto-detect-interface"].as_bool(), Some(true));
+        assert_eq!(value["tun"]["dns-hijack"][0].as_str(), Some("any:53"));
+        restore_override_content_at(
+            &data_dir,
+            "dns:\n  enable: false\n  nameserver: [1.1.1.1]\n",
+        )
+        .unwrap();
+        let restored = fs::read_to_string(override_path).unwrap();
+        assert_eq!(restored, "dns:\n  enable: false\n  nameserver: [1.1.1.1]\n");
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn restores_stable_config_without_tun_after_core_exit() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "mioproxy-config-recovery-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&data_dir).unwrap();
+        let profiles_dir = data_dir.join("profiles");
+        fs::create_dir_all(&profiles_dir).unwrap();
+        let source_path = profiles_dir.join("profile.yaml");
+        fs::write(
+            &source_path,
+            "mixed-port: 7890\nproxies: []\nproxy-groups: []\nrules: [MATCH,DIRECT]\n",
+        )
+        .unwrap();
+        fs::write(
+            data_dir.join("profiles.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "id": "profile-1",
+                "name": "Recovery",
+                "url": "https://example.invalid/profile",
+                "filePath": source_path,
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(data_dir.join("config.yaml"), "tun:\n  enable: true\n").unwrap();
+
+        restore_profile_config_at(&data_dir, "profile-1").unwrap();
+        let restored = fs::read_to_string(data_dir.join("config.yaml")).unwrap();
+        let value = serde_yaml::from_str::<Value>(&restored).unwrap();
+        assert!(value.get("tun").is_none());
+        assert_eq!(
+            value["external-controller"].as_str(),
+            Some("127.0.0.1:9090")
+        );
+
+        let _ = fs::remove_dir_all(data_dir);
     }
 }

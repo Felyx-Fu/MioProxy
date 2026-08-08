@@ -10,7 +10,15 @@ New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
 Write-Host "[1/4] Querying latest stable Mihomo release..." -ForegroundColor Cyan
-$release = Invoke-RestMethod -Uri "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest" -Headers @{ "User-Agent" = "MioProxy-Setup" }
+$githubHeaders = @{ "User-Agent" = "MioProxy-Setup" }
+$githubToken = if ($env:GH_TOKEN) { $env:GH_TOKEN } elseif ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN }
+if (-not $githubToken -and (Get-Command gh -ErrorAction SilentlyContinue)) {
+    $githubToken = (& gh auth token 2>$null | Select-Object -First 1)
+}
+if ($githubToken) {
+    $githubHeaders["Authorization"] = "Bearer $($githubToken.Trim())"
+}
+$release = Invoke-RestMethod -Uri "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest" -Headers $githubHeaders
 
 $asset = $release.assets | Where-Object { $_.name -like "mihomo-windows-amd64-compatible-*.zip" } | Select-Object -First 1
 if (-not $asset) {
