@@ -437,6 +437,13 @@ pub(crate) fn set_tun_enabled_at(data_dir: &Path, enabled: bool) -> Result<(), S
         .ok_or_else(|| "Local Override 的 tun 必须是 YAML 对象".to_string())?;
     tun_map.insert(value_key("enable"), Value::Bool(enabled));
     if enabled {
+        let existing_dns = map.remove(value_key("dns")).unwrap_or_else(empty_mapping);
+        let mut dns = existing_dns;
+        let dns_map = dns
+            .as_mapping_mut()
+            .ok_or_else(|| "Local Override 的 dns 必须是 YAML 对象".to_string())?;
+        dns_map.insert(value_key("enable"), Value::Bool(true));
+        map.insert(value_key("dns"), dns);
         tun_map.insert(value_key("stack"), Value::String("mixed".to_string()));
         tun_map.insert(value_key("device"), Value::String("MioProxy".to_string()));
         tun_map.insert(value_key("auto-route"), Value::Bool(true));
@@ -650,18 +657,27 @@ mod tests {
         ));
         fs::create_dir_all(&data_dir).unwrap();
         let override_path = data_dir.join("local-override.yaml");
-        fs::write(&override_path, "dns:\n  enable: true\n").unwrap();
+        fs::write(
+            &override_path,
+            "dns:\n  enable: false\n  nameserver: [1.1.1.1]\n",
+        )
+        .unwrap();
         set_tun_enabled_at(&data_dir, true).unwrap();
         let value =
             serde_yaml::from_str::<Value>(&fs::read_to_string(&override_path).unwrap()).unwrap();
         assert_eq!(value["dns"]["enable"].as_bool(), Some(true));
+        assert_eq!(value["dns"]["nameserver"][0].as_str(), Some("1.1.1.1"));
         assert_eq!(value["tun"]["enable"].as_bool(), Some(true));
         assert_eq!(value["tun"]["auto-route"].as_bool(), Some(true));
         assert_eq!(value["tun"]["auto-detect-interface"].as_bool(), Some(true));
         assert_eq!(value["tun"]["dns-hijack"][0].as_str(), Some("any:53"));
-        restore_override_content_at(&data_dir, "dns:\n  enable: true\n").unwrap();
+        restore_override_content_at(
+            &data_dir,
+            "dns:\n  enable: false\n  nameserver: [1.1.1.1]\n",
+        )
+        .unwrap();
         let restored = fs::read_to_string(override_path).unwrap();
-        assert_eq!(restored, "dns:\n  enable: true\n");
+        assert_eq!(restored, "dns:\n  enable: false\n  nameserver: [1.1.1.1]\n");
         let _ = fs::remove_dir_all(data_dir);
     }
 
