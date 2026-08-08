@@ -75,6 +75,7 @@ struct TunRuntime {
     profile_id: Option<String>,
     previous_override: Option<String>,
     snapshot: Option<NetworkSnapshot>,
+    recovery_blocked: bool,
 }
 
 #[derive(Default)]
@@ -332,16 +333,21 @@ fn set_runtime(state: &TunState, update: impl FnOnce(&mut TunRuntime)) -> Result
     Ok(())
 }
 
+fn requires_recovery(runtime: &TunRuntime) -> bool {
+    runtime.recovery_blocked
+        || matches!(
+            runtime.status,
+            TunStatus::Starting | TunStatus::Running | TunStatus::Stopping
+        )
+        || (runtime.status == TunStatus::Error
+            && runtime.previous_override.is_some()
+            && runtime.profile_id.is_some()
+            && runtime.snapshot.is_some())
+}
+
 fn active_runtime(state: &TunState) -> Result<Option<TunRuntime>, String> {
     let runtime = runtime_snapshot(state)?;
-    let active = matches!(
-        runtime.status,
-        TunStatus::Starting | TunStatus::Running | TunStatus::Stopping
-    ) || (runtime.status == TunStatus::Error
-        && runtime.previous_override.is_some()
-        && runtime.profile_id.is_some()
-        && runtime.snapshot.is_some());
-    Ok(active.then_some(runtime))
+    Ok(requires_recovery(&runtime).then_some(runtime))
 }
 
 pub(crate) fn is_active(app: &AppHandle) -> bool {
@@ -570,6 +576,11 @@ async fn disable_tun(
         })?;
         return response(state);
     };
+    if active.recovery_blocked {
+        return Err(active.message.unwrap_or_else(|| {
+            "TUN 恢复状态无法读取；请修复或移除 tun-state.json 后重启应用".to_string()
+        }));
+    }
     let profile_id = active
         .profile_id
         .clone()
@@ -710,8 +721,22 @@ pub async fn recover_after_startup(app: AppHandle) {
     let Some(state) = app.try_state::<TunState>() else {
         return;
     };
-    let Ok(Some(persisted)) = read_persisted(&app) else {
-        return;
+    let persisted = match read_persisted(&app) {
+        Ok(Some(persisted)) => persisted,
+        Ok(None) => return,
+        Err(error) => {
+            let _ = set_runtime(&state, |current| {
+                *current = TunRuntime {
+                    status: TunStatus::Error,
+                    message: Some(format!(
+                        "{error}；无法确认 TUN 是否已恢复，请修复或移除 tun-state.json 后重启应用"
+                    )),
+                    recovery_blocked: true,
+                    ..TunRuntime::default()
+                };
+            });
+            return;
+        }
     };
     let restore = config::restore_override_content(&app, &persisted.previous_override);
     let apply = if restore.is_ok() && mihomo::owns_core(&app) && mihomo::is_running().await {
@@ -818,7 +843,18 @@ pub fn start_monitor(app: AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::NetworkSnapshot;
+    use super::{requires_recovery, NetworkSnapshot, TunRuntime, TunStatus};
+
+    #[test]
+    fn corrupted_persisted_state_blocks_normal_tun_operations() {
+        let runtime = TunRuntime {
+            status: TunStatus::Error,
+            recovery_blocked: true,
+            ..TunRuntime::default()
+        };
+
+        assert!(requires_recovery(&runtime));
+    }
 
     #[test]
     fn network_snapshot_preserves_structured_network_state() {
