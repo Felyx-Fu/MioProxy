@@ -20,6 +20,7 @@ use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
 };
+use tokio::sync::Mutex as AsyncMutex;
 
 use super::{logs, traffic};
 
@@ -28,6 +29,9 @@ const CONTROLLER_SECRET_FILE: &str = "controller-secret";
 const LEGACY_CONTROLLER_SECRET: &str = "mioproxy-v01-local";
 const DEFAULT_DELAY_URL: &str = "https://www.gstatic.com/generate_204";
 static CONTROLLER_SECRET: OnceLock<String> = OnceLock::new();
+// Keep fallback-core startup and termination recovery in one lifecycle critical
+// section. In particular, `child` must not be cleared until TUN rollback is done.
+static CORE_LIFECYCLE_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
 
 #[cfg(windows)]
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
@@ -368,6 +372,7 @@ pub async fn mihomo_start(
     app: AppHandle,
     state: State<'_, CoreState>,
 ) -> Result<CoreStatus, String> {
+    let _lifecycle = CORE_LIFECYCLE_LOCK.lock().await;
     if let Some(status) =
         crate::service::request_core(&app, crate::service::ServiceCommand::Start).await?
     {
@@ -384,6 +389,19 @@ pub async fn mihomo_start(
             crate::tray::update_proxy_label(&app, proxy_status.enabled, proxy_status.core_running);
         }
         return status_for(&app, true);
+    }
+
+    // A terminated sidecar can stop answering before its event handler has
+    // restored the stable (non-TUN) configuration. Do not start a replacement
+    // from that transient state; once recovery finishes the handler clears the
+    // child and a retry can safely load config.yaml.
+    if state
+        .child
+        .lock()
+        .map_err(|_| "CoreState 锁异常")?
+        .is_some()
+    {
+        return Err("Mihomo 正在执行退出恢复，请稍后重试".to_string());
     }
 
     if migrate_legacy_controller_session(&app).await? {
@@ -425,13 +443,16 @@ pub async fn mihomo_start(
                     let _ = emitter.emit("mihomo-log", String::from_utf8_lossy(&bytes).to_string());
                 }
                 CommandEvent::Terminated(payload) => {
+                    let _lifecycle = CORE_LIFECYCLE_LOCK.lock().await;
+                    traffic::stop(&emitter);
+                    logs::stop(&emitter);
+                    crate::system_proxy::restore_after_core_exit(&emitter).await;
+                    // Keep the child marker set until rollback is complete so a
+                    // concurrent start cannot load the still-TUN-enabled config.
+                    crate::tun::on_mihomo_exit(&emitter).await;
                     if let Ok(mut child) = emitter.state::<CoreState>().child.lock() {
                         *child = None;
                     }
-                    traffic::stop(&emitter);
-                    logs::stop(&emitter);
-                    crate::tun::on_mihomo_exit(&emitter).await;
-                    crate::system_proxy::restore_after_core_exit(&emitter).await;
                     crate::tray::update_current_node(&emitter).await;
                     let stop_requested = emitter
                         .state::<CoreState>()
