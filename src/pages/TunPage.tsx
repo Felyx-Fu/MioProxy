@@ -50,6 +50,15 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled }: {
       setError("请先选择已下载的 Profile");
       return;
     }
+    setSnapshot((current) =>
+      current
+        ? {
+            ...current,
+            status: enabled ? "starting" : "stopping",
+            message: null,
+          }
+        : current,
+    );
     setLoading(true);
     setError(null);
     try {

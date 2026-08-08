@@ -6,6 +6,7 @@ mod windows_service_host {
         fs,
         path::{Path, PathBuf},
         sync::mpsc,
+        thread,
         time::Duration,
     };
 
@@ -119,23 +120,53 @@ mod windows_service_host {
             account_name: None,
             account_password: None,
         };
+        let mut existing_service = false;
         let service = match manager.create_service(
             &info,
-            ServiceAccess::CHANGE_CONFIG | ServiceAccess::START | ServiceAccess::QUERY_STATUS,
+            ServiceAccess::CHANGE_CONFIG
+                | ServiceAccess::START
+                | ServiceAccess::QUERY_STATUS
+                | ServiceAccess::STOP,
         ) {
             Ok(service) => service,
             Err(windows_service::Error::Winapi(error)) if error.raw_os_error() == Some(1073) => {
+                existing_service = true;
                 manager
                     .open_service(
                         SERVICE_NAME,
                         ServiceAccess::CHANGE_CONFIG
                             | ServiceAccess::START
-                            | ServiceAccess::QUERY_STATUS,
+                            | ServiceAccess::QUERY_STATUS
+                            | ServiceAccess::STOP,
                     )
                     .map_err(|e| format!("打开现有 MioProxy Service 失败：{e}"))?
             }
             Err(error) => return Err(format!("创建 MioProxy Service 失败：{error}")),
         };
+        if existing_service
+            && service
+                .query_status()
+                .map_err(|e| format!("查询现有 MioProxy Service 状态失败：{e}"))?
+                .current_state
+                == ServiceState::Running
+        {
+            service
+                .stop()
+                .map_err(|e| format!("停止旧版 MioProxy Service 失败：{e}"))?;
+            let stopped = (0..100).any(|_| {
+                let is_stopped = service
+                    .query_status()
+                    .map(|status| status.current_state == ServiceState::Stopped)
+                    .unwrap_or(false);
+                if !is_stopped {
+                    thread::sleep(Duration::from_millis(100));
+                }
+                is_stopped
+            });
+            if !stopped {
+                return Err("旧版 MioProxy Service 未能在 10 秒内停止".to_string());
+            }
+        }
         service
             .change_config(&info)
             .map_err(|e| format!("更新 MioProxy Service 配置失败：{e}"))?;
