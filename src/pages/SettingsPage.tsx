@@ -26,7 +26,7 @@ export function SettingsPage({
         <div>
           <p className="eyebrow">SETTINGS</p>
           <h1>设置</h1>
-          <p>V0.3 先把 Windows 系统代理的接管、恢复和生命周期保护做完整。</p>
+          <p>V0.4 在保留 Windows 系统代理安全边界的同时，加入实时流量、连接和日志观测。</p>
         </div>
       </header>
 
@@ -62,7 +62,7 @@ export function SettingsPage({
         </article>
         <article>
           <ShieldCheck size={20} />
-          <div><span>V0.3 安全策略</span><strong>代理开启前检查内核；内核异常退出或 MioProxy 退出都会恢复原始设置</strong></div>
+          <div><span>安全策略</span><strong>代理开启前检查内核；内核异常退出或 MioProxy 退出都会恢复原始设置</strong></div>
         </article>
       </div>
     </section>

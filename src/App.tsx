@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { mihomoApi, type CoreStatus, type MihomoVersion, type Profile, type ProxiesResponse, type StartupSettings, type SystemProxyStatus } from "./api/mihomo";
 import { Sidebar, type Page } from "./components/Sidebar";
-import { HomePage } from "./pages/HomePage";
+import { ConnectionsPage } from "./pages/ConnectionsPage";
+import { DashboardPage } from "./pages/DashboardPage";
+import { LogsPage } from "./pages/LogsPage";
 import { ProfilesPage } from "./pages/ProfilesPage";
 import { ProxiesPage } from "./pages/ProxiesPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { useConnections } from "./hooks/useConnections";
+import { useTraffic } from "./hooks/useTraffic";
 
 export default function App() {
   const [page, setPage] = useState<Page>("home");
@@ -21,6 +25,8 @@ export default function App() {
   const [proxyBusy, setProxyBusy] = useState<string | null>(null);
   const [delayByProxy, setDelayByProxy] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
+  const traffic = useTraffic();
+  const connections = useConnections(Boolean(status?.running));
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -83,8 +89,25 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (page === "proxies" && status?.running) void refreshProxies();
-  }, [page, status?.running, refreshProxies]);
+    if (status?.running) void refreshProxies();
+    else setProxies(null);
+  }, [status?.running, refreshProxies]);
+
+  useEffect(() => {
+    if (!status?.running) return;
+    const timer = window.setInterval(() => void refreshProxies(), 5000);
+    return () => window.clearInterval(timer);
+  }, [status?.running, refreshProxies]);
+
+  const currentNode = proxies?.proxies.PROXY?.now ?? null;
+  useEffect(() => {
+    if (!status?.running || !currentNode) return;
+    let active = true;
+    void mihomoApi.proxyDelay(currentNode).then((result) => {
+      if (active) setDelayByProxy((current) => ({ ...current, [currentNode]: result.delay }));
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [currentNode, status?.running]);
 
   async function toggleCore() {
     setBusy(true);
@@ -223,7 +246,9 @@ export default function App() {
     <div className="app-shell">
       <Sidebar page={page} onChange={setPage} />
       <main className="content">
-        {page === "home" && <HomePage status={status} version={version} busy={busy} error={error} onToggle={toggleCore} />}
+        {page === "home" && <DashboardPage status={status} version={version} proxyStatus={proxyStatus} traffic={traffic.snapshot} connectionCount={connections.data?.connections.length ?? 0} currentNode={currentNode} delay={currentNode ? delayByProxy[currentNode] ?? null : null} memory={connections.data?.memory ?? null} busy={busy} error={error} onToggle={toggleCore} />}
+        {page === "connections" && <ConnectionsPage state={connections} onRefresh={connections.refresh} onClose={connections.closeConnection} onCloseAll={connections.closeAllConnections} />}
+        {page === "logs" && <LogsPage />}
         {page === "profiles" && <ProfilesPage profiles={profiles} busyId={profileBusyId} error={error} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} />}
         {page === "proxies" && <ProxiesPage data={proxies} loading={proxyLoading} busyProxy={proxyBusy} delayByProxy={delayByProxy} onRefresh={refreshProxies} onSelect={selectProxy} onDelay={testProxyDelay} />}
         {page === "settings" && <SettingsPage status={status} proxyStatus={proxyStatus} startup={startup} busy={busy || settingsBusy} onToggleProxy={toggleSystemProxy} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} />}
