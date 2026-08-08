@@ -79,6 +79,16 @@ fn timestamp() -> u64 {
         .as_secs()
 }
 
+fn generate_profile_id() -> Result<String, String> {
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(|e| format!("生成 Profile ID 失败：{e}"))?;
+    let suffix = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!("profile-{suffix}"))
+}
+
 fn count_nodes(body: &str) -> Option<u32> {
     let yaml = serde_yaml::from_str::<serde_yaml::Value>(body).ok()?;
     yaml.get("proxies")?
@@ -438,7 +448,7 @@ pub fn profile_add(app: AppHandle, name: String, url: String) -> Result<Profile,
     }
 
     let profile = Profile {
-        id: format!("profile-{}", timestamp()),
+        id: generate_profile_id()?,
         name: name.to_string(),
         url,
         file_path: None,
@@ -541,7 +551,7 @@ pub async fn profile_remove(app: AppHandle, id: String) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_subscription_body;
+    use super::{generate_profile_id, normalize_subscription_body};
     use base64::{engine::general_purpose, Engine as _};
     use serde_yaml::Value;
 
@@ -646,5 +656,15 @@ mod tests {
         let yaml = normalize_subscription_body(source).unwrap();
         let value = serde_yaml::from_str::<Value>(&yaml).unwrap();
         assert_eq!(value["proxies"][0]["name"].as_str(), Some("Hong Kong"));
+    }
+
+    #[test]
+    fn generates_unique_profile_ids_for_rapid_additions() {
+        let first = generate_profile_id().unwrap();
+        let second = generate_profile_id().unwrap();
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("profile-"));
+        assert_eq!(first.len(), "profile-".len() + 32);
     }
 }
