@@ -90,6 +90,10 @@ mod windows_impl {
         net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions},
         sync::watch,
     };
+    use windows_service::{
+        service::ServiceAccess,
+        service_manager::{ServiceManager, ServiceManagerAccess},
+    };
     use windows_sys::Win32::{
         Foundation::{CloseHandle, HANDLE},
         Security::{
@@ -197,13 +201,33 @@ mod windows_impl {
         matches!(error.raw_os_error(), Some(2 | 3))
     }
 
+    fn service_is_installed() -> Result<bool, String> {
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|error| format!("查询 MioProxy Service 失败：{error}"))?;
+        match manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS) {
+            Ok(_) => Ok(true),
+            Err(windows_service::Error::Winapi(error)) if error.raw_os_error() == Some(1060) => {
+                Ok(false)
+            }
+            Err(error) => Err(format!("查询 MioProxy Service 失败：{error}")),
+        }
+    }
+
     pub(crate) async fn try_request(
         app: &AppHandle,
         command: ServiceCommand,
     ) -> Result<Option<ServiceResponse>, String> {
         let mut client = match ClientOptions::new().open(PIPE_NAME) {
             Ok(client) => client,
-            Err(error) if is_pipe_missing(&error) => return Ok(None),
+            Err(error) if is_pipe_missing(&error) => {
+                if service_is_installed()? {
+                    return Err(
+                        "MioProxy Service 已安装但当前 IPC 不可用，已阻止 GUI 接管 Mihomo"
+                            .to_string(),
+                    );
+                }
+                return Ok(None);
+            }
             Err(error) => return Err(format!("连接 MioProxy Service 失败：{error}")),
         };
         let request = ServiceRequest {
@@ -720,7 +744,12 @@ rules:
                 tun.previous_override = Some(previous_override.clone());
                 tun.snapshot = Some(snapshot);
             }
-            self.write_tun_persisted()?;
+            if let Err(error) = self.write_tun_persisted() {
+                if let Ok(mut tun) = self.tun.lock() {
+                    *tun = ServiceTunState::default();
+                }
+                return Err(format!("保存 Service TUN 恢复状态失败：{error}"));
+            }
             if let Err(error) = config::set_tun_enabled_at(&self.data_dir, true) {
                 return self
                     .rollback_tun(
@@ -758,7 +787,15 @@ rules:
                 tun.status = crate::tun::TunStatus::Running;
                 tun.message = None;
             }
-            self.write_tun_persisted()?;
+            if let Err(error) = self.write_tun_persisted() {
+                return self
+                    .rollback_tun(
+                        &profile_id,
+                        &previous_override,
+                        format!("保存 Service TUN 运行状态失败：{error}"),
+                    )
+                    .await;
+            }
             let tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
             Ok(ServiceTunData {
                 status: "running".to_string(),
@@ -779,6 +816,8 @@ rules:
                 .and_then(|_| Ok(()));
             let recovery = if recovery.is_ok() && mihomo::is_running().await {
                 self.apply_profile(profile_id).await
+            } else if recovery.is_ok() {
+                config::restore_profile_config_at(&self.data_dir, profile_id)
             } else {
                 recovery
             };
@@ -821,10 +860,31 @@ rules:
                 tun.status = crate::tun::TunStatus::Stopping;
                 tun.message = None;
             }
-            config::restore_override_content_at(&self.data_dir, &previous)?;
+            if let Err(error) = config::restore_override_content_at(&self.data_dir, &previous) {
+                let message = format!("恢复 TUN 原始 Override 失败：{error}");
+                if let Ok(mut tun) = self.tun.lock() {
+                    tun.status = crate::tun::TunStatus::Error;
+                    tun.message = Some(message.clone());
+                }
+                return Err(message);
+            }
             if mihomo::is_running().await {
-                let profile_id = profile_id.ok_or_else(|| "停止 TUN 缺少 Profile".to_string())?;
-                self.apply_profile(&profile_id).await?;
+                let Some(profile_id) = profile_id else {
+                    let message = "停止 TUN 缺少 Profile".to_string();
+                    if let Ok(mut tun) = self.tun.lock() {
+                        tun.status = crate::tun::TunStatus::Error;
+                        tun.message = Some(message.clone());
+                    }
+                    return Err(message);
+                };
+                if let Err(error) = self.apply_profile(&profile_id).await {
+                    let message = format!("Mihomo 停止 TUN 失败：{error}");
+                    if let Ok(mut tun) = self.tun.lock() {
+                        tun.status = crate::tun::TunStatus::Error;
+                        tun.message = Some(message.clone());
+                    }
+                    return Err(message);
+                }
             }
             self.clear_tun_persisted()?;
             {
@@ -854,12 +914,9 @@ rules:
             };
             let result =
                 config::restore_override_content_at(&self.data_dir, &persisted.previous_override)
-                    .and_then(|_| Ok(()));
-            let result = if result.is_ok() && mihomo::is_running().await {
-                self.apply_profile(&persisted.profile_id).await
-            } else {
-                result
-            };
+                    .and_then(|_| {
+                        config::restore_profile_config_at(&self.data_dir, &persisted.profile_id)
+                    });
             match result {
                 Ok(()) => {
                     self.clear_tun_persisted()?;
@@ -974,6 +1031,7 @@ rules:
                         .as_ref()
                         .map(|old| {
                             old.default_route != snapshot.default_route
+                                || old.dns_servers != snapshot.dns_servers
                                 || old.adapters != snapshot.adapters
                         })
                         .unwrap_or(true);

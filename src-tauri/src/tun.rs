@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     process::Command,
     sync::Mutex,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -209,11 +209,14 @@ fn set_runtime(state: &TunState, update: impl FnOnce(&mut TunRuntime)) -> Result
 
 fn active_runtime(state: &TunState) -> Result<Option<TunRuntime>, String> {
     let runtime = runtime_snapshot(state)?;
-    Ok(matches!(
+    let active = matches!(
         runtime.status,
         TunStatus::Starting | TunStatus::Running | TunStatus::Stopping
-    )
-    .then_some(runtime))
+    ) || (runtime.status == TunStatus::Error
+        && runtime.previous_override.is_some()
+        && runtime.profile_id.is_some()
+        && runtime.snapshot.is_some());
+    Ok(active.then_some(runtime))
 }
 
 pub(crate) fn is_active(app: &AppHandle) -> bool {
@@ -269,6 +272,8 @@ async fn rollback_enable(
         if let Err(error) = config::apply_config(app.clone(), profile_id.to_string()).await {
             recovery_error = Some(error);
         }
+    } else if let Err(error) = config::restore_profile_config(app, profile_id) {
+        recovery_error = Some(error);
     }
     if recovery_error.is_none() {
         let _ = clear_persisted(app);
@@ -322,7 +327,10 @@ async fn enable_tun(
         snapshot: Some(snapshot.clone()),
     };
     set_runtime(state, |current| *current = runtime.clone())?;
-    write_persisted(app, &persisted_for(&runtime)?)?;
+    if let Err(error) = write_persisted(app, &persisted_for(&runtime)?) {
+        let _ = set_runtime(state, |current| *current = TunRuntime::default());
+        return Err(format!("保存 TUN 恢复状态失败：{error}"));
+    }
 
     if let Err(error) = config::set_tun_enabled(app, true) {
         return rollback_enable(
@@ -375,11 +383,15 @@ async fn disable_tun(
         return response(state);
     };
     let profile_id = profile_id.or(active.profile_id.clone()).unwrap_or_default();
+    let previous_override = active
+        .previous_override
+        .clone()
+        .ok_or_else(|| "TUN 缺少恢复用 Override 快照".to_string())?;
     set_runtime(state, |runtime| {
         runtime.status = TunStatus::Stopping;
         runtime.message = None;
     })?;
-    if let Err(error) = config::set_tun_enabled(app, false) {
+    if let Err(error) = config::restore_override_content(app, &previous_override) {
         set_error(state, format!("写入 TUN 停止配置失败：{error}"))?;
         return Err(error);
     }
@@ -438,7 +450,9 @@ pub async fn restore_for_lifecycle(app: &AppHandle, state: &TunState) -> Result<
     };
     config::restore_override_content(app, &persisted.previous_override)?;
     if mihomo::is_running().await {
-        config::apply_config(app.clone(), persisted.profile_id).await?;
+        config::apply_config(app.clone(), persisted.profile_id.clone()).await?;
+    } else {
+        config::restore_profile_config(app, &persisted.profile_id)?;
     }
     clear_persisted(app)?;
     set_runtime(state, |current| *current = TunRuntime::default())?;
@@ -458,7 +472,8 @@ pub async fn on_mihomo_exit(app: &AppHandle) {
     let Some(persisted) = persisted else {
         return;
     };
-    let result = config::restore_override_content(app, &persisted.previous_override);
+    let result = config::restore_override_content(app, &persisted.previous_override)
+        .and_then(|_| config::restore_profile_config(app, &persisted.profile_id));
     if result.is_ok() {
         let _ = clear_persisted(app);
     }
@@ -487,6 +502,8 @@ pub async fn recover_after_startup(app: AppHandle) {
         config::apply_config(app.clone(), persisted.profile_id.clone())
             .await
             .map(|_| ())
+    } else if restore.is_ok() {
+        config::restore_profile_config(&app, &persisted.profile_id)
     } else {
         restore.map(|_| ())
     };
@@ -508,6 +525,7 @@ pub async fn recover_after_startup(app: AppHandle) {
 
 pub fn start_monitor(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
+        let mut last_tick = Instant::now();
         loop {
             tokio::time::sleep(Duration::from_secs(12)).await;
             let Some(state) = app.try_state::<TunState>() else {
@@ -520,17 +538,21 @@ pub fn start_monitor(app: AppHandle) {
                 on_mihomo_exit(&app).await;
                 continue;
             }
+            let wake_gap = last_tick.elapsed() > Duration::from_secs(30);
+            last_tick = Instant::now();
             let Ok(current) = capture_snapshot().await else {
                 continue;
             };
-            let changed = runtime
-                .snapshot
-                .as_ref()
-                .map(|previous| {
-                    previous.default_route != current.default_route
-                        || previous.adapters != current.adapters
-                })
-                .unwrap_or(false);
+            let changed = wake_gap
+                || runtime
+                    .snapshot
+                    .as_ref()
+                    .map(|previous| {
+                        previous.default_route != current.default_route
+                            || previous.dns_servers != current.dns_servers
+                            || previous.adapters != current.adapters
+                    })
+                    .unwrap_or(false);
             if !changed {
                 continue;
             }

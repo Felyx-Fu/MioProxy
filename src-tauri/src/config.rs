@@ -273,6 +273,16 @@ pub(crate) fn build_value_at(data_dir: &Path, profile_id: &str) -> Result<BuiltC
     })
 }
 
+pub(crate) fn restore_profile_config_at(data_dir: &Path, profile_id: &str) -> Result<(), String> {
+    let built = build_value_at(data_dir, profile_id)?;
+    let yaml = serde_yaml::to_string(&built.value).map_err(|e| format!("生成恢复配置失败：{e}"))?;
+    write_atomic(&config_path_at(data_dir), yaml.as_bytes())
+}
+
+pub(crate) fn restore_profile_config(app: &AppHandle, profile_id: &str) -> Result<(), String> {
+    restore_profile_config_at(&app_data_dir(app)?, profile_id)
+}
+
 fn build_value(
     app: &AppHandle,
     profile_id: &str,
@@ -578,7 +588,10 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{merge_values, restore_override_content_at, set_tun_enabled_at, validate_config};
+    use super::{
+        merge_values, restore_override_content_at, restore_profile_config_at, set_tun_enabled_at,
+        validate_config,
+    };
     use serde_yaml::Value;
 
     #[test]
@@ -635,6 +648,47 @@ mod tests {
         restore_override_content_at(&data_dir, "dns:\n  enable: true\n").unwrap();
         let restored = fs::read_to_string(override_path).unwrap();
         assert_eq!(restored, "dns:\n  enable: true\n");
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn restores_stable_config_without_tun_after_core_exit() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "mioproxy-config-recovery-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&data_dir).unwrap();
+        let source_path = data_dir.join("profile.yaml");
+        fs::write(
+            &source_path,
+            "mixed-port: 7890\nproxies: []\nproxy-groups: []\nrules: [MATCH,DIRECT]\n",
+        )
+        .unwrap();
+        fs::write(
+            data_dir.join("profiles.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "id": "profile-1",
+                "name": "Recovery",
+                "url": "https://example.invalid/profile",
+                "filePath": source_path,
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(data_dir.join("config.yaml"), "tun:\n  enable: true\n").unwrap();
+
+        restore_profile_config_at(&data_dir, "profile-1").unwrap();
+        let restored = fs::read_to_string(data_dir.join("config.yaml")).unwrap();
+        let value = serde_yaml::from_str::<Value>(&restored).unwrap();
+        assert!(value.get("tun").is_none());
+        assert_eq!(
+            value["external-controller"].as_str(),
+            Some("127.0.0.1:9090")
+        );
+
         let _ = fs::remove_dir_all(data_dir);
     }
 }

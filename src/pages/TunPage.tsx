@@ -45,7 +45,7 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled }: {
   }, [load]);
 
   async function toggle() {
-    const enabled = snapshot?.status !== "running";
+    const enabled = snapshot?.status === "disabled";
     if (enabled && !profileId) {
       setError("请先选择已下载的 Profile");
       return;
@@ -70,7 +70,7 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled }: {
     <section className="page-stack tun-page">
       <header className="page-header">
         <div><p className="eyebrow">TUN / WINDOWS ROUTE</p><h1>透明代理</h1><p>通过 Mihomo TUN 接管系统流量。启用前会检查管理员权限并保存默认路由、DNS 和网络适配器快照。</p></div>
-        <button className={status === "running" ? "power-button stop" : "power-button"} type="button" onClick={() => void toggle()} disabled={loading || transitioning || blocked && status !== "running"}>
+        <button className={status === "running" ? "power-button stop" : "power-button"} type="button" onClick={() => void toggle()} disabled={loading || transitioning || blocked && status !== "running" && status !== "error"}>
           <CirclePower size={17} />{loading ? "处理中…" : STATUS_LABELS[status]}
         </button>
       </header>
