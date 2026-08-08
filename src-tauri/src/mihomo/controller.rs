@@ -124,18 +124,16 @@ pub(crate) fn initialize_secret(data_dir: &Path) -> Result<(), String> {
         return Ok(());
     }
     let config_path = data_dir.join("config.yaml");
-    if config_path.exists() {
-        if let Ok(content) = fs::read_to_string(&config_path) {
-            if let Ok(mut value) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                if let Some(map) = value.as_mapping_mut() {
-                    map.insert(
-                        serde_yaml::Value::String("secret".to_string()),
-                        serde_yaml::Value::String(secret.clone()),
-                    );
-                    if let Ok(yaml) = serde_yaml::to_string(&value) {
-                        crate::config::write_atomic(&config_path, yaml.as_bytes())
-                            .map_err(|e| format!("更新 Mihomo Controller 令牌失败：{e}"))?;
-                    }
+    if let Some(content) = crate::config::read_text_file_at(&config_path, "读取 Mihomo 配置")? {
+        if let Ok(mut value) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+            if let Some(map) = value.as_mapping_mut() {
+                map.insert(
+                    serde_yaml::Value::String("secret".to_string()),
+                    serde_yaml::Value::String(secret.clone()),
+                );
+                if let Ok(yaml) = serde_yaml::to_string(&value) {
+                    crate::config::write_atomic(&config_path, yaml.as_bytes())
+                        .map_err(|e| format!("更新 Mihomo Controller 令牌失败：{e}"))?;
                 }
             }
         }

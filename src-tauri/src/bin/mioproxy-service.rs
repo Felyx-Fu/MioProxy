@@ -117,7 +117,8 @@ mod windows_service_host {
         fs::create_dir_all(&data_dir).map_err(|e| format!("创建 Service 数据目录失败：{e}"))?;
         let data_dir =
             fs::canonicalize(&data_dir).map_err(|e| format!("解析 Service 数据目录失败：{e}"))?;
-        service::ensure_install_user_sid(&data_dir)?;
+        let user_sid = option(args, "--user-sid").map(|value| value.to_string_lossy().into_owned());
+        service::ensure_install_user_sid(&data_dir, user_sid.as_deref())?;
         service::ensure_install_token(&data_dir)?;
         let manager = ServiceManager::local_computer(
             None::<&str>,
@@ -241,6 +242,14 @@ mod windows_service_host {
             if !stopped {
                 return Err("MioProxy Service 未能在 10 秒内停止".to_string());
             }
+        }
+        let final_status = service
+            .query_status()
+            .map_err(|e| format!("查询 MioProxy Service 停止结果失败：{e}"))?;
+        if final_status.exit_code != ServiceExitCode::NO_ERROR {
+            return Err(
+                "MioProxy Service 停止时未完成 TUN 恢复，已保留 Service 以便重试清理".to_string(),
+            );
         }
         service
             .delete()

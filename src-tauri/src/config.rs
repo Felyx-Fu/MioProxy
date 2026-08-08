@@ -189,7 +189,7 @@ fn ensure_not_reparse(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn read_text_file_at(path: &Path, label: &str) -> Result<Option<String>, String> {
+pub(crate) fn read_text_file_at(path: &Path, label: &str) -> Result<Option<String>, String> {
     #[cfg(not(windows))]
     if let Ok(metadata) = fs::symlink_metadata(path) {
         if metadata.file_type().is_symlink() {

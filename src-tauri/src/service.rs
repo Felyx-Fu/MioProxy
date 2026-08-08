@@ -116,9 +116,9 @@ mod windows_impl {
         Security::{
             Authorization::{
                 ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-                SDDL_REVISION_1,
+                GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
             },
-            GetTokenInformation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
+            OWNER_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
         },
         Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH},
         System::{
@@ -132,10 +132,7 @@ mod windows_impl {
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             },
             SystemInformation::GetTickCount64,
-            Threading::{
-                GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_SET_QUOTA,
-                PROCESS_TERMINATE,
-            },
+            Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
         },
     };
 
@@ -250,39 +247,16 @@ mod windows_impl {
         Ok(token)
     }
 
-    fn current_user_sid() -> Result<String, String> {
-        let mut token = std::ptr::null_mut();
-        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-            return Err("读取安装用户身份失败".to_string());
+    fn sid_to_string(
+        sid: windows_sys::Win32::Security::PSID,
+        label: &str,
+    ) -> Result<String, String> {
+        if sid.is_null() {
+            return Err(format!("{label}为空"));
         }
-        let mut size = 0;
-        unsafe {
-            let _ = GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut size);
-        }
-        if size == 0 {
-            unsafe { CloseHandle(token) };
-            return Err("读取安装用户 SID 大小失败".to_string());
-        }
-        let mut buffer = vec![0u8; size as usize];
-        let read = unsafe {
-            GetTokenInformation(
-                token,
-                TokenUser,
-                buffer.as_mut_ptr() as *mut std::ffi::c_void,
-                size,
-                &mut size,
-            )
-        };
-        if read == 0 {
-            unsafe { CloseHandle(token) };
-            return Err("读取安装用户 SID 失败".to_string());
-        }
-        let token_user = unsafe { &*(buffer.as_ptr() as *const TOKEN_USER) };
         let mut sid_text = std::ptr::null_mut();
-        let converted = unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut sid_text) };
-        if converted == 0 {
-            unsafe { CloseHandle(token) };
-            return Err("格式化安装用户 SID 失败".to_string());
+        if unsafe { ConvertSidToStringSidW(sid, &mut sid_text) } == 0 {
+            return Err(format!("格式化{label}失败"));
         }
         let mut length = 0;
         unsafe {
@@ -293,13 +267,63 @@ mod windows_impl {
         let sid = unsafe { String::from_utf16_lossy(std::slice::from_raw_parts(sid_text, length)) };
         unsafe {
             let _ = windows_sys::Win32::Foundation::LocalFree(sid_text as _);
-            CloseHandle(token);
         }
         Ok(sid)
     }
 
-    pub fn ensure_install_user_sid(data_dir: &Path) -> Result<(), String> {
-        let sid = current_user_sid()?;
+    fn data_dir_owner_sid(data_dir: &Path) -> Result<String, String> {
+        let path = data_dir
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let mut owner = std::ptr::null_mut();
+        let mut descriptor = std::ptr::null_mut();
+        let error = unsafe {
+            GetNamedSecurityInfoW(
+                path.as_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        let result = if error != 0 {
+            Err(format!("读取数据目录所有者失败：Windows 错误 {error}"))
+        } else {
+            sid_to_string(owner, "数据目录所有者 SID")
+        };
+        if !descriptor.is_null() {
+            unsafe {
+                let _ = windows_sys::Win32::Foundation::LocalFree(descriptor as _);
+            }
+        }
+        result
+    }
+
+    fn validate_sid(raw: &str) -> Result<String, String> {
+        let sid = raw.trim();
+        if !sid.starts_with("S-")
+            || sid
+                .chars()
+                .any(|character| !character.is_ascii_alphanumeric() && character != '-')
+        {
+            return Err("Service 安装用户 SID 无效".to_string());
+        }
+        Ok(sid.to_string())
+    }
+
+    pub fn ensure_install_user_sid(
+        data_dir: &Path,
+        explicit_sid: Option<&str>,
+    ) -> Result<(), String> {
+        let sid = match explicit_sid {
+            Some(sid) => validate_sid(sid)?,
+            None => data_dir_owner_sid(data_dir)?,
+        };
         write_atomic(&data_dir.join(USER_SID_FILE), sid.as_bytes())
             .map_err(|e| format!("保存 Service 安装用户身份失败：{e}"))
     }
@@ -1347,8 +1371,11 @@ rules:
         }
 
         async fn shutdown(&self) -> Result<(), String> {
+            let mut errors = Vec::new();
             if self.has_tun_recovery() {
-                let _ = self.disable_tun().await;
+                if let Err(error) = self.disable_tun().await {
+                    errors.push(format!("Service TUN 清理失败：{error}"));
+                }
             }
             if let Some(mut child) = self
                 .child
@@ -1356,10 +1383,18 @@ rules:
                 .map_err(|_| "Service Mihomo 状态锁异常")?
                 .take()
             {
-                let _ = child.kill();
-                let _ = child.wait();
+                if let Err(error) = child.kill() {
+                    errors.push(format!("Service 停止 Mihomo 失败：{error}"));
+                }
+                if let Err(error) = child.wait() {
+                    errors.push(format!("等待 Service Mihomo 退出失败：{error}"));
+                }
             }
-            Ok(())
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("；"))
+            }
         }
 
         async fn monitor(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
@@ -1579,14 +1614,7 @@ rules:
                 .map_err(|e| format!("读取 Service 安装用户身份失败：{e}"))?
                 .trim()
                 .to_string();
-            if !sid.starts_with("S-")
-                || sid
-                    .chars()
-                    .any(|character| !character.is_ascii_alphanumeric() && character != '-')
-            {
-                return Err("Service 安装用户 SID 无效".to_string());
-            }
-            sid
+            validate_sid(&sid)?
         };
         let sddl = format!("D:P(A;;GA;;;SY)(A;;GA;;;{sid})\0");
         let wide = sddl.encode_utf16().collect::<Vec<u16>>();
@@ -1738,19 +1766,17 @@ rules:
         let _ = runtime.recover().await?;
         let monitor = tokio::spawn(runtime.clone().monitor(shutdown.clone()));
         let mut first = true;
-        loop {
+        let shutdown_result = loop {
             let Some(server) =
                 create_server_until_ready(first, &runtime.data_dir, &mut shutdown).await?
             else {
-                let _ = runtime.shutdown().await;
-                break;
+                break runtime.shutdown().await;
             };
             first = false;
             tokio::select! {
                 changed = shutdown.changed() => {
                     if changed.is_err() || *shutdown.borrow() {
-                        let _ = runtime.shutdown().await;
-                        break;
+                        break runtime.shutdown().await;
                     }
                 }
                 connected = server.connect() => {
@@ -1759,9 +1785,9 @@ rules:
                     }
                 }
             }
-        }
+        };
         monitor.abort();
-        Ok(())
+        shutdown_result
     }
 
     pub async fn run_service_console(

@@ -628,6 +628,9 @@ pub async fn tun_status(
     app: AppHandle,
     state: State<'_, TunState>,
 ) -> Result<TunStatusSnapshot, String> {
+    if active_runtime(&state)?.is_some() {
+        return response(&state);
+    }
     if let Some(snapshot) = crate::service::service_tun_status(&app).await? {
         return Ok(snapshot);
     }
@@ -643,6 +646,12 @@ pub async fn tun_set_enabled(
 ) -> Result<TunStatusSnapshot, String> {
     let _transition = lock_transitions().await;
     let system_proxy_enabled = system_proxy::status(&app).await?.enabled;
+    if active_runtime(&state)?.is_some() {
+        if enabled {
+            return Err("GUI TUN 会话仍在运行，请先关闭本地 TUN".to_string());
+        }
+        return disable_tun(&app, &state).await;
+    }
     if let Some(snapshot) =
         crate::service::request_tun(&app, enabled, profile_id.clone(), system_proxy_enabled).await?
     {
