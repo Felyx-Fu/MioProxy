@@ -329,6 +329,25 @@ pub async fn mihomo_proxies() -> Result<Value, String> {
     api_get("/proxies").await
 }
 
+#[tauri::command]
+pub async fn mihomo_rules() -> Result<Value, String> {
+    api_get("/rules").await
+}
+
+#[tauri::command]
+pub async fn mihomo_rule_providers() -> Result<Value, String> {
+    api_get("/providers/rules").await
+}
+
+#[tauri::command]
+pub async fn mihomo_rule_provider_update(name: String) -> Result<Value, String> {
+    api_put(
+        &format!("/providers/rules/{}", encode_path_segment(&name)),
+        Value::Null,
+    )
+    .await
+}
+
 pub async fn current_node() -> Option<String> {
     api_get("/proxies").await.ok().and_then(|value| {
         value

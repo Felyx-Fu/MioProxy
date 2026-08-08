@@ -39,6 +39,34 @@ export type ProxiesResponse = {
   proxies: Record<string, ProxyGroup>;
 };
 
+export type MihomoRule = {
+  type?: string;
+  payload?: string;
+  proxy?: string;
+  subRules?: string[];
+  [key: string]: unknown;
+};
+
+export type RulesResponse = {
+  rules?: MihomoRule[];
+  [key: string]: unknown;
+};
+
+export type RuleProvider = {
+  behavior?: string;
+  format?: string;
+  type?: string;
+  path?: string;
+  url?: string;
+  size?: number;
+  updatedAt?: string;
+  updateAt?: string;
+  vehicleType?: string;
+  [key: string]: unknown;
+};
+
+export type RuleProvidersResponse = Record<string, RuleProvider> | { providers?: Record<string, RuleProvider> };
+
 export type DelayResponse = {
   delay: number;
 };
@@ -98,12 +126,47 @@ export type Profile = {
   nodeCount: number | null;
 };
 
+export type OverrideSnapshot = {
+  content: string;
+  path: string;
+  hasContent: boolean;
+  updatedAt: number | null;
+};
+
+export type ConfigPreview = {
+  profileId: string;
+  profileName: string;
+  yaml: string;
+  overrideActive: boolean;
+};
+
+export type ConfigApplyResult = {
+  profileId: string;
+  profileName: string;
+  path: string;
+  controllerValidated: boolean;
+  overrideActive: boolean;
+};
+
+export type DnsSettings = {
+  enabled: boolean;
+  enhancedMode: string;
+  defaultNameserver: string[];
+  nameserver: string[];
+  fallback: string[];
+  fakeIpFilterMode: string;
+  fakeIpFilter: string[];
+};
+
 export const mihomoApi = {
   start: () => invoke<CoreStatus>("mihomo_start"),
   stop: () => invoke<CoreStatus>("mihomo_stop"),
   status: () => invoke<CoreStatus>("mihomo_status"),
   version: () => invoke<MihomoVersion>("mihomo_version"),
   proxies: () => invoke<ProxiesResponse>("mihomo_proxies"),
+  rules: () => invoke<RulesResponse>("mihomo_rules"),
+  ruleProviders: () => invoke<RuleProvidersResponse>("mihomo_rule_providers"),
+  ruleProviderUpdate: (name: string) => invoke<unknown>("mihomo_rule_provider_update", { name }),
   reload: () => invoke<unknown>("mihomo_reload"),
   selectProxy: (group: string, proxy: string) => invoke<unknown>("mihomo_select_proxy", { group, proxy }),
   proxyDelay: (proxy: string, url?: string) => invoke<DelayResponse>("mihomo_proxy_delay", { proxy, url }),
@@ -119,4 +182,10 @@ export const mihomoApi = {
   profileDownload: (id: string) => invoke<Profile>("profile_download", { id }),
   profileApply: (id: string) => invoke<string>("profile_apply", { id }),
   profileRemove: (id: string) => invoke<void>("profile_remove", { id }),
+  overrideGet: () => invoke<OverrideSnapshot>("override_get"),
+  overrideSet: (content: string) => invoke<OverrideSnapshot>("override_set", { content }),
+  configPreview: (profileId: string) => invoke<ConfigPreview>("config_preview", { profileId }),
+  configApply: (profileId: string) => invoke<ConfigApplyResult>("config_apply", { profileId }),
+  dnsGet: (profileId: string) => invoke<DnsSettings>("dns_get", { profileId }),
+  dnsSet: (settings: DnsSettings) => invoke<OverrideSnapshot>("dns_set", { settings }),
 };

@@ -1,3 +1,4 @@
+mod config;
 mod mihomo;
 mod profiles;
 mod startup;
@@ -5,9 +6,10 @@ mod system_proxy;
 mod tray;
 
 use mihomo::{
-    mihomo_close_all_connections, mihomo_close_connection, mihomo_connections,
-    mihomo_proxies, mihomo_proxy_delay, mihomo_reload, mihomo_select_proxy, mihomo_start,
-    mihomo_status, mihomo_stop, mihomo_version, CoreState,
+    mihomo_close_all_connections, mihomo_close_connection, mihomo_connections, mihomo_proxies,
+    mihomo_proxy_delay, mihomo_reload, mihomo_rule_provider_update, mihomo_rule_providers,
+    mihomo_rules, mihomo_select_proxy, mihomo_start, mihomo_status, mihomo_stop, mihomo_version,
+    CoreState,
 };
 use profiles::{profile_add, profile_apply, profile_download, profile_list, profile_remove};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,6 +59,9 @@ pub fn run() {
             mihomo_status,
             mihomo_version,
             mihomo_proxies,
+            mihomo_rules,
+            mihomo_rule_providers,
+            mihomo_rule_provider_update,
             mihomo_reload,
             mihomo_select_proxy,
             mihomo_proxy_delay,
@@ -72,6 +77,12 @@ pub fn run() {
             profile_download,
             profile_apply,
             profile_remove,
+            config::override_get,
+            config::override_set,
+            config::config_preview,
+            config::config_apply,
+            config::dns_get,
+            config::dns_set,
         ])
         .build(tauri::generate_context!())
         .expect("error while building MioProxy")
