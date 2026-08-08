@@ -8,6 +8,9 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { LogsPage } from "./pages/LogsPage";
 import { ProfilesPage } from "./pages/ProfilesPage";
 import { ProxiesPage } from "./pages/ProxiesPage";
+import { RulesPage } from "./pages/RulesPage";
+import { DnsPage } from "./pages/DnsPage";
+import { OverridesPage } from "./pages/OverridesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { useConnections } from "./hooks/useConnections";
 import { useTraffic } from "./hooks/useTraffic";
@@ -19,6 +22,7 @@ export default function App() {
   const [version, setVersion] = useState<MihomoVersion | null>(null);
   const [proxies, setProxies] = useState<ProxiesResponse | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [proxyStatus, setProxyStatus] = useState<SystemProxyStatus | null>(null);
   const [proxyState, setProxyState] = useState<ProxyState>("disabled");
   const [startup, setStartup] = useState<StartupSettings | null>(null);
@@ -113,6 +117,7 @@ export default function App() {
   useEffect(() => {
     void mihomoApi.profileList().then((next) => {
       setProfiles(next);
+      setSelectedProfileId((current) => current ?? next[0]?.id ?? null);
       setProfilesLoaded(true);
     }).catch((e) => {
       setProfilesLoaded(true);
@@ -201,6 +206,7 @@ export default function App() {
     try {
       const profile = await mihomoApi.profileAdd(name, url);
       setProfiles((current) => [...current, profile]);
+      setSelectedProfileId(profile.id);
       pushToast("success", "Profile 已添加");
     } catch (e) {
       setError(errorMessage(e));
@@ -229,12 +235,9 @@ export default function App() {
     setError(null);
     try {
       await mihomoApi.profileApply(id);
-      if (status?.running) {
-        setCoreState("reloading");
-        await mihomoApi.reload();
-      }
+      setSelectedProfileId(id);
       await refreshStatus();
-      pushToast("success", status?.running ? "Profile 已应用并重载内核" : "Profile 已应用");
+      pushToast("success", "Profile 已通过 Mihomo 校验并加载");
     } catch (e) {
       const message = errorMessage(e);
       setError(message);
@@ -249,7 +252,9 @@ export default function App() {
     setError(null);
     try {
       await mihomoApi.profileRemove(id);
-      setProfiles((current) => current.filter((item) => item.id !== id));
+      const nextProfiles = profiles.filter((item) => item.id !== id);
+      setProfiles(nextProfiles);
+      setSelectedProfileId((selected) => selected === id ? nextProfiles[0]?.id ?? null : selected);
       pushToast("success", "Profile 已删除");
     } catch (e) {
       const message = errorMessage(e);
@@ -352,8 +357,11 @@ export default function App() {
         {page === "home" && <DashboardPage status={status} coreState={coreState} version={version} proxyStatus={proxyStatus} proxyState={proxyState} traffic={traffic.snapshot} connectionCount={connections.data?.connections.length ?? 0} currentNode={currentNode} delay={currentNode ? delayByProxy[currentNode] ?? null : null} memory={connections.data?.memory ?? null} busy={busy} error={error} onToggle={toggleCore} onToggleProxy={toggleSystemProxy} />}
         {page === "connections" && <ConnectionsPage state={connections} onRefresh={connections.refresh} onClose={connections.closeConnection} onCloseAll={connections.closeAllConnections} />}
         {page === "logs" && <LogsPage />}
-        {page === "profiles" && <ProfilesPage profiles={profiles} busyId={profileBusyId} error={error} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} />}
+        {page === "profiles" && <ProfilesPage profiles={profiles} selectedId={selectedProfileId} busyId={profileBusyId} error={error} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} />}
         {page === "proxies" && <ProxiesPage data={proxies} loading={proxyLoading} busyProxy={proxyBusy} delayByProxy={delayByProxy} profilesLoaded={profilesLoaded} profileCount={profiles.length} onRefresh={refreshProxies} onSelect={selectProxy} onDelay={testProxyDelay} />}
+        {page === "rules" && <RulesPage running={Boolean(status?.running)} />}
+        {page === "dns" && <DnsPage profileId={selectedProfileId} />}
+        {page === "overrides" && <OverridesPage profileId={selectedProfileId} />}
         {page === "settings" && <SettingsPage status={status} coreState={coreState} proxyStatus={proxyStatus} proxyState={proxyState} startup={startup} busy={busy || settingsBusy} onToggleProxy={toggleSystemProxy} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} />}
       </main>
       <ToastHost toasts={toasts} onDismiss={dismissToast} />

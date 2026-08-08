@@ -4,8 +4,9 @@ import { ConfirmDialog } from "../components/Feedback";
 import type { Profile } from "../api/mihomo";
 import { formatDate, maskUrl } from "../utils/format";
 
-export function ProfilesPage({ profiles, busyId, error, onAdd, onDownload, onApply, onRemove }: {
+export function ProfilesPage({ profiles, selectedId, busyId, error, onAdd, onDownload, onApply, onRemove }: {
   profiles: Profile[];
+  selectedId: string | null;
   busyId: string | null;
   error: string | null;
   onAdd: (name: string, url: string) => Promise<void>;
@@ -69,7 +70,7 @@ export function ProfilesPage({ profiles, busyId, error, onAdd, onDownload, onApp
             const busy = busyId === profile.id;
             return <article className="profile-card panel" key={profile.id}>
               <div className="profile-card-icon"><FolderOpen size={20} /></div>
-              <div className="profile-card-copy"><div className="profile-card-title"><strong>{profile.name}</strong><span className={profile.filePath ? "profile-status ready" : "profile-status"}>{profile.filePath ? "已缓存" : "未下载"}</span></div><small className="profile-safe-url">{maskUrl(profile.url)}</small><div className="profile-meta"><span><CalendarClock size={13} />{profile.updatedAt ? `更新于 ${formatDate(profile.updatedAt)}` : "等待首次更新"}</span><span><NetworkCount count={profile.nodeCount} /></span></div></div>
+              <div className="profile-card-copy"><div className="profile-card-title"><strong>{profile.name}</strong><span className={selectedId === profile.id || profile.filePath ? "profile-status ready" : "profile-status"}>{selectedId === profile.id ? "当前构建" : profile.filePath ? "已缓存" : "未下载"}</span></div><small className="profile-safe-url">{maskUrl(profile.url)}</small><div className="profile-meta"><span><CalendarClock size={13} />{profile.updatedAt ? `更新于 ${formatDate(profile.updatedAt)}` : "等待首次更新"}</span><span><NetworkCount count={profile.nodeCount} /></span></div></div>
               <div className="profile-actions"><button className="secondary-button" onClick={() => void onDownload(profile.id)} disabled={busy}><Download size={16} /> {busy ? "处理中…" : "更新"}</button><button className="secondary-button" onClick={() => void onApply(profile.id)} disabled={busy || !profile.filePath}><FileCheck2 size={16} /> 应用</button><button className="icon-button danger" aria-label={`删除 ${profile.name}`} onClick={() => setConfirming(profile)} disabled={busy}><Trash2 size={16} /></button></div>
             </article>;
           })}

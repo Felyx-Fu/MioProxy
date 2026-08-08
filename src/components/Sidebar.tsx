@@ -1,6 +1,6 @@
-import { Activity, FileText, Globe2, Home, Network, Radio, Settings2, Shield } from "lucide-react";
+import { Activity, Braces, FileText, Globe2, Home, Network, Radio, Settings2, Shield, Waypoints, Workflow } from "lucide-react";
 
-export type Page = "home" | "connections" | "logs" | "profiles" | "proxies" | "settings";
+export type Page = "home" | "connections" | "logs" | "profiles" | "proxies" | "rules" | "dns" | "overrides" | "settings";
 
 const items: Array<{ id: Page; label: string; icon: typeof Home }> = [
   { id: "home", label: "Dashboard", icon: Home },
@@ -8,6 +8,9 @@ const items: Array<{ id: Page; label: string; icon: typeof Home }> = [
   { id: "logs", label: "日志", icon: FileText },
   { id: "profiles", label: "订阅", icon: Globe2 },
   { id: "proxies", label: "节点", icon: Network },
+  { id: "rules", label: "规则", icon: Workflow },
+  { id: "dns", label: "DNS", icon: Waypoints },
+  { id: "overrides", label: "Override", icon: Braces },
   { id: "settings", label: "设置", icon: Settings2 },
 ];
 
@@ -33,7 +36,7 @@ export function Sidebar({ page, onChange }: { page: Page; onChange: (page: Page)
 
       <div className="sidebar-foot">
         <Activity size={16} />
-        <span>V0.5 Signal Deck</span>
+        <span>V0.6 Config Layer</span>
       </div>
     </aside>
   );
