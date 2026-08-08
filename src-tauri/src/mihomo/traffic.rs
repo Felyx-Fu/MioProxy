@@ -5,6 +5,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use chrono::{Datelike, Local, NaiveDate};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -62,6 +63,22 @@ struct StoredTotals {
     down: u64,
 }
 
+impl StoredTotals {
+    fn start_day(&mut self, day: u64) {
+        if self.day != day {
+            self.day = day;
+            self.up = 0;
+            self.down = 0;
+        }
+    }
+
+    fn add_sample(&mut self, day: u64, up: u64, down: u64) {
+        self.start_day(day);
+        self.up = self.up.saturating_add(up);
+        self.down = self.down.saturating_add(down);
+    }
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -69,8 +86,13 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
+fn date_key(date: NaiveDate) -> u64 {
+    let year = u64::try_from(date.year()).unwrap_or_default();
+    year * 10_000 + u64::from(date.month()) * 100 + u64::from(date.day())
+}
+
 fn today_key() -> u64 {
-    now_millis() / 86_400_000
+    date_key(Local::now().date_naive())
 }
 
 fn totals_path(app: &AppHandle) -> Option<std::path::PathBuf> {
@@ -177,25 +199,24 @@ async fn run(app: AppHandle) {
                     };
                     let elapsed = last_sample.elapsed().as_secs_f64().clamp(0.0, 5.0);
                     last_sample = Instant::now();
+                    totals.start_day(today_key());
                     if let (Some(up_total), Some(down_total)) =
                         (incoming.up_total, incoming.down_total)
                     {
                         if let Some((previous_up, previous_down)) = previous_totals {
-                            totals.up = totals
-                                .up
-                                .saturating_add(up_total.saturating_sub(previous_up));
-                            totals.down = totals
-                                .down
-                                .saturating_add(down_total.saturating_sub(previous_down));
+                            totals.add_sample(
+                                today_key(),
+                                up_total.saturating_sub(previous_up),
+                                down_total.saturating_sub(previous_down),
+                            );
                         }
                         previous_totals = Some((up_total, down_total));
                     } else {
-                        totals.up = totals
-                            .up
-                            .saturating_add((incoming.up.max(0.0) * elapsed) as u64);
-                        totals.down = totals
-                            .down
-                            .saturating_add((incoming.down.max(0.0) * elapsed) as u64);
+                        totals.add_sample(
+                            today_key(),
+                            (incoming.up.max(0.0) * elapsed) as u64,
+                            (incoming.down.max(0.0) * elapsed) as u64,
+                        );
                     }
                     let timestamp = now_millis();
                     history.push_back(TrafficPoint {
@@ -232,7 +253,8 @@ async fn run(app: AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::IncomingTraffic;
+    use super::{date_key, IncomingTraffic, StoredTotals};
+    use chrono::NaiveDate;
 
     #[test]
     fn accepts_mihomo_traffic_rates() {
@@ -244,5 +266,27 @@ mod tests {
         assert_eq!(payload.down as u64, 8_420_000);
         assert_eq!(payload.up_total, Some(13_700_000));
         assert_eq!(payload.down_total, Some(84_200_000));
+    }
+
+    #[test]
+    fn daily_totals_accumulate_and_reset_on_the_next_day() {
+        let mut totals = StoredTotals {
+            day: 10,
+            up: 100,
+            down: 200,
+        };
+
+        totals.add_sample(10, 25, 50);
+        assert_eq!((totals.day, totals.up, totals.down), (10, 125, 250));
+
+        totals.add_sample(11, 5, 10);
+        assert_eq!((totals.day, totals.up, totals.down), (11, 5, 10));
+    }
+
+    #[test]
+    fn date_keys_follow_calendar_dates() {
+        let date = NaiveDate::from_ymd_opt(2026, 8, 8).expect("valid calendar date");
+
+        assert_eq!(date_key(date), 20_260_808);
     }
 }
