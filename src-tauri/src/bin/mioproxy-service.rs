@@ -47,6 +47,12 @@ mod windows_service_host {
                 .map_err(|e| e.to_string())?;
             return runtime.block_on(service::run_service_console(data_dir, mihomo_path));
         }
+        if !has_flag(&args, "--service") {
+            return Err(
+                "MioProxy Service 必须由 Windows SCM 以 --service 模式启动；已拒绝进入 Service dispatcher"
+                    .to_string(),
+            );
+        }
         service_dispatcher::start(SERVICE_NAME, ffi_service_main)
             .map_err(|e| format!("启动 Windows Service dispatcher 失败：{e}"))
     }
@@ -59,6 +65,21 @@ mod windows_service_host {
         args.windows(2)
             .find(|pair| pair[0] == name)
             .map(|pair| pair[1].clone())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::has_flag;
+        use std::ffi::OsString;
+
+        #[test]
+        fn dispatcher_requires_explicit_service_mode() {
+            let service_args = vec![OsString::from("--service")];
+            let gui_args = vec![OsString::from("--data-dir"), OsString::from("C:\\data")];
+
+            assert!(has_flag(&service_args, "--service"));
+            assert!(!has_flag(&gui_args, "--service"));
+        }
     }
 
     fn default_data_dir() -> PathBuf {

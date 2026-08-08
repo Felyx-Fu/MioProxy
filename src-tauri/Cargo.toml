@@ -4,6 +4,15 @@ version = "0.1.0"
 description = "A Windows desktop proxy client powered by a separate Mihomo core"
 authors = ["Felyx"]
 edition = "2021"
+default-run = "mioproxy"
+
+[[bin]]
+name = "mioproxy"
+path = "src/main.rs"
+
+[[bin]]
+name = "mioproxy-service"
+path = "src/bin/mioproxy-service.rs"
 
 [lib]
 name = "mioproxy_lib"
