@@ -1309,6 +1309,21 @@ rules:
         use super::*;
         use std::time::{SystemTime, UNIX_EPOCH};
 
+        #[test]
+        fn serializes_service_command_fields_in_camel_case() {
+            let value = serde_json::to_value(ServiceCommand::TunSetEnabled {
+                enabled: true,
+                profile_id: Some("profile-1".to_string()),
+                system_proxy_enabled: false,
+            })
+            .unwrap();
+            assert_eq!(value["command"], "tunSetEnabled");
+            assert_eq!(value["profileId"], "profile-1");
+            assert_eq!(value["systemProxyEnabled"], false);
+            assert!(value.get("profile_id").is_none());
+            assert!(value.get("system_proxy_enabled").is_none());
+        }
+
         #[tokio::test]
         async fn named_pipe_status_round_trip() {
             let data_dir = std::env::temp_dir().join(format!(
