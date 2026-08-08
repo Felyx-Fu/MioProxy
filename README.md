@@ -2,7 +2,7 @@
 
 一个从零搭建的 Windows 桌面代理客户端骨架：**Tauri 2 + React + TypeScript + Rust + Mihomo sidecar**。
 
-## V0.1 已完成
+## V0.1 已实现
 
 - Tauri 2 桌面应用骨架
 - React/TypeScript 深色桌面 UI

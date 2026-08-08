@@ -2,7 +2,7 @@
 
 ## Mihomo
 
-MioProxy V0.1 is designed to launch Mihomo as a separate sidecar process.
+MioProxy launches Mihomo as a separate sidecar process.
 
 - Project: MetaCubeX/mihomo
 - License: GPL-3.0
