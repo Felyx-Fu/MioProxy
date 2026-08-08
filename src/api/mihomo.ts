@@ -180,6 +180,7 @@ export type ServiceConnectionStatus = {
   reachable: boolean;
   protocolVersion: number;
   serviceVersion: string | null;
+  admin: boolean;
   ownsCore: boolean;
   coreRunning: boolean;
   ownershipConflict: boolean;

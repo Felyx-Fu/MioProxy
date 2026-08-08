@@ -70,7 +70,7 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled }: {
     <section className="page-stack tun-page">
       <header className="page-header">
         <div><p className="eyebrow">TUN / WINDOWS ROUTE</p><h1>透明代理</h1><p>通过 Mihomo TUN 接管系统流量。启用前会检查管理员权限并保存默认路由、DNS 和网络适配器快照。</p></div>
-        <button className={status === "running" ? "power-button stop" : "power-button"} type="button" onClick={() => void toggle()} disabled={loading || transitioning || blocked && status !== "running" && status !== "error"}>
+        <button className={status === "running" ? "power-button stop" : "power-button"} type="button" onClick={() => void toggle()} disabled={loading || !snapshot || transitioning || blocked && status !== "running" && status !== "error"}>
           <CirclePower size={17} />{loading ? "处理中…" : STATUS_LABELS[status]}
         </button>
       </header>
@@ -81,7 +81,7 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled }: {
       <div className={`tun-status-card panel ${status}`}>
         <div className={`tun-status-dot ${status}`} />
         <div className="tun-status-copy"><span>TRANSPARENT ROUTE</span><strong>{STATUS_LABELS[status]}</strong><small>{STATUS_COPY[status]}</small></div>
-        <div className="tun-status-meta"><span>管理员权限 <b>{snapshot?.admin ? "已满足" : service?.reachable ? "由 Service 提供" : "需要提升"}</b></span><span>内核 <b>{coreRunning ? "Running" : "Disabled"}</b></span><span>所有权 <b>{service?.reachable ? service.ownsCore ? "MioProxy Service" : service.ownershipConflict ? "冲突" : "Service 在线" : "GUI fallback"}</b></span><span>系统代理 <b>{systemProxyEnabled ? "冲突" : "关闭"}</b></span></div>
+        <div className="tun-status-meta"><span>管理员权限 <b>{snapshot?.admin ? "已满足" : service?.admin ? "由 Service 提供" : "需要提升"}</b></span><span>内核 <b>{coreRunning ? "Running" : "Disabled"}</b></span><span>所有权 <b>{service?.reachable ? service.ownsCore ? "MioProxy Service" : service.ownershipConflict ? "冲突" : "Service 在线" : "GUI fallback"}</b></span><span>系统代理 <b>{systemProxyEnabled ? "冲突" : "关闭"}</b></span></div>
       </div>
 
       {(!coreRunning || !profileId || systemProxyEnabled) && <div className="tun-prerequisite panel"><AlertTriangle size={17} /><div><strong>启用前置条件</strong><span>{!coreRunning ? "请先启动 Mihomo。" : !profileId ? "请先添加并下载一个 Profile。" : "请先关闭系统代理，避免 auto-route 和 Windows Proxy 同时接管。"}</span></div></div>}
