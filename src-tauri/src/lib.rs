@@ -26,6 +26,12 @@ pub struct AppLifecycle {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .manage(CoreState::default())
         .manage(mihomo::traffic::TrafficStreamState::default())
         .manage(mihomo::logs::LogStreamState::default())

@@ -27,6 +27,8 @@ pub enum ServiceCommand {
         #[serde(rename = "systemProxyEnabled")]
         system_proxy_enabled: bool,
     },
+    #[cfg(feature = "validation-fault-injection")]
+    ValidationCrashManagedCore,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -800,6 +802,25 @@ mod windows_impl {
             Ok(())
         }
 
+        #[cfg(feature = "validation-fault-injection")]
+        async fn validation_crash_managed_core(&self) -> Result<Value, String> {
+            let _transition = self.tun_transition.lock().await;
+            self.refresh_child()?;
+            let mut child = self.child.lock().map_err(|_| "Service Mihomo 状态锁异常")?;
+            let process = child
+                .as_mut()
+                .ok_or_else(|| "Service 当前没有可注入故障的受管 Mihomo".to_string())?;
+            let managed_pid = process.id();
+            process
+                .kill()
+                .map_err(|error| format!("注入受管 Mihomo 异常退出失败：{error}"))?;
+            Ok(json!({
+                "triggered": true,
+                "managedPid": managed_pid,
+                "managedExecutablePath": self.mihomo_path,
+            }))
+        }
+
         fn owns_core(&self) -> Result<bool, String> {
             self.refresh_child()?;
             Ok(self
@@ -1374,6 +1395,10 @@ rules:
                         .await?,
                 )
                 .map_err(|e| e.to_string())?),
+                #[cfg(feature = "validation-fault-injection")]
+                ServiceCommand::ValidationCrashManagedCore => {
+                    self.validation_crash_managed_core().await
+                }
             }
         }
 
@@ -1828,6 +1853,13 @@ rules:
             assert_eq!(value["systemProxyEnabled"], false);
             assert!(value.get("profile_id").is_none());
             assert!(value.get("system_proxy_enabled").is_none());
+        }
+
+        #[cfg(feature = "validation-fault-injection")]
+        #[test]
+        fn serializes_validation_fault_injection_command() {
+            let value = serde_json::to_value(ServiceCommand::ValidationCrashManagedCore).unwrap();
+            assert_eq!(value["command"], "validationCrashManagedCore");
         }
 
         #[tokio::test]
