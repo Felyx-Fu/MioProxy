@@ -15,7 +15,7 @@ export function Sidebar({ page, onChange }: { page: Page; onChange: (page: Page)
       <div className="brand">
         <div className="brand-mark"><Shield size={19} /></div>
         <div>
-          <strong>Felyx Proxy</strong>
+          <strong>MioProxy</strong>
           <span>Network Client</span>
         </div>
       </div>

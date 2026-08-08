@@ -1,12 +1,12 @@
 [package]
-name = "felyx-proxy"
+name = "mioproxy"
 version = "0.1.0"
 description = "A Windows desktop proxy client powered by a separate Mihomo core"
 authors = ["Felyx"]
 edition = "2021"
 
 [lib]
-name = "felyx_proxy_lib"
+name = "mioproxy_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

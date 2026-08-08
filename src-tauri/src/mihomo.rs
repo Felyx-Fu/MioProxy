@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::{process::{CommandChild, CommandEvent}, ShellExt};
 
 const CONTROLLER: &str = "127.0.0.1:9090";
-const SECRET: &str = "felyx-proxy-v01-local";
+const SECRET: &str = "mioproxy-v01-local";
 const DEFAULT_DELAY_URL: &str = "https://www.gstatic.com/generate_204";
 
 pub struct CoreState {
