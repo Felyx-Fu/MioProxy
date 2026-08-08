@@ -54,6 +54,12 @@ pub struct DnsSettings {
     pub fake_ip_filter: Vec<String>,
 }
 
+pub(crate) struct BuiltConfig {
+    pub profile: profiles::Profile,
+    pub value: Value,
+    pub override_active: bool,
+}
+
 fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     app.path().app_data_dir().map_err(|e| e.to_string())
 }
@@ -68,6 +74,18 @@ fn override_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 
 fn candidate_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app_data_dir(app)?.join(CANDIDATE_FILE))
+}
+
+pub(crate) fn config_path_at(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("config.yaml")
+}
+
+pub(crate) fn candidate_path_at(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join(CANDIDATE_FILE)
+}
+
+fn override_path_at(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join(OVERRIDE_FILE)
 }
 
 fn timestamp() -> u64 {
@@ -93,8 +111,8 @@ fn empty_mapping() -> Value {
     Value::Mapping(Mapping::new())
 }
 
-fn read_override_value(app: &AppHandle) -> Result<(Value, String), String> {
-    let path = override_path(app)?;
+fn read_override_value_at(data_dir: &Path) -> Result<(Value, String), String> {
+    let path = override_path_at(data_dir);
     if !path.exists() {
         return Ok((empty_mapping(), String::new()));
     }
@@ -108,6 +126,18 @@ fn read_override_value(app: &AppHandle) -> Result<(Value, String), String> {
         return Err("本地 Override 根节点必须是 YAML 对象".to_string());
     }
     Ok((value, content))
+}
+
+fn read_override_value(app: &AppHandle) -> Result<(Value, String), String> {
+    read_override_value_at(&app_data_dir(app)?)
+}
+
+pub(crate) fn override_content_at(data_dir: &Path) -> Result<String, String> {
+    read_override_value_at(data_dir).map(|(_, content)| content)
+}
+
+pub(crate) fn override_content(app: &AppHandle) -> Result<String, String> {
+    read_override_value(app).map(|(_, content)| content)
 }
 
 fn merge_values(base: &mut Value, overlay: Value) {
@@ -202,14 +232,27 @@ fn validate_config(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn build_value(
-    app: &AppHandle,
-    profile_id: &str,
-) -> Result<(profiles::Profile, Value, bool), String> {
-    let (profile, source) = profiles::profile_source(app, profile_id)?;
+pub(crate) fn build_value_at(data_dir: &Path, profile_id: &str) -> Result<BuiltConfig, String> {
+    let profiles_path = data_dir.join("profiles.json");
+    let profiles_content =
+        fs::read_to_string(&profiles_path).map_err(|e| format!("读取 Profile 数据失败：{e}"))?;
+    let profile = serde_json::from_str::<Vec<profiles::Profile>>(&profiles_content)
+        .map_err(|e| format!("Profile 数据损坏：{e}"))?
+        .into_iter()
+        .find(|candidate| candidate.id == profile_id)
+        .ok_or_else(|| "找不到这个 Profile".to_string())?;
+    let source_path = profile
+        .file_path
+        .as_ref()
+        .ok_or_else(|| "请先下载这个 Profile".to_string())?;
+    let source =
+        fs::read_to_string(source_path).map_err(|e| format!("读取 Profile YAML 失败：{e}"))?;
+    if source.trim().is_empty() {
+        return Err("Profile YAML 为空".to_string());
+    }
     let mut base =
         serde_yaml::from_str::<Value>(&source).map_err(|e| format!("Profile YAML 无效：{e}"))?;
-    let (override_value, override_content) = read_override_value(app)?;
+    let (override_value, override_content) = read_override_value_at(data_dir)?;
     merge_values(&mut base, override_value);
     let map = base
         .as_mapping_mut()
@@ -223,7 +266,19 @@ fn build_value(
         Value::String(mihomo::SECRET.to_string()),
     );
     validate_config(&base)?;
-    Ok((profile, base, !override_content.trim().is_empty()))
+    Ok(BuiltConfig {
+        profile,
+        value: base,
+        override_active: !override_content.trim().is_empty(),
+    })
+}
+
+fn build_value(
+    app: &AppHandle,
+    profile_id: &str,
+) -> Result<(profiles::Profile, Value, bool), String> {
+    let built = build_value_at(&app_data_dir(app)?, profile_id)?;
+    Ok((built.profile, built.value, built.override_active))
 }
 
 fn settings_from_value(value: &Value) -> DnsSettings {
@@ -341,6 +396,64 @@ fn write_override_value(app: &AppHandle, value: &Value) -> Result<OverrideSnapsh
     })
 }
 
+pub(crate) fn restore_override_content_at(data_dir: &Path, content: &str) -> Result<(), String> {
+    let value = if content.trim().is_empty() {
+        empty_mapping()
+    } else {
+        serde_yaml::from_str::<Value>(content)
+            .map_err(|e| format!("恢复 Local Override 失败：{e}"))?
+    };
+    if !value.is_mapping() {
+        return Err("恢复的 Local Override 根节点必须是 YAML 对象".to_string());
+    }
+    validate_config(&value)?;
+    let path = override_path_at(data_dir);
+    write_atomic(&path, content.as_bytes())
+}
+
+pub(crate) fn restore_override_content(app: &AppHandle, content: &str) -> Result<(), String> {
+    restore_override_content_at(&app_data_dir(app)?, content)
+}
+
+pub(crate) fn set_tun_enabled_at(data_dir: &Path, enabled: bool) -> Result<(), String> {
+    let (mut value, _) = read_override_value_at(data_dir)?;
+    let map = value
+        .as_mapping_mut()
+        .ok_or_else(|| "本地 Override 根节点必须是 YAML 对象".to_string())?;
+    let existing_tun = map.remove(value_key("tun")).unwrap_or_else(empty_mapping);
+    let mut tun = existing_tun;
+    let tun_map = tun
+        .as_mapping_mut()
+        .ok_or_else(|| "Local Override 的 tun 必须是 YAML 对象".to_string())?;
+    tun_map.insert(value_key("enable"), Value::Bool(enabled));
+    if enabled {
+        tun_map.insert(value_key("stack"), Value::String("mixed".to_string()));
+        tun_map.insert(value_key("device"), Value::String("MioProxy".to_string()));
+        tun_map.insert(value_key("auto-route"), Value::Bool(true));
+        tun_map.insert(value_key("auto-detect-interface"), Value::Bool(true));
+        tun_map.insert(value_key("strict-route"), Value::Bool(true));
+        tun_map.insert(
+            value_key("dns-hijack"),
+            Value::Sequence(vec![
+                Value::String("any:53".to_string()),
+                Value::String("tcp://any:53".to_string()),
+            ]),
+        );
+    }
+    map.insert(value_key("tun"), tun);
+    let content = if value.as_mapping().is_some_and(Mapping::is_empty) {
+        String::new()
+    } else {
+        serde_yaml::to_string(&value).map_err(|e| format!("生成 Override YAML 失败：{e}"))?
+    };
+    validate_config(&value)?;
+    write_atomic(&override_path_at(data_dir), content.as_bytes())
+}
+
+pub(crate) fn set_tun_enabled(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    set_tun_enabled_at(&app_data_dir(app)?, enabled)
+}
+
 #[tauri::command]
 pub fn override_get(app: AppHandle) -> Result<OverrideSnapshot, String> {
     let (_value, content) = read_override_value(&app)?;
@@ -383,7 +496,10 @@ pub fn config_preview(app: AppHandle, profile_id: String) -> Result<ConfigPrevie
     })
 }
 
-async fn apply_config(app: AppHandle, profile_id: String) -> Result<ConfigApplyResult, String> {
+pub(crate) async fn apply_config(
+    app: AppHandle,
+    profile_id: String,
+) -> Result<ConfigApplyResult, String> {
     let (profile, value, override_active) = build_value(&app, &profile_id)?;
     let yaml = serde_yaml::to_string(&value).map_err(|e| format!("生成最终配置失败：{e}"))?;
     let stable = config_path(&app)?;
@@ -457,7 +573,12 @@ pub fn dns_set(app: AppHandle, settings: DnsSettings) -> Result<OverrideSnapshot
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_values, validate_config};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::{merge_values, restore_override_content_at, set_tun_enabled_at, validate_config};
     use serde_yaml::Value;
 
     #[test]
@@ -489,5 +610,31 @@ mod tests {
 
         let value = serde_yaml::from_str::<Value>("dns:\n  nameserver: [8]\n").unwrap();
         assert!(validate_config(&value).is_err());
+    }
+
+    #[test]
+    fn writes_tun_route_and_dns_override_without_touching_subscription() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "mioproxy-config-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&data_dir).unwrap();
+        let override_path = data_dir.join("local-override.yaml");
+        fs::write(&override_path, "dns:\n  enable: true\n").unwrap();
+        set_tun_enabled_at(&data_dir, true).unwrap();
+        let value =
+            serde_yaml::from_str::<Value>(&fs::read_to_string(&override_path).unwrap()).unwrap();
+        assert_eq!(value["dns"]["enable"].as_bool(), Some(true));
+        assert_eq!(value["tun"]["enable"].as_bool(), Some(true));
+        assert_eq!(value["tun"]["auto-route"].as_bool(), Some(true));
+        assert_eq!(value["tun"]["auto-detect-interface"].as_bool(), Some(true));
+        assert_eq!(value["tun"]["dns-hijack"][0].as_str(), Some("any:53"));
+        restore_override_content_at(&data_dir, "dns:\n  enable: true\n").unwrap();
+        let restored = fs::read_to_string(override_path).unwrap();
+        assert_eq!(restored, "dns:\n  enable: true\n");
+        let _ = fs::remove_dir_all(data_dir);
     }
 }

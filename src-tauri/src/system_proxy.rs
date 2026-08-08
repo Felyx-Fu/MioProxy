@@ -175,6 +175,19 @@ pub async fn restore_after_core_exit(app: &AppHandle) {
 
 pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxyStatus, String> {
     if enabled {
+        if let Some(service_tun) = crate::service::service_tun_status(&app).await? {
+            if matches!(
+                service_tun.status,
+                crate::tun::TunStatus::Starting
+                    | crate::tun::TunStatus::Running
+                    | crate::tun::TunStatus::Stopping
+            ) {
+                return Err("MioProxy Service 正在管理 TUN，不能同时开启系统代理".to_string());
+            }
+        }
+        if crate::tun::is_active(&app) {
+            return Err("TUN 已开启，不能同时开启系统代理".to_string());
+        }
         if !mihomo::is_running().await {
             return Err("Mihomo 尚未启动，不能开启系统代理".to_string());
         }

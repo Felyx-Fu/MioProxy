@@ -36,14 +36,14 @@ impl Default for CoreState {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoreStatus {
-    running: bool,
-    controller: String,
-    config_path: String,
-    mixed_port: u16,
-    mode: String,
+    pub running: bool,
+    pub controller: String,
+    pub config_path: String,
+    pub mixed_port: u16,
+    pub mode: String,
 }
 
 #[derive(Deserialize)]
@@ -212,6 +212,14 @@ pub async fn mihomo_start(
     app: AppHandle,
     state: State<'_, CoreState>,
 ) -> Result<CoreStatus, String> {
+    if let Some(status) =
+        crate::service::request_core(&app, crate::service::ServiceCommand::Start).await?
+    {
+        traffic::start(&app);
+        logs::start(&app);
+        crate::tray::update_current_node(&app).await;
+        return Ok(status);
+    }
     if is_running().await {
         traffic::start(&app);
         logs::start(&app);
@@ -303,9 +311,19 @@ pub async fn mihomo_stop(
     app: AppHandle,
     state: State<'_, CoreState>,
 ) -> Result<CoreStatus, String> {
-    state.stop_requested.store(true, Ordering::SeqCst);
+    if let Some(status) =
+        crate::service::request_core(&app, crate::service::ServiceCommand::Stop).await?
+    {
+        traffic::stop(&app);
+        logs::stop(&app);
+        crate::system_proxy::restore_for_lifecycle(&app).await?;
+        crate::tray::update_current_node(&app).await;
+        return Ok(status);
+    }
     traffic::stop(&app);
     logs::stop(&app);
+    crate::tun::restore_for_lifecycle(&app, &app.state::<crate::tun::TunState>()).await?;
+    state.stop_requested.store(true, Ordering::SeqCst);
     if let Some(child) = state.child.lock().map_err(|_| "CoreState 锁异常")?.take() {
         child.kill().map_err(|e| format!("停止 Mihomo 失败：{e}"))?;
     }
@@ -316,6 +334,9 @@ pub async fn mihomo_stop(
 
 #[tauri::command]
 pub async fn mihomo_status(app: AppHandle) -> Result<CoreStatus, String> {
+    if let Some(status) = crate::service::request_core_status(&app).await? {
+        return Ok(status);
+    }
     status_for(&app, is_running().await)
 }
 
@@ -360,6 +381,9 @@ pub async fn current_node() -> Option<String> {
 
 #[tauri::command]
 pub async fn mihomo_reload(app: AppHandle) -> Result<Value, String> {
+    if let Some(result) = crate::service::request_reload(&app).await? {
+        return Ok(result);
+    }
     let (_, config) = runtime_paths(&app)?;
     if !config.exists() {
         return Err("运行配置不存在，请先启动内核".to_string());

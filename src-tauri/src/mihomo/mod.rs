@@ -7,7 +7,7 @@ pub use connections::{mihomo_close_all_connections, mihomo_close_connection, mih
 pub use controller::{
     current_node, mihomo_proxies, mihomo_proxy_delay, mihomo_reload, mihomo_rule_provider_update,
     mihomo_rule_providers, mihomo_rules, mihomo_select_proxy, mihomo_start, mihomo_status,
-    mihomo_stop, mihomo_version, CoreState,
+    mihomo_stop, mihomo_version, CoreState, CoreStatus,
 };
 
 pub(crate) use controller::{

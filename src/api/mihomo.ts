@@ -158,6 +158,34 @@ export type DnsSettings = {
   fakeIpFilter: string[];
 };
 
+export type TunStatus = "disabled" | "starting" | "running" | "stopping" | "error";
+
+export type NetworkSnapshot = {
+  defaultRoute: string;
+  dnsServers: string;
+  adapters: string;
+  mihomoRunning: boolean;
+  capturedAt: number;
+};
+
+export type TunStatusSnapshot = {
+  status: TunStatus;
+  message: string | null;
+  admin: boolean;
+  profileId: string | null;
+  snapshot: NetworkSnapshot | null;
+};
+
+export type ServiceConnectionStatus = {
+  reachable: boolean;
+  protocolVersion: number;
+  serviceVersion: string | null;
+  ownsCore: boolean;
+  coreRunning: boolean;
+  ownershipConflict: boolean;
+  tunStatus: TunStatus | null;
+  tunMessage: string | null;
+};
 export const mihomoApi = {
   start: () => invoke<CoreStatus>("mihomo_start"),
   stop: () => invoke<CoreStatus>("mihomo_stop"),
@@ -188,4 +216,7 @@ export const mihomoApi = {
   configApply: (profileId: string) => invoke<ConfigApplyResult>("config_apply", { profileId }),
   dnsGet: (profileId: string) => invoke<DnsSettings>("dns_get", { profileId }),
   dnsSet: (settings: DnsSettings) => invoke<OverrideSnapshot>("dns_set", { settings }),
+  tunStatus: () => invoke<TunStatusSnapshot>("tun_status"),
+  tunSetEnabled: (enabled: boolean, profileId?: string | null) => invoke<TunStatusSnapshot>("tun_set_enabled", { enabled, profileId }),
+  serviceStatus: () => invoke<ServiceConnectionStatus>("service_status_command"),
 };

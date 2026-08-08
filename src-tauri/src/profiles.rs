@@ -38,22 +38,6 @@ pub(crate) fn read_profiles(app: &AppHandle) -> Result<Vec<Profile>, String> {
     serde_json::from_str(&content).map_err(|e| format!("Profile 数据损坏：{e}"))
 }
 
-pub(crate) fn profile_source(app: &AppHandle, id: &str) -> Result<(Profile, String), String> {
-    let profile = read_profiles(app)?
-        .into_iter()
-        .find(|candidate| candidate.id == id)
-        .ok_or_else(|| "找不到这个 Profile".to_string())?;
-    let source = profile
-        .file_path
-        .as_ref()
-        .ok_or_else(|| "请先下载这个 Profile".to_string())?;
-    let body = fs::read_to_string(source).map_err(|e| format!("读取 Profile YAML 失败：{e}"))?;
-    if body.trim().is_empty() {
-        return Err("Profile YAML 为空".to_string());
-    }
-    Ok((profile, body))
-}
-
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
