@@ -5,6 +5,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use chrono::{Datelike, Local, NaiveDate};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -85,8 +86,13 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
+fn date_key(date: NaiveDate) -> u64 {
+    let year = u64::try_from(date.year()).unwrap_or_default();
+    year * 10_000 + u64::from(date.month()) * 100 + u64::from(date.day())
+}
+
 fn today_key() -> u64 {
-    now_millis() / 86_400_000
+    date_key(Local::now().date_naive())
 }
 
 fn totals_path(app: &AppHandle) -> Option<std::path::PathBuf> {
@@ -247,7 +253,8 @@ async fn run(app: AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{IncomingTraffic, StoredTotals};
+    use super::{date_key, IncomingTraffic, StoredTotals};
+    use chrono::NaiveDate;
 
     #[test]
     fn accepts_mihomo_traffic_rates() {
@@ -274,5 +281,12 @@ mod tests {
 
         totals.add_sample(11, 5, 10);
         assert_eq!((totals.day, totals.up, totals.down), (11, 5, 10));
+    }
+
+    #[test]
+    fn date_keys_follow_calendar_dates() {
+        let date = NaiveDate::from_ymd_opt(2026, 8, 8).expect("valid calendar date");
+
+        assert_eq!(date_key(date), 20_260_808);
     }
 }
