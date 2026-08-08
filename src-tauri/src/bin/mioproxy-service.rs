@@ -102,13 +102,18 @@ mod windows_service_host {
     }
 
     fn install(args: &[OsString]) -> Result<(), String> {
-        let source_executable = env::current_exe().map_err(|e| e.to_string())?;
+        let source_executable = fs::canonicalize(
+            env::current_exe().map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("解析 Service 可执行文件路径失败：{e}"))?;
         let data_dir = option(args, "--data-dir")
             .map(PathBuf::from)
             .unwrap_or_else(default_data_dir);
         let source_mihomo_path = option(args, "--mihomo-path")
             .map(PathBuf::from)
             .unwrap_or_else(default_mihomo_path);
+        let source_mihomo_path = fs::canonicalize(source_mihomo_path)
+            .map_err(|e| format!("解析 Service Mihomo 路径失败：{e}"))?;
         fs::create_dir_all(&data_dir).map_err(|e| format!("创建 Service 数据目录失败：{e}"))?;
         let data_dir = fs::canonicalize(&data_dir)
             .map_err(|e| format!("解析 Service 数据目录失败：{e}"))?;
