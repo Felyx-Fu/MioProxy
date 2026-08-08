@@ -285,11 +285,16 @@ fn parse_proxy_uri(
                     .map(|value| decode_userinfo(value, "TUIC", index))
                     .transpose()?
             };
-            if uuid.is_empty() || password.as_deref().is_none_or(str::is_empty) {
+            let token = query_value(&url, "token");
+            let has_credentials =
+                !uuid.is_empty() && password.as_deref().is_some_and(|value| !value.is_empty());
+            if !has_credentials && token.is_none() {
                 return Err(format!("第 {index} 个 TUIC 节点缺少 UUID 或密码"));
             }
-            set_string(&mut map, "uuid", uuid);
-            set_string(&mut map, "password", password.unwrap_or_default());
+            if has_credentials {
+                set_string(&mut map, "uuid", uuid);
+                set_string(&mut map, "password", password.unwrap_or_default());
+            }
             if let Some(value) = query_value(&url, "sni") {
                 set_string(&mut map, "sni", value);
             }
@@ -308,7 +313,7 @@ fn parse_proxy_uri(
             if let Some(value) = query_bool(&url, "disable_sni") {
                 set_bool(&mut map, "disable-sni", value);
             }
-            if let Some(value) = query_value(&url, "token") {
+            if let Some(value) = token {
                 set_string(&mut map, "token", value);
             }
             set_alpn(&mut map, &url);
@@ -593,6 +598,18 @@ mod tests {
         );
         assert_eq!(proxies[1]["password"].as_str(), Some("p@ss"));
         assert_eq!(proxies[2]["password"].as_str(), Some("pass@word"));
+    }
+
+    #[test]
+    fn accepts_tuic_token_authentication() {
+        let yaml = normalize_subscription_body(
+            "tuic://example.net:443?token=token-value&sni=example.net#Token",
+        )
+        .unwrap();
+        let value = serde_yaml::from_str::<Value>(&yaml).unwrap();
+        assert_eq!(value["proxies"][0]["token"].as_str(), Some("token-value"));
+        assert!(value["proxies"][0].get("uuid").is_none());
+        assert!(value["proxies"][0].get("password").is_none());
     }
 
     #[test]

@@ -1,12 +1,15 @@
 use std::{
     fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(windows)]
-use std::os::windows::{ffi::OsStrExt, fs::MetadataExt};
+use std::os::windows::{
+    ffi::OsStrExt,
+    fs::{MetadataExt, OpenOptionsExt},
+};
 
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
@@ -166,6 +169,9 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
 #[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+#[cfg(windows)]
 fn ensure_not_reparse(path: &Path) -> Result<(), String> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -181,6 +187,38 @@ fn ensure_not_reparse(path: &Path) -> Result<(), String> {
 #[cfg(not(windows))]
 fn ensure_not_reparse(_path: &Path) -> Result<(), String> {
     Ok(())
+}
+
+fn read_text_file_at(path: &Path, label: &str) -> Result<Option<String>, String> {
+    #[cfg(not(windows))]
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            return Err(format!("拒绝读取 Reparse Point 路径：{}", path.display()));
+        }
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("{label}失败：{error}")),
+    };
+    #[cfg(windows)]
+    {
+        let metadata = file
+            .metadata()
+            .map_err(|e| format!("检查 {label} 路径失败：{e}"))?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(format!("拒绝读取 Reparse Point 路径：{}", path.display()));
+        }
+    }
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .map_err(|e| format!("{label}失败：{e}"))?;
+    Ok(Some(content))
 }
 
 #[cfg(windows)]
@@ -219,10 +257,9 @@ fn empty_mapping() -> Value {
 
 fn read_override_value_at(data_dir: &Path) -> Result<(Value, String), String> {
     let path = override_path_at(data_dir);
-    if !path.exists() {
+    let Some(content) = read_text_file_at(&path, "读取本地 Override")? else {
         return Ok((empty_mapping(), String::new()));
-    }
-    let content = fs::read_to_string(&path).map_err(|e| format!("读取本地 Override 失败：{e}"))?;
+    };
     if content.trim().is_empty() {
         return Ok((empty_mapping(), content));
     }
@@ -340,8 +377,8 @@ fn validate_config(value: &Value) -> Result<(), String> {
 
 pub(crate) fn build_value_at(data_dir: &Path, profile_id: &str) -> Result<BuiltConfig, String> {
     let profiles_path = data_dir.join("profiles.json");
-    let profiles_content =
-        fs::read_to_string(&profiles_path).map_err(|e| format!("读取 Profile 数据失败：{e}"))?;
+    let profiles_content = read_text_file_at(&profiles_path, "读取 Profile 数据")?
+        .ok_or_else(|| "读取 Profile 数据失败：文件不存在".to_string())?;
     let profile = serde_json::from_str::<Vec<profiles::Profile>>(&profiles_content)
         .map_err(|e| format!("Profile 数据损坏：{e}"))?
         .into_iter()
@@ -352,8 +389,8 @@ pub(crate) fn build_value_at(data_dir: &Path, profile_id: &str) -> Result<BuiltC
         .as_ref()
         .ok_or_else(|| "请先下载这个 Profile".to_string())?;
     let source_path = profile_source_path_at(data_dir, source_path)?;
-    let source =
-        fs::read_to_string(source_path).map_err(|e| format!("读取 Profile YAML 失败：{e}"))?;
+    let source = read_text_file_at(&source_path, "读取 Profile YAML")?
+        .ok_or_else(|| "读取 Profile YAML 失败：文件不存在".to_string())?;
     if source.trim().is_empty() {
         return Err("Profile YAML 为空".to_string());
     }
@@ -387,7 +424,7 @@ fn profile_source_path_at(
     let profiles_dir = data_dir.join("profiles");
     ensure_not_reparse(&profiles_dir)?;
     let source_path = Path::new(source_path);
-    if !source_path.is_absolute() || !source_path.starts_with(&profiles_dir) {
+    if !source_path.is_absolute() || is_network_path(source_path) {
         return Err("Profile 文件必须位于应用数据目录的 profiles 文件夹内".to_string());
     }
     ensure_not_reparse(source_path)?;
@@ -399,6 +436,19 @@ fn profile_source_path_at(
         return Err("Profile 文件必须位于应用数据目录的 profiles 文件夹内".to_string());
     }
     Ok(canonical_source)
+}
+
+#[cfg(windows)]
+fn is_network_path(path: &Path) -> bool {
+    let value = path.as_os_str().to_string_lossy().to_ascii_lowercase();
+    value.starts_with(r"\\.\")
+        || value.starts_with(r"\\?\unc\")
+        || (value.starts_with(r"\\") && !value.starts_with(r"\\?\"))
+}
+
+#[cfg(not(windows))]
+fn is_network_path(_path: &Path) -> bool {
+    false
 }
 
 pub(crate) fn configured_tun_enabled_at(data_dir: &Path, profile_id: &str) -> Result<bool, String> {
