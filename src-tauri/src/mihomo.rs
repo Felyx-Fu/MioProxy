@@ -1,7 +1,7 @@
 use std::{fs, sync::Mutex, time::Duration};
 
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::{process::{CommandChild, CommandEvent}, ShellExt};
@@ -26,6 +26,13 @@ pub struct CoreStatus {
     running: bool,
     controller: String,
     config_path: String,
+    mixed_port: u16,
+}
+
+#[derive(Deserialize)]
+struct RuntimeConfig {
+    #[serde(rename = "mixed-port")]
+    mixed_port: Option<u16>,
 }
 
 fn runtime_paths(app: &AppHandle) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
@@ -123,8 +130,19 @@ fn encode_path_segment(value: &str) -> String {
     encoded
 }
 
-async fn is_running() -> bool {
+pub async fn is_running() -> bool {
     api_get("/version").await.is_ok()
+}
+
+pub fn mixed_port(app: &AppHandle) -> Result<u16, String> {
+    let (_, config) = runtime_paths(app)?;
+    if !config.exists() {
+        return Ok(7890);
+    }
+    let content = fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    let runtime = serde_yaml::from_str::<RuntimeConfig>(&content)
+        .map_err(|e| format!("读取 Mihomo mixed-port 失败：{e}"))?;
+    Ok(runtime.mixed_port.unwrap_or(7890))
 }
 
 fn status_for(app: &AppHandle, running: bool) -> Result<CoreStatus, String> {
@@ -133,12 +151,17 @@ fn status_for(app: &AppHandle, running: bool) -> Result<CoreStatus, String> {
         running,
         controller: CONTROLLER.to_string(),
         config_path: config.display().to_string(),
+        mixed_port: mixed_port(app)?,
     })
 }
 
 #[tauri::command]
 pub async fn mihomo_start(app: AppHandle, state: State<'_, CoreState>) -> Result<CoreStatus, String> {
     if is_running().await {
+        crate::tray::update_current_node(&app).await;
+        if let Ok(proxy_status) = crate::system_proxy::status(&app).await {
+            crate::tray::update_proxy_label(&app, proxy_status.enabled, proxy_status.core_running);
+        }
         return status_for(&app, true);
     }
 
@@ -169,8 +192,30 @@ pub async fn mihomo_start(app: AppHandle, state: State<'_, CoreState>) -> Result
                 CommandEvent::Stderr(bytes) => {
                     let _ = emitter.emit("mihomo-log", String::from_utf8_lossy(&bytes).to_string());
                 }
+                CommandEvent::Terminated(_) => {
+                    if let Ok(mut child) = emitter.state::<CoreState>().child.lock() {
+                        *child = None;
+                    }
+                    crate::system_proxy::restore_after_core_exit(&emitter).await;
+                    crate::tray::update_current_node(&emitter).await;
+                    let _ = emitter.emit("mihomo-stopped", ());
+                }
                 _ => {}
             }
+        }
+    });
+
+    let tray_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..10 {
+            if is_running().await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        crate::tray::update_current_node(&tray_app).await;
+        if let Ok(proxy_status) = crate::system_proxy::status(&tray_app).await {
+            crate::tray::update_proxy_label(&tray_app, proxy_status.enabled, proxy_status.core_running);
         }
     });
 
@@ -182,6 +227,8 @@ pub async fn mihomo_stop(app: AppHandle, state: State<'_, CoreState>) -> Result<
     if let Some(child) = state.child.lock().map_err(|_| "CoreState 锁异常")?.take() {
         child.kill().map_err(|e| format!("停止 Mihomo 失败：{e}"))?;
     }
+    crate::system_proxy::restore_for_lifecycle(&app).await?;
+    crate::tray::update_current_node(&app).await;
     Ok(status_for(&app, false)?)
 }
 
@@ -200,6 +247,19 @@ pub async fn mihomo_proxies() -> Result<Value, String> {
     api_get("/proxies").await
 }
 
+pub async fn current_node() -> Option<String> {
+    api_get("/proxies")
+        .await
+        .ok()
+        .and_then(|value| {
+            value
+                .get("PROXY")
+                .and_then(|group| group.get("now"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+}
+
 #[tauri::command]
 pub async fn mihomo_reload(app: AppHandle) -> Result<Value, String> {
     let (_, config) = runtime_paths(&app)?;
@@ -214,12 +274,16 @@ pub async fn mihomo_reload(app: AppHandle) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn mihomo_select_proxy(group: String, proxy: String) -> Result<Value, String> {
-    api_put(
+pub async fn mihomo_select_proxy(app: AppHandle, group: String, proxy: String) -> Result<Value, String> {
+    let result = api_put(
         &format!("/proxies/{}", encode_path_segment(&group)),
         serde_json::json!({ "name": proxy }),
     )
-    .await
+    .await;
+    if result.is_ok() {
+        crate::tray::update_current_node(&app).await;
+    }
+    result
 }
 
 #[tauri::command]

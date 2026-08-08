@@ -1,18 +1,57 @@
-import { FolderCog, LockKeyhole, ShieldCheck } from "lucide-react";
-import type { CoreStatus } from "../api/mihomo";
+import { FolderCog, LockKeyhole, Power, Rocket, ShieldCheck } from "lucide-react";
+import type { CoreStatus, StartupSettings, SystemProxyStatus } from "../api/mihomo";
 
-export function SettingsPage({ status }: { status: CoreStatus | null }) {
+type SettingsPageProps = {
+  status: CoreStatus | null;
+  proxyStatus: SystemProxyStatus | null;
+  startup: StartupSettings | null;
+  busy: boolean;
+  onToggleProxy: () => void;
+  onToggleStartup: (enabled: boolean) => void;
+  onToggleMinimized: (enabled: boolean) => void;
+};
+
+export function SettingsPage({
+  status,
+  proxyStatus,
+  startup,
+  busy,
+  onToggleProxy,
+  onToggleStartup,
+  onToggleMinimized,
+}: SettingsPageProps) {
   return (
     <section className="page-stack">
       <header className="page-header">
         <div>
           <p className="eyebrow">SETTINGS</p>
           <h1>设置</h1>
-          <p>V0.1 先固定安全的本机 Controller。后续再做端口、DNS、TUN 和系统代理配置。</p>
+          <p>V0.3 先把 Windows 系统代理的接管、恢复和生命周期保护做完整。</p>
         </div>
       </header>
 
       <div className="settings-list">
+        <article className="setting-row">
+          <Power size={20} />
+          <div className="setting-copy"><span>系统代理</span><strong>{proxyStatus?.enabled ? `已开启 · 127.0.0.1:${proxyStatus.mixedPort}` : "已关闭 · 保留 Windows 原始设置"}</strong><small>{status?.running ? "由 MioProxy 接管，内核退出时自动恢复" : "启动 Mihomo 后才能开启"}</small></div>
+          <button className="setting-toggle" type="button" onClick={onToggleProxy} disabled={!status?.running || busy} aria-pressed={proxyStatus?.enabled ?? false}>
+            {proxyStatus?.enabled ? "关闭" : "开启"}
+          </button>
+        </article>
+        <article className="setting-row">
+          <Rocket size={20} />
+          <div className="setting-copy"><span>开机启动 MioProxy</span><strong>{startup?.enabled ? "已开启" : "未开启"}</strong><small>仅写入当前用户启动项，不需要管理员权限</small></div>
+          <button className="setting-toggle" type="button" onClick={() => onToggleStartup(!(startup?.enabled ?? false))} disabled={busy} aria-pressed={startup?.enabled ?? false}>
+            {startup?.enabled ? "关闭" : "开启"}
+          </button>
+        </article>
+        <article className="setting-row">
+          <Rocket size={20} />
+          <div className="setting-copy"><span>启动时最小化到托盘</span><strong>{startup?.startMinimized ? "已开启" : "未开启"}</strong><small>需要先开启开机启动；也可通过托盘重新显示主窗口</small></div>
+          <button className="setting-toggle" type="button" onClick={() => onToggleMinimized(!(startup?.startMinimized ?? false))} disabled={!startup?.enabled || busy} aria-pressed={startup?.startMinimized ?? false}>
+            {startup?.startMinimized ? "关闭" : "开启"}
+          </button>
+        </article>
         <article>
           <FolderCog size={20} />
           <div><span>运行配置</span><strong>{status?.configPath ?? "启动内核后生成 config.yaml"}</strong></div>
@@ -23,7 +62,7 @@ export function SettingsPage({ status }: { status: CoreStatus | null }) {
         </article>
         <article>
           <ShieldCheck size={20} />
-          <div><span>V0.1 安全策略</span><strong>前端不直接访问 Controller，统一经 Rust command 转发</strong></div>
+          <div><span>V0.3 安全策略</span><strong>代理开启前检查内核；内核异常退出或 MioProxy 退出都会恢复原始设置</strong></div>
         </article>
       </div>
     </section>

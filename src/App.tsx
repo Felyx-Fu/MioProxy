@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { mihomoApi, type CoreStatus, type MihomoVersion, type Profile, type ProxiesResponse } from "./api/mihomo";
+import { mihomoApi, type CoreStatus, type MihomoVersion, type Profile, type ProxiesResponse, type StartupSettings, type SystemProxyStatus } from "./api/mihomo";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { HomePage } from "./pages/HomePage";
 import { ProfilesPage } from "./pages/ProfilesPage";
@@ -12,7 +12,10 @@ export default function App() {
   const [version, setVersion] = useState<MihomoVersion | null>(null);
   const [proxies, setProxies] = useState<ProxiesResponse | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [proxyStatus, setProxyStatus] = useState<SystemProxyStatus | null>(null);
+  const [startup, setStartup] = useState<StartupSettings | null>(null);
   const [busy, setBusy] = useState(false);
+  const [settingsBusy, setSettingsBusy] = useState(false);
   const [profileBusyId, setProfileBusyId] = useState<string | null>(null);
   const [proxyLoading, setProxyLoading] = useState(false);
   const [proxyBusy, setProxyBusy] = useState<string | null>(null);
@@ -45,9 +48,35 @@ export default function App() {
     }
   }, []);
 
+  const refreshSystemProxy = useCallback(async () => {
+    try {
+      setProxyStatus(await mihomoApi.systemProxyStatus());
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const refreshStartup = useCallback(async () => {
+    try {
+      setStartup(await mihomoApi.startupStatus());
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
   useEffect(() => {
     void refreshStatus();
-  }, [refreshStatus]);
+    void refreshSystemProxy();
+    void refreshStartup();
+  }, [refreshStatus, refreshStartup, refreshSystemProxy]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void refreshStatus();
+      void refreshSystemProxy();
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [refreshStatus, refreshSystemProxy]);
 
   useEffect(() => {
     void mihomoApi.profileList().then(setProfiles).catch((e) => setError(String(e)));
@@ -65,6 +94,7 @@ export default function App() {
       setStatus(next);
       await new Promise((resolve) => setTimeout(resolve, 450));
       await refreshStatus();
+      await refreshSystemProxy();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -149,6 +179,46 @@ export default function App() {
     }
   }
 
+  async function toggleSystemProxy() {
+    if (!proxyStatus) return;
+    setSettingsBusy(true);
+    setError(null);
+    try {
+      setProxyStatus(await mihomoApi.systemProxySetEnabled(!proxyStatus.enabled));
+    } catch (e) {
+      setError(String(e));
+      await refreshSystemProxy();
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
+
+  async function toggleStartup(enabled: boolean) {
+    if (!startup) return;
+    setSettingsBusy(true);
+    setError(null);
+    try {
+      setStartup(await mihomoApi.startupSet(enabled, startup.startMinimized));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
+
+  async function toggleStartMinimized(startMinimized: boolean) {
+    if (!startup) return;
+    setSettingsBusy(true);
+    setError(null);
+    try {
+      setStartup(await mihomoApi.startupSet(startup.enabled, startMinimized));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <Sidebar page={page} onChange={setPage} />
@@ -156,7 +226,7 @@ export default function App() {
         {page === "home" && <HomePage status={status} version={version} busy={busy} error={error} onToggle={toggleCore} />}
         {page === "profiles" && <ProfilesPage profiles={profiles} busyId={profileBusyId} error={error} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} />}
         {page === "proxies" && <ProxiesPage data={proxies} loading={proxyLoading} busyProxy={proxyBusy} delayByProxy={delayByProxy} onRefresh={refreshProxies} onSelect={selectProxy} onDelay={testProxyDelay} />}
-        {page === "settings" && <SettingsPage status={status} />}
+        {page === "settings" && <SettingsPage status={status} proxyStatus={proxyStatus} startup={startup} busy={busy || settingsBusy} onToggleProxy={toggleSystemProxy} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} />}
       </main>
     </div>
   );
