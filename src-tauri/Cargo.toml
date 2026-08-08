@@ -23,4 +23,4 @@ tokio = { version = "1", features = ["net", "time"] }
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 winreg = "0.55"
-windows-sys = { version = "0.60", features = ["Win32_Networking_WinInet"] }
+windows-sys = { version = "0.60", features = ["Win32_Networking_WinInet", "Win32_UI_Shell"] }

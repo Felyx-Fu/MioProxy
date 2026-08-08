@@ -1,6 +1,6 @@
-import { Activity, Braces, FileText, Globe2, Home, Network, Radio, Settings2, Shield, Waypoints, Workflow } from "lucide-react";
+import { Activity, Braces, FileText, Globe2, Home, Network, Radio, RadioTower, Settings2, Shield, Waypoints, Workflow } from "lucide-react";
 
-export type Page = "home" | "connections" | "logs" | "profiles" | "proxies" | "rules" | "dns" | "overrides" | "settings";
+export type Page = "home" | "connections" | "logs" | "profiles" | "proxies" | "rules" | "dns" | "overrides" | "tun" | "settings";
 
 const items: Array<{ id: Page; label: string; icon: typeof Home }> = [
   { id: "home", label: "Dashboard", icon: Home },
@@ -11,6 +11,7 @@ const items: Array<{ id: Page; label: string; icon: typeof Home }> = [
   { id: "rules", label: "规则", icon: Workflow },
   { id: "dns", label: "DNS", icon: Waypoints },
   { id: "overrides", label: "Override", icon: Braces },
+  { id: "tun", label: "TUN", icon: RadioTower },
   { id: "settings", label: "设置", icon: Settings2 },
 ];
 
@@ -36,7 +37,7 @@ export function Sidebar({ page, onChange }: { page: Page; onChange: (page: Page)
 
       <div className="sidebar-foot">
         <Activity size={16} />
-        <span>V0.6 Config Layer</span>
+        <span>V0.7 TUN Layer</span>
       </div>
     </aside>
   );

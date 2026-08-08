@@ -259,6 +259,7 @@ pub async fn mihomo_start(
                     }
                     traffic::stop(&emitter);
                     logs::stop(&emitter);
+                    crate::tun::on_mihomo_exit(&emitter).await;
                     crate::system_proxy::restore_after_core_exit(&emitter).await;
                     crate::tray::update_current_node(&emitter).await;
                     let stop_requested = emitter
@@ -303,9 +304,10 @@ pub async fn mihomo_stop(
     app: AppHandle,
     state: State<'_, CoreState>,
 ) -> Result<CoreStatus, String> {
-    state.stop_requested.store(true, Ordering::SeqCst);
     traffic::stop(&app);
     logs::stop(&app);
+    crate::tun::restore_for_lifecycle(&app, &app.state::<crate::tun::TunState>()).await?;
+    state.stop_requested.store(true, Ordering::SeqCst);
     if let Some(child) = state.child.lock().map_err(|_| "CoreState 锁异常")?.take() {
         child.kill().map_err(|e| format!("停止 Mihomo 失败：{e}"))?;
     }

@@ -4,6 +4,7 @@ mod profiles;
 mod startup;
 mod system_proxy;
 mod tray;
+mod tun;
 
 use mihomo::{
     mihomo_close_all_connections, mihomo_close_connection, mihomo_connections, mihomo_proxies,
@@ -29,6 +30,7 @@ pub fn run() {
         .manage(mihomo::logs::LogStreamState::default())
         .manage(AppLifecycle::default())
         .manage(system_proxy::SystemProxyState::default())
+        .manage(tun::TunState::default())
         .manage(tray::TrayState::default())
         .setup(|app| {
             if let Err(error) = system_proxy::recover_stale_state(&app.handle()) {
@@ -38,6 +40,11 @@ pub fn run() {
             if let Err(error) = tray::setup(&app.handle()) {
                 return Err(Box::new(std::io::Error::other(error)));
             }
+            tun::start_monitor(app.handle().clone());
+            let recovery_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tun::recover_after_startup(recovery_app).await;
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -83,11 +90,17 @@ pub fn run() {
             config::config_apply,
             config::dns_get,
             config::dns_set,
+            tun::tun_status,
+            tun::tun_set_enabled,
         ])
         .build(tauri::generate_context!())
         .expect("error while building MioProxy")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
+                let _ = tauri::async_runtime::block_on(tun::restore_for_lifecycle(
+                    app,
+                    &app.state::<tun::TunState>(),
+                ));
                 let _ = tauri::async_runtime::block_on(system_proxy::restore_for_lifecycle(app));
             }
         });

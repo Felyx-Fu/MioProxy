@@ -110,6 +110,10 @@ fn read_override_value(app: &AppHandle) -> Result<(Value, String), String> {
     Ok((value, content))
 }
 
+pub(crate) fn override_content(app: &AppHandle) -> Result<String, String> {
+    read_override_value(app).map(|(_, content)| content)
+}
+
 fn merge_values(base: &mut Value, overlay: Value) {
     match (base, overlay) {
         (Value::Mapping(base_map), Value::Mapping(overlay_map)) => {
@@ -341,6 +345,50 @@ fn write_override_value(app: &AppHandle, value: &Value) -> Result<OverrideSnapsh
     })
 }
 
+pub(crate) fn restore_override_content(app: &AppHandle, content: &str) -> Result<(), String> {
+    let value = if content.trim().is_empty() {
+        empty_mapping()
+    } else {
+        serde_yaml::from_str::<Value>(content)
+            .map_err(|e| format!("恢复 Local Override 失败：{e}"))?
+    };
+    if !value.is_mapping() {
+        return Err("恢复的 Local Override 根节点必须是 YAML 对象".to_string());
+    }
+    validate_config(&value)?;
+    let path = override_path(app)?;
+    write_atomic(&path, content.as_bytes())
+}
+
+pub(crate) fn set_tun_enabled(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let (mut value, _) = read_override_value(app)?;
+    let map = value
+        .as_mapping_mut()
+        .ok_or_else(|| "本地 Override 根节点必须是 YAML 对象".to_string())?;
+    let existing_tun = map.remove(value_key("tun")).unwrap_or_else(empty_mapping);
+    let mut tun = existing_tun;
+    let tun_map = tun
+        .as_mapping_mut()
+        .ok_or_else(|| "Local Override 的 tun 必须是 YAML 对象".to_string())?;
+    tun_map.insert(value_key("enable"), Value::Bool(enabled));
+    if enabled {
+        tun_map.insert(value_key("stack"), Value::String("mixed".to_string()));
+        tun_map.insert(value_key("device"), Value::String("MioProxy".to_string()));
+        tun_map.insert(value_key("auto-route"), Value::Bool(true));
+        tun_map.insert(value_key("auto-detect-interface"), Value::Bool(true));
+        tun_map.insert(value_key("strict-route"), Value::Bool(true));
+        tun_map.insert(
+            value_key("dns-hijack"),
+            Value::Sequence(vec![
+                Value::String("any:53".to_string()),
+                Value::String("tcp://any:53".to_string()),
+            ]),
+        );
+    }
+    map.insert(value_key("tun"), tun);
+    write_override_value(app, &value).map(|_| ())
+}
+
 #[tauri::command]
 pub fn override_get(app: AppHandle) -> Result<OverrideSnapshot, String> {
     let (_value, content) = read_override_value(&app)?;
@@ -383,7 +431,10 @@ pub fn config_preview(app: AppHandle, profile_id: String) -> Result<ConfigPrevie
     })
 }
 
-async fn apply_config(app: AppHandle, profile_id: String) -> Result<ConfigApplyResult, String> {
+pub(crate) async fn apply_config(
+    app: AppHandle,
+    profile_id: String,
+) -> Result<ConfigApplyResult, String> {
     let (profile, value, override_active) = build_value(&app, &profile_id)?;
     let yaml = serde_yaml::to_string(&value).map_err(|e| format!("生成最终配置失败：{e}"))?;
     let stable = config_path(&app)?;

@@ -111,6 +111,11 @@ fn exit_app(app: &AppHandle) {
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
+        let _ = crate::tun::restore_for_lifecycle(
+            &handle,
+            &handle.state::<crate::tun::TunState>(),
+        )
+        .await;
         let _ = system_proxy::restore_for_lifecycle(&handle).await;
         handle.exit(0);
     });
