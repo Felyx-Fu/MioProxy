@@ -3,14 +3,14 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $outDir = Join-Path $repoRoot "src-tauri\binaries"
 $outFile = Join-Path $outDir "mihomo-x86_64-pc-windows-msvc.exe"
-$tempDir = Join-Path $env:TEMP ("felyx-mihomo-" + [guid]::NewGuid().ToString("N"))
+$tempDir = Join-Path $env:TEMP ("mioproxy-mihomo-" + [guid]::NewGuid().ToString("N"))
 $zipFile = Join-Path $tempDir "mihomo.zip"
 
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
 Write-Host "[1/4] Querying latest stable Mihomo release..." -ForegroundColor Cyan
-$release = Invoke-RestMethod -Uri "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest" -Headers @{ "User-Agent" = "Felyx-Proxy-Setup" }
+$release = Invoke-RestMethod -Uri "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest" -Headers @{ "User-Agent" = "MioProxy-Setup" }
 
 $asset = $release.assets | Where-Object { $_.name -like "mihomo-windows-amd64-compatible-*.zip" } | Select-Object -First 1
 if (-not $asset) {

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Capabilities for the main Felyx Proxy window",
+  "description": "Capabilities for the main MioProxy window",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

@@ -5,7 +5,11 @@ export type CoreStatus = {
   controller: string;
   configPath: string;
   mixedPort: number;
+  mode: string;
 };
+
+export type CoreState = "stopped" | "starting" | "running" | "reloading" | "stopping" | "error";
+export type ProxyState = "disabled" | "enabling" | "enabled" | "disabling" | "error";
 
 export type SystemProxyStatus = {
   enabled: boolean;
@@ -39,12 +43,59 @@ export type DelayResponse = {
   delay: number;
 };
 
+export type TrafficPoint = {
+  timestamp: number;
+  up: number;
+  down: number;
+};
+
+export type TrafficSnapshot = {
+  timestamp: number;
+  up: number;
+  down: number;
+  todayUp: number;
+  todayDown: number;
+  history: TrafficPoint[];
+};
+
+export type ConnectionMetadata = {
+  network: string;
+  host: string;
+  destinationIp: string;
+  destinationPort: string;
+  sourceIp: string;
+  sourcePort: string;
+  process: string;
+  processPath: string;
+  [key: string]: unknown;
+};
+
+export type MihomoConnection = {
+  id: string;
+  metadata: ConnectionMetadata;
+  upload: number;
+  download: number;
+  start: string;
+  chains: string[];
+  rule: string;
+  rulePayload: string;
+  [key: string]: unknown;
+};
+
+export type ConnectionsResponse = {
+  downloadTotal: number;
+  uploadTotal: number;
+  connections: MihomoConnection[];
+  memory?: number;
+};
+
 export type Profile = {
   id: string;
   name: string;
   url: string;
   filePath: string | null;
   updatedAt: number | null;
+  nodeCount: number | null;
 };
 
 export const mihomoApi = {
@@ -56,6 +107,9 @@ export const mihomoApi = {
   reload: () => invoke<unknown>("mihomo_reload"),
   selectProxy: (group: string, proxy: string) => invoke<unknown>("mihomo_select_proxy", { group, proxy }),
   proxyDelay: (proxy: string, url?: string) => invoke<DelayResponse>("mihomo_proxy_delay", { proxy, url }),
+  connections: () => invoke<ConnectionsResponse>("mihomo_connections"),
+  closeConnection: (id: string) => invoke<void>("mihomo_close_connection", { id }),
+  closeAllConnections: () => invoke<void>("mihomo_close_all_connections"),
   systemProxyStatus: () => invoke<SystemProxyStatus>("system_proxy_status"),
   systemProxySetEnabled: (enabled: boolean) => invoke<SystemProxyStatus>("system_proxy_set_enabled", { enabled }),
   startupStatus: () => invoke<StartupSettings>("startup_status"),

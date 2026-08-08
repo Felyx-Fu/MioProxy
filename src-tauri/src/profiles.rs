@@ -16,6 +16,8 @@ pub struct Profile {
     pub url: String,
     pub file_path: Option<String>,
     pub updated_at: Option<u64>,
+    #[serde(default)]
+    pub node_count: Option<u32>,
 }
 
 fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -41,7 +43,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    let temp = path.with_extension(format!("{}.tmp", path.extension().and_then(|e| e.to_str()).unwrap_or("file")));
+    let temp = path.with_extension(format!(
+        "{}.tmp",
+        path.extension().and_then(|e| e.to_str()).unwrap_or("file")
+    ));
     fs::write(&temp, bytes).map_err(|e| e.to_string())?;
     if path.exists() {
         fs::remove_file(path).map_err(|e| e.to_string())?;
@@ -70,6 +75,13 @@ fn timestamp() -> u64 {
         .as_secs()
 }
 
+fn count_nodes(body: &str) -> Option<u32> {
+    let yaml = serde_yaml::from_str::<serde_yaml::Value>(body).ok()?;
+    yaml.get("proxies")?
+        .as_sequence()
+        .map(|items| items.len() as u32)
+}
+
 #[tauri::command]
 pub fn profile_list(app: AppHandle) -> Result<Vec<Profile>, String> {
     read_profiles(&app)
@@ -94,6 +106,7 @@ pub fn profile_add(app: AppHandle, name: String, url: String) -> Result<Profile,
         url,
         file_path: None,
         updated_at: None,
+        node_count: None,
     };
     profiles.push(profile.clone());
     write_profiles(&app, &profiles)?;
@@ -129,7 +142,9 @@ pub async fn profile_download(app: AppHandle, id: String) -> Result<Profile, Str
         return Err("订阅响应为空".to_string());
     }
 
-    let path = data_dir(&app)?.join("profiles").join(format!("{}.yaml", profile.id));
+    let path = data_dir(&app)?
+        .join("profiles")
+        .join(format!("{}.yaml", profile.id));
     write_atomic(&path, body.as_bytes())?;
 
     let updated_at = timestamp();
@@ -140,6 +155,7 @@ pub async fn profile_download(app: AppHandle, id: String) -> Result<Profile, Str
             .ok_or_else(|| "找不到这个 Profile".to_string())?;
         updated.file_path = Some(path.display().to_string());
         updated.updated_at = Some(updated_at);
+        updated.node_count = count_nodes(&body);
         updated.clone()
     };
     write_profiles(&app, &profiles)?;

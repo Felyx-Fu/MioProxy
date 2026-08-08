@@ -1,9 +1,11 @@
 import { FolderCog, LockKeyhole, Power, Rocket, ShieldCheck } from "lucide-react";
-import type { CoreStatus, StartupSettings, SystemProxyStatus } from "../api/mihomo";
+import type { CoreState, CoreStatus, ProxyState, StartupSettings, SystemProxyStatus } from "../api/mihomo";
 
 type SettingsPageProps = {
   status: CoreStatus | null;
+  coreState: CoreState;
   proxyStatus: SystemProxyStatus | null;
+  proxyState: ProxyState;
   startup: StartupSettings | null;
   busy: boolean;
   onToggleProxy: () => void;
@@ -13,7 +15,9 @@ type SettingsPageProps = {
 
 export function SettingsPage({
   status,
+  coreState,
   proxyStatus,
+  proxyState,
   startup,
   busy,
   onToggleProxy,
@@ -26,7 +30,7 @@ export function SettingsPage({
         <div>
           <p className="eyebrow">SETTINGS</p>
           <h1>设置</h1>
-          <p>V0.3 先把 Windows 系统代理的接管、恢复和生命周期保护做完整。</p>
+          <p>在保留 Windows 系统代理安全边界的同时，统一管理内核、启动项和本地运行配置。</p>
         </div>
       </header>
 
@@ -34,8 +38,8 @@ export function SettingsPage({
         <article className="setting-row">
           <Power size={20} />
           <div className="setting-copy"><span>系统代理</span><strong>{proxyStatus?.enabled ? `已开启 · 127.0.0.1:${proxyStatus.mixedPort}` : "已关闭 · 保留 Windows 原始设置"}</strong><small>{status?.running ? "由 MioProxy 接管，内核退出时自动恢复" : "启动 Mihomo 后才能开启"}</small></div>
-          <button className="setting-toggle" type="button" onClick={onToggleProxy} disabled={!status?.running || busy} aria-pressed={proxyStatus?.enabled ?? false}>
-            {proxyStatus?.enabled ? "关闭" : "开启"}
+          <button className="setting-toggle" type="button" onClick={onToggleProxy} disabled={coreState !== "running" || busy} aria-pressed={proxyStatus?.enabled ?? false}>
+            {proxyState === "enabling" || proxyState === "disabling" ? "切换中…" : proxyStatus?.enabled ? "关闭" : "开启"}
           </button>
         </article>
         <article className="setting-row">
@@ -62,7 +66,7 @@ export function SettingsPage({
         </article>
         <article>
           <ShieldCheck size={20} />
-          <div><span>V0.3 安全策略</span><strong>代理开启前检查内核；内核异常退出或 MioProxy 退出都会恢复原始设置</strong></div>
+          <div><span>安全策略</span><strong>代理开启前检查内核；内核异常退出或 MioProxy 退出都会恢复原始设置</strong></div>
         </article>
       </div>
     </section>

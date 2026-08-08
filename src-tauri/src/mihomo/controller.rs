@@ -1,22 +1,38 @@
-use std::{fs, sync::Mutex, time::Duration};
+use std::{
+    fs,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+    time::Duration,
+};
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_shell::{process::{CommandChild, CommandEvent}, ShellExt};
+use tauri_plugin_shell::{
+    process::{CommandChild, CommandEvent},
+    ShellExt,
+};
 
-const CONTROLLER: &str = "127.0.0.1:9090";
-const SECRET: &str = "felyx-proxy-v01-local";
+use super::{logs, traffic};
+
+pub(crate) const CONTROLLER: &str = "127.0.0.1:9090";
+pub(crate) const SECRET: &str = "mioproxy-v01-local";
 const DEFAULT_DELAY_URL: &str = "https://www.gstatic.com/generate_204";
 
 pub struct CoreState {
-    child: Mutex<Option<CommandChild>>,
+    pub child: Mutex<Option<CommandChild>>,
+    pub stop_requested: AtomicBool,
 }
 
 impl Default for CoreState {
     fn default() -> Self {
-        Self { child: Mutex::new(None) }
+        Self {
+            child: Mutex::new(None),
+            stop_requested: AtomicBool::new(false),
+        }
     }
 }
 
@@ -27,15 +43,19 @@ pub struct CoreStatus {
     controller: String,
     config_path: String,
     mixed_port: u16,
+    mode: String,
 }
 
 #[derive(Deserialize)]
 struct RuntimeConfig {
     #[serde(rename = "mixed-port")]
     mixed_port: Option<u16>,
+    mode: Option<String>,
 }
 
-fn runtime_paths(app: &AppHandle) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+pub(crate) fn runtime_paths(
+    app: &AppHandle,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let config = dir.join("config.yaml");
     Ok((dir, config))
@@ -76,7 +96,7 @@ rules:
     Ok(config)
 }
 
-async fn api_get(path: &str) -> Result<Value, String> {
+pub(crate) async fn api_get(path: &str) -> Result<Value, String> {
     let url = format!("http://{CONTROLLER}{path}");
     Client::builder()
         .timeout(Duration::from_secs(2))
@@ -94,7 +114,7 @@ async fn api_get(path: &str) -> Result<Value, String> {
         .map_err(|e| e.to_string())
 }
 
-async fn api_put(path: &str, payload: Value) -> Result<Value, String> {
+pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String> {
     let url = format!("http://{CONTROLLER}{path}");
     let response = Client::builder()
         .timeout(Duration::from_secs(5))
@@ -115,7 +135,27 @@ async fn api_put(path: &str, payload: Value) -> Result<Value, String> {
     serde_json::from_str(&body).map_err(|e| e.to_string())
 }
 
-fn encode_path_segment(value: &str) -> String {
+pub(crate) async fn api_delete(path: &str) -> Result<Value, String> {
+    let url = format!("http://{CONTROLLER}{path}");
+    let response = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?
+        .delete(url)
+        .bearer_auth(SECRET)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
+    let body = response.text().await.map_err(|e| e.to_string())?;
+    if body.trim().is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_str(&body).map_err(|e| e.to_string())
+}
+
+pub(crate) fn encode_path_segment(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut encoded = String::new();
     for byte in value.bytes() {
@@ -130,11 +170,11 @@ fn encode_path_segment(value: &str) -> String {
     encoded
 }
 
-pub async fn is_running() -> bool {
+pub(crate) async fn is_running() -> bool {
     api_get("/version").await.is_ok()
 }
 
-pub fn mixed_port(app: &AppHandle) -> Result<u16, String> {
+pub(crate) fn mixed_port(app: &AppHandle) -> Result<u16, String> {
     let (_, config) = runtime_paths(app)?;
     if !config.exists() {
         return Ok(7890);
@@ -145,6 +185,17 @@ pub fn mixed_port(app: &AppHandle) -> Result<u16, String> {
     Ok(runtime.mixed_port.unwrap_or(7890))
 }
 
+fn mode(app: &AppHandle) -> Result<String, String> {
+    let (_, config) = runtime_paths(app)?;
+    if !config.exists() {
+        return Ok("rule".to_string());
+    }
+    let content = fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    let runtime = serde_yaml::from_str::<RuntimeConfig>(&content)
+        .map_err(|e| format!("读取 Mihomo mode 失败：{e}"))?;
+    Ok(runtime.mode.unwrap_or_else(|| "rule".to_string()))
+}
+
 fn status_for(app: &AppHandle, running: bool) -> Result<CoreStatus, String> {
     let (_, config) = runtime_paths(app)?;
     Ok(CoreStatus {
@@ -152,12 +203,18 @@ fn status_for(app: &AppHandle, running: bool) -> Result<CoreStatus, String> {
         controller: CONTROLLER.to_string(),
         config_path: config.display().to_string(),
         mixed_port: mixed_port(app)?,
+        mode: mode(app)?,
     })
 }
 
 #[tauri::command]
-pub async fn mihomo_start(app: AppHandle, state: State<'_, CoreState>) -> Result<CoreStatus, String> {
+pub async fn mihomo_start(
+    app: AppHandle,
+    state: State<'_, CoreState>,
+) -> Result<CoreStatus, String> {
     if is_running().await {
+        traffic::start(&app);
+        logs::start(&app);
         crate::tray::update_current_node(&app).await;
         if let Ok(proxy_status) = crate::system_proxy::status(&app).await {
             crate::tray::update_proxy_label(&app, proxy_status.enabled, proxy_status.core_running);
@@ -167,7 +224,6 @@ pub async fn mihomo_start(app: AppHandle, state: State<'_, CoreState>) -> Result
 
     let config = ensure_default_config(&app)?;
     let dir = config.parent().ok_or("无法确定配置目录")?.to_path_buf();
-
     let command = app
         .shell()
         .sidecar("mihomo")
@@ -179,8 +235,13 @@ pub async fn mihomo_start(app: AppHandle, state: State<'_, CoreState>) -> Result
             config.display().to_string(),
         ]);
 
-    let (mut rx, child) = command.spawn().map_err(|e| format!("Mihomo 启动失败：{e}"))?;
+    let (mut rx, child) = command
+        .spawn()
+        .map_err(|e| format!("Mihomo 启动失败：{e}"))?;
+    state.stop_requested.store(false, Ordering::SeqCst);
     *state.child.lock().map_err(|_| "CoreState 锁异常")? = Some(child);
+    traffic::start(&app);
+    logs::start(&app);
 
     let emitter = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -192,12 +253,23 @@ pub async fn mihomo_start(app: AppHandle, state: State<'_, CoreState>) -> Result
                 CommandEvent::Stderr(bytes) => {
                     let _ = emitter.emit("mihomo-log", String::from_utf8_lossy(&bytes).to_string());
                 }
-                CommandEvent::Terminated(_) => {
+                CommandEvent::Terminated(payload) => {
                     if let Ok(mut child) = emitter.state::<CoreState>().child.lock() {
                         *child = None;
                     }
+                    traffic::stop(&emitter);
+                    logs::stop(&emitter);
                     crate::system_proxy::restore_after_core_exit(&emitter).await;
                     crate::tray::update_current_node(&emitter).await;
+                    let stop_requested = emitter
+                        .state::<CoreState>()
+                        .stop_requested
+                        .swap(false, Ordering::SeqCst);
+                    if !stop_requested
+                        && (payload.code.is_some_and(|code| code != 0) || payload.signal.is_some())
+                    {
+                        let _ = emitter.emit("mihomo-crashed", ());
+                    }
                     let _ = emitter.emit("mihomo-stopped", ());
                 }
                 _ => {}
@@ -215,7 +287,11 @@ pub async fn mihomo_start(app: AppHandle, state: State<'_, CoreState>) -> Result
         }
         crate::tray::update_current_node(&tray_app).await;
         if let Ok(proxy_status) = crate::system_proxy::status(&tray_app).await {
-            crate::tray::update_proxy_label(&tray_app, proxy_status.enabled, proxy_status.core_running);
+            crate::tray::update_proxy_label(
+                &tray_app,
+                proxy_status.enabled,
+                proxy_status.core_running,
+            );
         }
     });
 
@@ -223,7 +299,13 @@ pub async fn mihomo_start(app: AppHandle, state: State<'_, CoreState>) -> Result
 }
 
 #[tauri::command]
-pub async fn mihomo_stop(app: AppHandle, state: State<'_, CoreState>) -> Result<CoreStatus, String> {
+pub async fn mihomo_stop(
+    app: AppHandle,
+    state: State<'_, CoreState>,
+) -> Result<CoreStatus, String> {
+    state.stop_requested.store(true, Ordering::SeqCst);
+    traffic::stop(&app);
+    logs::stop(&app);
     if let Some(child) = state.child.lock().map_err(|_| "CoreState 锁异常")?.take() {
         child.kill().map_err(|e| format!("停止 Mihomo 失败：{e}"))?;
     }
@@ -248,16 +330,13 @@ pub async fn mihomo_proxies() -> Result<Value, String> {
 }
 
 pub async fn current_node() -> Option<String> {
-    api_get("/proxies")
-        .await
-        .ok()
-        .and_then(|value| {
-            value
-                .get("PROXY")
-                .and_then(|group| group.get("now"))
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-        })
+    api_get("/proxies").await.ok().and_then(|value| {
+        value
+            .get("PROXY")
+            .and_then(|group| group.get("now"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+    })
 }
 
 #[tauri::command]
@@ -274,7 +353,11 @@ pub async fn mihomo_reload(app: AppHandle) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn mihomo_select_proxy(app: AppHandle, group: String, proxy: String) -> Result<Value, String> {
+pub async fn mihomo_select_proxy(
+    app: AppHandle,
+    group: String,
+    proxy: String,
+) -> Result<Value, String> {
     let result = api_put(
         &format!("/proxies/{}", encode_path_segment(&group)),
         serde_json::json!({ "name": proxy }),

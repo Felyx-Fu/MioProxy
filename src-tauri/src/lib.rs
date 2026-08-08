@@ -4,7 +4,11 @@ mod startup;
 mod system_proxy;
 mod tray;
 
-use mihomo::{CoreState, mihomo_proxies, mihomo_proxy_delay, mihomo_reload, mihomo_select_proxy, mihomo_start, mihomo_status, mihomo_stop, mihomo_version};
+use mihomo::{
+    mihomo_close_all_connections, mihomo_close_connection, mihomo_connections,
+    mihomo_proxies, mihomo_proxy_delay, mihomo_reload, mihomo_select_proxy, mihomo_start,
+    mihomo_status, mihomo_stop, mihomo_version, CoreState,
+};
 use profiles::{profile_add, profile_apply, profile_download, profile_list, profile_remove};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
@@ -19,6 +23,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(CoreState::default())
+        .manage(mihomo::traffic::TrafficStreamState::default())
+        .manage(mihomo::logs::LogStreamState::default())
         .manage(AppLifecycle::default())
         .manage(system_proxy::SystemProxyState::default())
         .manage(tray::TrayState::default())
@@ -54,6 +60,9 @@ pub fn run() {
             mihomo_reload,
             mihomo_select_proxy,
             mihomo_proxy_delay,
+            mihomo_connections,
+            mihomo_close_connection,
+            mihomo_close_all_connections,
             system_proxy::system_proxy_status,
             system_proxy::system_proxy_set_enabled,
             startup::startup_status,

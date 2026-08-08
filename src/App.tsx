@@ -1,18 +1,26 @@
-import { useCallback, useEffect, useState } from "react";
-import { mihomoApi, type CoreStatus, type MihomoVersion, type Profile, type ProxiesResponse, type StartupSettings, type SystemProxyStatus } from "./api/mihomo";
+import { listen } from "@tauri-apps/api/event";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { mihomoApi, type CoreState, type CoreStatus, type MihomoVersion, type Profile, type ProxiesResponse, type ProxyState, type StartupSettings, type SystemProxyStatus } from "./api/mihomo";
 import { Sidebar, type Page } from "./components/Sidebar";
-import { HomePage } from "./pages/HomePage";
+import { ToastHost, type ToastMessage, type ToastTone } from "./components/Feedback";
+import { ConnectionsPage } from "./pages/ConnectionsPage";
+import { DashboardPage } from "./pages/DashboardPage";
+import { LogsPage } from "./pages/LogsPage";
 import { ProfilesPage } from "./pages/ProfilesPage";
 import { ProxiesPage } from "./pages/ProxiesPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { useConnections } from "./hooks/useConnections";
+import { useTraffic } from "./hooks/useTraffic";
 
 export default function App() {
   const [page, setPage] = useState<Page>("home");
   const [status, setStatus] = useState<CoreStatus | null>(null);
+  const [coreState, setCoreState] = useState<CoreState>("stopped");
   const [version, setVersion] = useState<MihomoVersion | null>(null);
   const [proxies, setProxies] = useState<ProxiesResponse | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [proxyStatus, setProxyStatus] = useState<SystemProxyStatus | null>(null);
+  const [proxyState, setProxyState] = useState<ProxyState>("disabled");
   const [startup, setStartup] = useState<StartupSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
@@ -21,18 +29,39 @@ export default function App() {
   const [proxyBusy, setProxyBusy] = useState<string | null>(null);
   const [delayByProxy, setDelayByProxy] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
+  const [profilesLoaded, setProfilesLoaded] = useState(false);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const toastId = useRef(0);
+  const traffic = useTraffic();
+  const connections = useConnections(Boolean(status?.running));
+
+  const dismissToast = useCallback((id: number) => {
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  }, []);
+
+  const pushToast = useCallback((tone: ToastTone, message: string) => {
+    const id = ++toastId.current;
+    setToasts((current) => [...current.slice(-3), { id, tone, message }]);
+  }, []);
+
+  function errorMessage(value: unknown) {
+    return value instanceof Error ? value.message : String(value).replace(/^Error:\s*/, "");
+  }
 
   const refreshStatus = useCallback(async () => {
     try {
       const next = await mihomoApi.status();
       setStatus(next);
+      setCoreState((current) => current === "error" && !next.running ? "error" : next.running ? "running" : "stopped");
       if (next.running) {
         setVersion(await mihomoApi.version());
       } else {
         setVersion(null);
       }
     } catch (e) {
-      setError(String(e));
+      const message = errorMessage(e);
+      setCoreState("error");
+      setError(message);
     }
   }, []);
 
@@ -42,7 +71,7 @@ export default function App() {
       setProxies(await mihomoApi.proxies());
       setError(null);
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
     } finally {
       setProxyLoading(false);
     }
@@ -50,9 +79,12 @@ export default function App() {
 
   const refreshSystemProxy = useCallback(async () => {
     try {
-      setProxyStatus(await mihomoApi.systemProxyStatus());
+      const next = await mihomoApi.systemProxyStatus();
+      setProxyStatus(next);
+      setProxyState((current) => current === "error" && !next.enabled ? "error" : next.enabled ? "enabled" : "disabled");
     } catch (e) {
-      setError(String(e));
+      setProxyState("error");
+      setError(errorMessage(e));
     }
   }, []);
 
@@ -60,7 +92,7 @@ export default function App() {
     try {
       setStartup(await mihomoApi.startupStatus());
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
     }
   }, []);
 
@@ -79,14 +111,72 @@ export default function App() {
   }, [refreshStatus, refreshSystemProxy]);
 
   useEffect(() => {
-    void mihomoApi.profileList().then(setProfiles).catch((e) => setError(String(e)));
+    void mihomoApi.profileList().then((next) => {
+      setProfiles(next);
+      setProfilesLoaded(true);
+    }).catch((e) => {
+      setProfilesLoaded(true);
+      setError(errorMessage(e));
+    });
   }, []);
 
   useEffect(() => {
-    if (page === "proxies" && status?.running) void refreshProxies();
-  }, [page, status?.running, refreshProxies]);
+    let active = true;
+    let unlistenStopped: (() => void) | undefined;
+    let unlistenCrashed: (() => void) | undefined;
+    void listen("mihomo-stopped", () => {
+      if (!active) return;
+      setStatus((current) => current ? { ...current, running: false } : current);
+      setCoreState((current) => current === "stopping" ? "stopped" : "error");
+      setProxyState("disabled");
+    }).then((stop) => {
+      if (active) unlistenStopped = stop;
+      else stop();
+    });
+    void listen("mihomo-crashed", () => {
+      if (!active) return;
+      const message = "Mihomo 已异常退出，请检查日志或运行配置。";
+      setStatus((current) => current ? { ...current, running: false } : current);
+      setCoreState("error");
+      setProxyState("disabled");
+      setError(message);
+      pushToast("error", message);
+    }).then((stop) => {
+      if (active) unlistenCrashed = stop;
+      else stop();
+    });
+    return () => {
+      active = false;
+      unlistenStopped?.();
+      unlistenCrashed?.();
+    };
+  }, [pushToast]);
+
+  useEffect(() => {
+    if (status?.running) void refreshProxies();
+    else setProxies(null);
+  }, [status?.running, refreshProxies]);
+
+  useEffect(() => {
+    if (!status?.running) return;
+    const timer = window.setInterval(() => void refreshProxies(), 5000);
+    return () => window.clearInterval(timer);
+  }, [status?.running, refreshProxies]);
+
+  const currentNode = proxies?.proxies.PROXY?.now ?? null;
+  useEffect(() => {
+    if (!status?.running || !currentNode) return;
+    let active = true;
+    void mihomoApi.proxyDelay(currentNode).then((result) => {
+      if (active) setDelayByProxy((current) => ({ ...current, [currentNode]: result.delay }));
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [currentNode, status?.running]);
 
   async function toggleCore() {
+    if (coreState === "starting" || coreState === "stopping" || coreState === "reloading") return;
+    const willRun = !status?.running;
+    setCoreState(willRun ? "starting" : "stopping");
     setBusy(true);
     setError(null);
     try {
@@ -95,8 +185,12 @@ export default function App() {
       await new Promise((resolve) => setTimeout(resolve, 450));
       await refreshStatus();
       await refreshSystemProxy();
+      pushToast("success", willRun ? "Mihomo 已启动" : "Mihomo 已停止");
     } catch (e) {
-      setError(String(e));
+      const message = errorMessage(e);
+      setCoreState("error");
+      setError(message);
+      pushToast("error", message);
     } finally {
       setBusy(false);
     }
@@ -107,8 +201,9 @@ export default function App() {
     try {
       const profile = await mihomoApi.profileAdd(name, url);
       setProfiles((current) => [...current, profile]);
+      pushToast("success", "Profile 已添加");
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
       throw e;
     }
   }
@@ -119,8 +214,11 @@ export default function App() {
     try {
       const profile = await mihomoApi.profileDownload(id);
       setProfiles((current) => current.map((item) => item.id === id ? profile : item));
+      pushToast("success", "Profile 更新成功");
     } catch (e) {
-      setError(String(e));
+      const message = errorMessage(e);
+      setError(message);
+      pushToast("error", message);
     } finally {
       setProfileBusyId(null);
     }
@@ -131,10 +229,16 @@ export default function App() {
     setError(null);
     try {
       await mihomoApi.profileApply(id);
-      if (status?.running) await mihomoApi.reload();
+      if (status?.running) {
+        setCoreState("reloading");
+        await mihomoApi.reload();
+      }
       await refreshStatus();
+      pushToast("success", status?.running ? "Profile 已应用并重载内核" : "Profile 已应用");
     } catch (e) {
-      setError(String(e));
+      const message = errorMessage(e);
+      setError(message);
+      pushToast("error", message);
     } finally {
       setProfileBusyId(null);
     }
@@ -146,8 +250,11 @@ export default function App() {
     try {
       await mihomoApi.profileRemove(id);
       setProfiles((current) => current.filter((item) => item.id !== id));
+      pushToast("success", "Profile 已删除");
     } catch (e) {
-      setError(String(e));
+      const message = errorMessage(e);
+      setError(message);
+      pushToast("error", message);
     } finally {
       setProfileBusyId(null);
     }
@@ -159,8 +266,11 @@ export default function App() {
     try {
       await mihomoApi.selectProxy(group, proxy);
       await refreshProxies();
+      pushToast("success", `已切换到 ${proxy}`);
     } catch (e) {
-      setError(String(e));
+      const message = errorMessage(e);
+      setError(message);
+      pushToast("error", message);
     } finally {
       setProxyBusy(null);
     }
@@ -173,7 +283,9 @@ export default function App() {
       const result = await mihomoApi.proxyDelay(proxy);
       setDelayByProxy((current) => ({ ...current, [proxy]: result.delay }));
     } catch (e) {
-      setError(String(e));
+      const message = errorMessage(e);
+      setError(message);
+      pushToast("error", message);
     } finally {
       setProxyBusy(null);
     }
@@ -181,12 +293,20 @@ export default function App() {
 
   async function toggleSystemProxy() {
     if (!proxyStatus) return;
+    const willEnable = !proxyStatus.enabled;
+    setProxyState(willEnable ? "enabling" : "disabling");
     setSettingsBusy(true);
     setError(null);
     try {
-      setProxyStatus(await mihomoApi.systemProxySetEnabled(!proxyStatus.enabled));
+      const next = await mihomoApi.systemProxySetEnabled(willEnable);
+      setProxyStatus(next);
+      setProxyState(next.enabled ? "enabled" : "disabled");
+      pushToast("success", next.enabled ? "系统代理已开启" : "系统代理已关闭");
     } catch (e) {
-      setError(String(e));
+      const message = errorMessage(e);
+      setProxyState("error");
+      setError(message);
+      pushToast("error", `系统代理切换失败：${message}`);
       await refreshSystemProxy();
     } finally {
       setSettingsBusy(false);
@@ -199,8 +319,11 @@ export default function App() {
     setError(null);
     try {
       setStartup(await mihomoApi.startupSet(enabled, startup.startMinimized));
+      pushToast("success", enabled ? "已开启开机启动" : "已关闭开机启动");
     } catch (e) {
-      setError(String(e));
+      const message = errorMessage(e);
+      setError(message);
+      pushToast("error", message);
     } finally {
       setSettingsBusy(false);
     }
@@ -212,8 +335,11 @@ export default function App() {
     setError(null);
     try {
       setStartup(await mihomoApi.startupSet(startup.enabled, startMinimized));
+      pushToast("success", startMinimized ? "已开启启动时最小化" : "已关闭启动时最小化");
     } catch (e) {
-      setError(String(e));
+      const message = errorMessage(e);
+      setError(message);
+      pushToast("error", message);
     } finally {
       setSettingsBusy(false);
     }
@@ -223,11 +349,14 @@ export default function App() {
     <div className="app-shell">
       <Sidebar page={page} onChange={setPage} />
       <main className="content">
-        {page === "home" && <HomePage status={status} version={version} busy={busy} error={error} onToggle={toggleCore} />}
+        {page === "home" && <DashboardPage status={status} coreState={coreState} version={version} proxyStatus={proxyStatus} proxyState={proxyState} traffic={traffic.snapshot} connectionCount={connections.data?.connections.length ?? 0} currentNode={currentNode} delay={currentNode ? delayByProxy[currentNode] ?? null : null} memory={connections.data?.memory ?? null} busy={busy} error={error} onToggle={toggleCore} onToggleProxy={toggleSystemProxy} />}
+        {page === "connections" && <ConnectionsPage state={connections} onRefresh={connections.refresh} onClose={connections.closeConnection} onCloseAll={connections.closeAllConnections} />}
+        {page === "logs" && <LogsPage />}
         {page === "profiles" && <ProfilesPage profiles={profiles} busyId={profileBusyId} error={error} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} />}
-        {page === "proxies" && <ProxiesPage data={proxies} loading={proxyLoading} busyProxy={proxyBusy} delayByProxy={delayByProxy} onRefresh={refreshProxies} onSelect={selectProxy} onDelay={testProxyDelay} />}
-        {page === "settings" && <SettingsPage status={status} proxyStatus={proxyStatus} startup={startup} busy={busy || settingsBusy} onToggleProxy={toggleSystemProxy} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} />}
+        {page === "proxies" && <ProxiesPage data={proxies} loading={proxyLoading} busyProxy={proxyBusy} delayByProxy={delayByProxy} profilesLoaded={profilesLoaded} profileCount={profiles.length} onRefresh={refreshProxies} onSelect={selectProxy} onDelay={testProxyDelay} />}
+        {page === "settings" && <SettingsPage status={status} coreState={coreState} proxyStatus={proxyStatus} proxyState={proxyState} startup={startup} busy={busy || settingsBusy} onToggleProxy={toggleSystemProxy} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} />}
       </main>
+      <ToastHost toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }
