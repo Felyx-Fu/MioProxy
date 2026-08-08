@@ -15,6 +15,9 @@ pub enum ServiceCommand {
     Start,
     Stop,
     Reload,
+    ApplyProfile {
+        profile_id: String,
+    },
     TunSetEnabled {
         enabled: bool,
         profile_id: Option<String>,
@@ -360,6 +363,23 @@ mod windows_impl {
         Ok(Some(response.data.unwrap_or(Value::Null)))
     }
 
+    pub(crate) async fn request_apply_profile(
+        app: &AppHandle,
+        profile_id: &str,
+    ) -> Result<Option<crate::config::ConfigApplyResult>, String> {
+        let Some(response) = try_request(
+            app,
+            ServiceCommand::ApplyProfile {
+                profile_id: profile_id.to_string(),
+            },
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        data(response).map(Some)
+    }
+
     pub(crate) async fn request_tun(
         app: &AppHandle,
         enabled: bool,
@@ -694,8 +714,13 @@ rules:
             .await
         }
 
-        async fn apply_profile(&self, profile_id: &str) -> Result<(), String> {
+        async fn apply_profile(
+            &self,
+            profile_id: &str,
+        ) -> Result<crate::config::ConfigApplyResult, String> {
             let built = config::build_value_at(&self.data_dir, profile_id)?;
+            let profile_name = built.profile.name.clone();
+            let override_active = built.override_active;
             let yaml = serde_yaml::to_string(&built.value).map_err(|e| e.to_string())?;
             let candidate = config::candidate_path_at(&self.data_dir);
             write_atomic(&candidate, yaml.as_bytes())?;
@@ -714,7 +739,13 @@ rules:
             }
             write_atomic(&self.config_path(), yaml.as_bytes())?;
             let _ = fs::remove_file(candidate);
-            Ok(())
+            Ok(crate::config::ConfigApplyResult {
+                profile_id: profile_id.to_string(),
+                profile_name,
+                path: self.config_path().display().to_string(),
+                controller_validated: true,
+                override_active,
+            })
         }
 
         async fn enable_tun(
@@ -815,7 +846,7 @@ rules:
             let recovery = config::restore_override_content_at(&self.data_dir, previous_override)
                 .and_then(|_| Ok(()));
             let recovery = if recovery.is_ok() && mihomo::is_running().await {
-                self.apply_profile(profile_id).await
+                self.apply_profile(profile_id).await.map(|_| ())
             } else if recovery.is_ok() {
                 config::restore_profile_config_at(&self.data_dir, profile_id)
             } else {
@@ -968,6 +999,10 @@ rules:
                 )
                 .map_err(|e| e.to_string())?),
                 ServiceCommand::Reload => self.reload().await,
+                ServiceCommand::ApplyProfile { profile_id } => {
+                    Ok(serde_json::to_value(self.apply_profile(&profile_id).await?)
+                        .map_err(|e| e.to_string())?)
+                }
                 ServiceCommand::TunSetEnabled {
                     enabled,
                     profile_id,
@@ -1047,7 +1082,7 @@ rules:
                     current.snapshot = Some(snapshot);
                 }
                 match self.apply_profile(&profile_id).await {
-                    Ok(()) => {
+                    Ok(_) => {
                         if let Ok(mut current) = self.tun.lock() {
                             current.status = crate::tun::TunStatus::Running;
                             current.message = None;
@@ -1325,7 +1360,8 @@ pub use windows_impl::{run_service_console, run_service_daemon};
 
 #[cfg(windows)]
 pub(crate) use windows_impl::{
-    request_core, request_core_status, request_reload, request_tun, service_tun_status,
+    request_apply_profile, request_core, request_core_status, request_reload, request_tun,
+    service_tun_status,
 };
 
 #[cfg(not(windows))]
@@ -1360,6 +1396,14 @@ pub(crate) async fn request_core_status(
 
 #[cfg(not(windows))]
 pub(crate) async fn request_reload(_app: &AppHandle) -> Result<Option<Value>, String> {
+    Ok(None)
+}
+
+#[cfg(not(windows))]
+pub(crate) async fn request_apply_profile(
+    _app: &AppHandle,
+    _profile_id: &str,
+) -> Result<Option<crate::config::ConfigApplyResult>, String> {
     Ok(None)
 }
 

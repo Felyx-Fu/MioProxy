@@ -32,7 +32,7 @@ pub struct ConfigPreview {
     pub override_active: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigApplyResult {
     pub profile_id: String,
@@ -543,7 +543,12 @@ pub(crate) async fn apply_config(
 }
 
 pub async fn apply_profile(app: AppHandle, profile_id: String) -> Result<String, String> {
-    let result = apply_config(app, profile_id).await?;
+    let result =
+        if let Some(result) = crate::service::request_apply_profile(&app, &profile_id).await? {
+            result
+        } else {
+            apply_config(app, profile_id).await?
+        };
     Ok(format!(
         "{} · {} · {}",
         result.profile_name,
@@ -558,6 +563,9 @@ pub async fn apply_profile(app: AppHandle, profile_id: String) -> Result<String,
 
 #[tauri::command]
 pub async fn config_apply(app: AppHandle, profile_id: String) -> Result<ConfigApplyResult, String> {
+    if let Some(result) = crate::service::request_apply_profile(&app, &profile_id).await? {
+        return Ok(result);
+    }
     apply_config(app, profile_id).await
 }
 
