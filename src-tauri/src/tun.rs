@@ -178,10 +178,10 @@ pub(crate) async fn capture_snapshot() -> Result<NetworkSnapshot, String> {
         return Err("Mihomo 未运行，无法创建 TUN 运行前快照".to_string());
     }
     let default_route = powershell_json(
-        "Get-NetRoute -DestinationPrefix '0.0.0.0/0' -PolicyStore ActiveStore | Sort-Object RouteMetric | Select-Object -First 1 | Select-Object InterfaceAlias,InterfaceIndex,NextHop,RouteMetric | ConvertTo-Json -Compress",
+        "$routes = @(Get-NetRoute -PolicyStore ActiveStore | Where-Object { $_.DestinationPrefix -in @('0.0.0.0/0', '::/0') } | Sort-Object RouteMetric | Select-Object -First 2 DestinationPrefix,InterfaceAlias,InterfaceIndex,NextHop,RouteMetric,AddressFamily); $routes | ConvertTo-Json -Compress",
     )?;
     let dns_servers = powershell_json(
-        "Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object { $_.ServerAddresses } | Select-Object InterfaceAlias,ServerAddresses | ConvertTo-Json -Compress",
+        "Get-DnsClientServerAddress | Where-Object { $_.AddressFamily -in @(2, 23) -and $_.ServerAddresses } | Select-Object InterfaceAlias,AddressFamily,ServerAddresses | ConvertTo-Json -Compress",
     )?;
     let adapters = powershell_json(
         "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object Name,InterfaceDescription,ifIndex,MacAddress,Status | ConvertTo-Json -Compress",
@@ -292,14 +292,28 @@ async fn rollback_enable(
         recovery_error = Some(error);
     }
     if recovery_error.is_none() {
-        let _ = clear_persisted(app);
+        if let Err(error) = clear_persisted(app) {
+            recovery_error = Some(error);
+        }
     }
-    let message = match recovery_error {
-        Some(error) => format!("{reason}；TUN 回滚也失败：{error}"),
-        None => format!("{reason}；已恢复原始配置"),
-    };
-    set_error(state, message.clone())?;
-    Err(message)
+    match recovery_error {
+        Some(error) => {
+            let message = format!("{reason}；TUN 回滚也失败：{error}");
+            set_error(state, message.clone())?;
+            Err(message)
+        }
+        None => {
+            let message = format!("{reason}；已恢复原始配置");
+            set_runtime(state, |current| {
+                *current = TunRuntime {
+                    status: TunStatus::Disabled,
+                    message: Some(message.clone()),
+                    ..TunRuntime::default()
+                };
+            })?;
+            Err(message)
+        }
+    }
 }
 
 async fn enable_tun(
@@ -334,6 +348,14 @@ async fn enable_tun(
             "TUN 与系统代理不能同时开启，请先关闭系统代理".to_string(),
         )?;
         return Err("TUN 与系统代理不能同时开启，请先关闭系统代理".to_string());
+    }
+    if config::configured_tun_enabled_at(
+        &app.path().app_data_dir().map_err(|e| e.to_string())?,
+        &profile_id,
+    )? || runtime_tun_enabled().await == Some(true)
+    {
+        set_error(state, "当前配置或 Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string())?;
+        return Err("当前配置或 Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string());
     }
 
     let previous_override = config::override_content(app)?;
@@ -436,7 +458,10 @@ async fn disable_tun(
         })?;
         return response(state);
     };
-    let profile_id = active.profile_id.clone().unwrap_or_default();
+    let profile_id = active
+        .profile_id
+        .clone()
+        .ok_or_else(|| "TUN 缺少恢复用 Profile".to_string())?;
     let previous_override = active
         .previous_override
         .clone()
@@ -459,7 +484,7 @@ async fn disable_tun(
             set_error(state, format!("Mihomo 停止 TUN 失败：{error}"))?;
             return Err(error);
         }
-    } else if let Err(error) = config::restore_profile_config(app, &active.profile_id.clone().unwrap_or_default()) {
+    } else if let Err(error) = config::restore_profile_config(app, &profile_id) {
         set_error(state, format!("停止 TUN 后恢复稳定配置失败：{error}"))?;
         return Err(error);
     }
@@ -622,12 +647,8 @@ pub fn start_monitor(app: AppHandle) {
                 was_active = false;
                 continue;
             };
-            if !mihomo::is_running().await {
+            if !mihomo::is_running().await || !mihomo::owns_core(&app) {
                 on_mihomo_exit(&app).await;
-                was_active = false;
-                continue;
-            }
-            if !mihomo::owns_core(&app) {
                 was_active = false;
                 continue;
             }

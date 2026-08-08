@@ -83,73 +83,60 @@ mod windows_service_host {
         .unwrap_or_else(|| executable_dir.join("mihomo-x86_64-pc-windows-msvc.exe"))
     }
 
+    fn protected_install_dir() -> PathBuf {
+        env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"))
+            .join("MioProxy")
+    }
+
+    fn copy_protected_binary(source: &Path, target: &Path, label: &str) -> Result<(), String> {
+        let source = fs::canonicalize(source)
+            .map_err(|e| format!("解析 {label} 路径失败：{e}"))?;
+        if fs::canonicalize(target).ok().is_some_and(|current| current == source) {
+            return Ok(());
+        }
+        fs::copy(&source, target)
+            .map(|_| ())
+            .map_err(|e| format!("复制受保护的 {label} 失败：{e}"))
+    }
+
     fn install(args: &[OsString]) -> Result<(), String> {
-        let executable = env::current_exe().map_err(|e| e.to_string())?;
+        let source_executable = env::current_exe().map_err(|e| e.to_string())?;
         let data_dir = option(args, "--data-dir")
             .map(PathBuf::from)
             .unwrap_or_else(default_data_dir);
-        let mihomo_path = option(args, "--mihomo-path")
+        let source_mihomo_path = option(args, "--mihomo-path")
             .map(PathBuf::from)
             .unwrap_or_else(default_mihomo_path);
         fs::create_dir_all(&data_dir).map_err(|e| format!("创建 Service 数据目录失败：{e}"))?;
         let data_dir = fs::canonicalize(&data_dir)
             .map_err(|e| format!("解析 Service 数据目录失败：{e}"))?;
-        let mihomo_path = fs::canonicalize(&mihomo_path)
-            .map_err(|e| format!("解析 Service Mihomo 路径失败：{e}"))?;
+        service::ensure_install_user_sid(&data_dir)?;
         service::ensure_install_token(&data_dir)?;
         let manager = ServiceManager::local_computer(
             None::<&str>,
             ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
         )
         .map_err(|e| format!("打开 Windows Service Manager 失败：{e}"))?;
-        let info = ServiceInfo {
-            name: OsString::from(SERVICE_NAME),
-            display_name: OsString::from(SERVICE_DISPLAY_NAME),
-            service_type: ServiceType::OWN_PROCESS,
-            start_type: ServiceStartType::OnDemand,
-            error_control: ServiceErrorControl::Normal,
-            executable_path: executable,
-            launch_arguments: vec![
-                OsString::from("--service"),
-                OsString::from("--data-dir"),
-                data_dir.into_os_string(),
-                OsString::from("--mihomo-path"),
-                mihomo_path.into_os_string(),
-            ],
-            dependencies: vec![],
-            account_name: None,
-            account_password: None,
-        };
-        let mut existing_service = false;
-        let service = match manager.create_service(
-            &info,
-            ServiceAccess::CHANGE_CONFIG
-                | ServiceAccess::START
-                | ServiceAccess::QUERY_STATUS
-                | ServiceAccess::STOP,
-        ) {
-            Ok(service) => service,
-            Err(windows_service::Error::Winapi(error)) if error.raw_os_error() == Some(1073) => {
-                existing_service = true;
-                manager
-                    .open_service(
-                        SERVICE_NAME,
-                        ServiceAccess::CHANGE_CONFIG
-                            | ServiceAccess::START
-                            | ServiceAccess::QUERY_STATUS
-                            | ServiceAccess::STOP,
-                    )
-                    .map_err(|e| format!("打开现有 MioProxy Service 失败：{e}"))?
+        let service_access = ServiceAccess::CHANGE_CONFIG
+            | ServiceAccess::START
+            | ServiceAccess::QUERY_STATUS
+            | ServiceAccess::STOP;
+        let mut existing_service = match manager.open_service(SERVICE_NAME, service_access) {
+            Ok(service) => Some(service),
+            Err(windows_service::Error::Winapi(error)) if error.raw_os_error() == Some(1060) => {
+                None
             }
-            Err(error) => return Err(format!("创建 MioProxy Service 失败：{error}")),
+            Err(error) => return Err(format!("打开现有 MioProxy Service 失败：{error}")),
         };
-        if existing_service
-            && service
+        if existing_service.as_ref().is_some_and(|service| {
+            service
                 .query_status()
-                .map_err(|e| format!("查询现有 MioProxy Service 状态失败：{e}"))?
-                .current_state
-                == ServiceState::Running
-        {
+                .map(|status| status.current_state == ServiceState::Running)
+                .unwrap_or(false)
+        }) {
+            let service = existing_service.as_ref().expect("existing service checked");
             service
                 .stop()
                 .map_err(|e| format!("停止旧版 MioProxy Service 失败：{e}"))?;
@@ -167,6 +154,42 @@ mod windows_service_host {
                 return Err("旧版 MioProxy Service 未能在 10 秒内停止".to_string());
             }
         }
+
+        let protected_dir = protected_install_dir();
+        fs::create_dir_all(&protected_dir)
+            .map_err(|e| format!("创建受保护的 MioProxy 安装目录失败：{e}"))?;
+        let executable = protected_dir.join("mioproxy-service.exe");
+        let mihomo_path = protected_dir.join("mihomo.exe");
+        copy_protected_binary(&source_executable, &executable, "Service 可执行文件")?;
+        copy_protected_binary(&source_mihomo_path, &mihomo_path, "Mihomo 可执行文件")?;
+
+        let info = ServiceInfo {
+            name: OsString::from(SERVICE_NAME),
+            display_name: OsString::from(SERVICE_DISPLAY_NAME),
+            service_type: ServiceType::OWN_PROCESS,
+            start_type: ServiceStartType::AutoStart,
+            error_control: ServiceErrorControl::Normal,
+            executable_path: executable,
+            launch_arguments: vec![
+                OsString::from("--service"),
+                OsString::from("--data-dir"),
+                data_dir.into_os_string(),
+                OsString::from("--mihomo-path"),
+                mihomo_path.into_os_string(),
+            ],
+            dependencies: vec![],
+            account_name: None,
+            account_password: None,
+        };
+        let service = match manager.create_service(&info, service_access) {
+            Ok(service) => service,
+            Err(windows_service::Error::Winapi(error)) if error.raw_os_error() == Some(1073) => {
+                existing_service.take().ok_or_else(|| {
+                    "MioProxy Service 已存在，但无法重新打开它".to_string()
+                })?
+            }
+            Err(error) => return Err(format!("创建 MioProxy Service 失败：{error}")),
+        };
         service
             .change_config(&info)
             .map_err(|e| format!("更新 MioProxy Service 配置失败：{e}"))?;
@@ -185,8 +208,35 @@ mod windows_service_host {
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
             .map_err(|e| format!("打开 Windows Service Manager 失败：{e}"))?;
         let service = manager
-            .open_service(SERVICE_NAME, ServiceAccess::DELETE)
+            .open_service(
+                SERVICE_NAME,
+                ServiceAccess::STOP | ServiceAccess::QUERY_STATUS | ServiceAccess::DELETE,
+            )
             .map_err(|e| format!("打开 MioProxy Service 失败：{e}"))?;
+        let status = service
+            .query_status()
+            .map_err(|e| format!("查询 MioProxy Service 状态失败：{e}"))?;
+        if status.current_state != ServiceState::Stopped {
+            match service.stop() {
+                Ok(_) => {}
+                Err(windows_service::Error::Winapi(error))
+                    if error.raw_os_error() == Some(1062) => {}
+                Err(error) => return Err(format!("停止 MioProxy Service 失败：{error}")),
+            }
+            let stopped = (0..100).any(|_| {
+                let is_stopped = service
+                    .query_status()
+                    .map(|next| next.current_state == ServiceState::Stopped)
+                    .unwrap_or(false);
+                if !is_stopped {
+                    thread::sleep(Duration::from_millis(100));
+                }
+                is_stopped
+            });
+            if !stopped {
+                return Err("MioProxy Service 未能在 10 秒内停止".to_string());
+            }
+        }
         service
             .delete()
             .map_err(|e| format!("删除 MioProxy Service 失败：{e}"))?;

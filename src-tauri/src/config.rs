@@ -273,6 +273,18 @@ pub(crate) fn build_value_at(data_dir: &Path, profile_id: &str) -> Result<BuiltC
     })
 }
 
+pub(crate) fn configured_tun_enabled_at(data_dir: &Path, profile_id: &str) -> Result<bool, String> {
+    let built = build_value_at(data_dir, profile_id)?;
+    Ok(built
+        .value
+        .as_mapping()
+        .and_then(|map| mapping_value(map, "tun"))
+        .and_then(Value::as_mapping)
+        .and_then(|tun| mapping_value(tun, "enable"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false))
+}
+
 pub(crate) fn restore_profile_config_at(data_dir: &Path, profile_id: &str) -> Result<(), String> {
     let built = build_value_at(data_dir, profile_id)?;
     let yaml = serde_yaml::to_string(&built.value).map_err(|e| format!("生成恢复配置失败：{e}"))?;
@@ -406,16 +418,19 @@ fn write_override_value(app: &AppHandle, value: &Value) -> Result<OverrideSnapsh
     })
 }
 
-async fn ensure_override_editable(app: &AppHandle) -> Result<(), String> {
+async fn ensure_override_editable(
+    app: &AppHandle,
+) -> Result<tokio::sync::MutexGuard<'static, ()>, String> {
+    let transition = crate::tun::lock_transitions().await;
     if crate::tun::is_active(app) {
         return Err("请先关闭 TUN，再编辑 Local Override".to_string());
     }
-    if let Some(tun) = crate::service::service_tun_status(app).await?
-        && tun.status != crate::tun::TunStatus::Disabled
-    {
-        return Err("请先关闭 Service 管理的 TUN，再编辑 Local Override".to_string());
+    if let Some(tun) = crate::service::service_tun_status(app).await? {
+        if tun.status != crate::tun::TunStatus::Disabled {
+            return Err("请先关闭 Service 管理的 TUN，再编辑 Local Override".to_string());
+        }
     }
-    Ok(())
+    Ok(transition)
 }
 
 pub(crate) fn restore_override_content_at(data_dir: &Path, content: &str) -> Result<(), String> {
@@ -497,7 +512,7 @@ pub fn override_get(app: AppHandle) -> Result<OverrideSnapshot, String> {
 
 #[tauri::command]
 pub async fn override_set(app: AppHandle, content: String) -> Result<OverrideSnapshot, String> {
-    ensure_override_editable(&app).await?;
+    let _transition = ensure_override_editable(&app).await?;
     let value = if content.trim().is_empty() {
         empty_mapping()
     } else {
@@ -563,6 +578,7 @@ pub(crate) async fn apply_config(
 }
 
 pub async fn apply_profile(app: AppHandle, profile_id: String) -> Result<String, String> {
+    let _transition = crate::tun::lock_transitions().await;
     if crate::tun::is_active(&app) {
         return Err("请先关闭 TUN，再切换 Profile".to_string());
     }
@@ -586,6 +602,7 @@ pub async fn apply_profile(app: AppHandle, profile_id: String) -> Result<String,
 
 #[tauri::command]
 pub async fn config_apply(app: AppHandle, profile_id: String) -> Result<ConfigApplyResult, String> {
+    let _transition = crate::tun::lock_transitions().await;
     if crate::tun::is_active(&app) {
         return Err("请先关闭 TUN，再应用配置".to_string());
     }
@@ -604,7 +621,7 @@ pub fn dns_get(app: AppHandle, profile_id: String) -> Result<DnsSettings, String
 
 #[tauri::command]
 pub async fn dns_set(app: AppHandle, settings: DnsSettings) -> Result<OverrideSnapshot, String> {
-    ensure_override_editable(&app).await?;
+    let _transition = ensure_override_editable(&app).await?;
     let (mut value, _) = read_override_value(&app)?;
     let map = value
         .as_mapping_mut()

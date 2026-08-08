@@ -28,6 +28,9 @@ GUI:
   --mihomo-path ".\mihomo-x86_64-pc-windows-msvc.exe"
 ```
 
+Installation copies the Service and Mihomo binaries into the administrator-owned
+`%ProgramFiles%\MioProxy` directory before registering the Service.
+
 After installation the GUI uses the `MioProxyService` named pipe and does not
 start a second Mihomo process. Uninstall with `--uninstall` from an elevated
 terminal.

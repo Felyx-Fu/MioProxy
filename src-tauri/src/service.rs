@@ -7,6 +7,7 @@ pub const PIPE_NAME: &str = r"\\.\pipe\MioProxyService";
 pub const SERVICE_PROTOCOL_VERSION: u32 = 1;
 pub const SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const TOKEN_FILE: &str = "service-token";
+const USER_SID_FILE: &str = "service-user-sid";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "camelCase")]
@@ -90,6 +91,7 @@ mod windows_impl {
         time::Duration,
     };
 
+    #[cfg(not(test))]
     use std::os::windows::io::AsRawHandle;
 
     use serde::Deserialize;
@@ -108,8 +110,9 @@ mod windows_impl {
         Security::{
             Authorization::{
                 ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+                ConvertSidToStringSidW,
             },
-            SECURITY_ATTRIBUTES,
+            GetTokenInformation, TokenUser, TOKEN_USER, TOKEN_QUERY, SECURITY_ATTRIBUTES,
         },
         System::{
             Diagnostics::ToolHelp::{
@@ -122,10 +125,15 @@ mod windows_impl {
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             },
             SystemInformation::GetTickCount64,
-            Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
-            Pipes::GetNamedPipeServerProcessId,
+            Threading::{
+                GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_SET_QUOTA,
+                PROCESS_TERMINATE,
+            },
         },
     };
+
+    #[cfg(not(test))]
+    use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 
     use crate::{config, mihomo};
 
@@ -234,6 +242,65 @@ mod windows_impl {
         Ok(token)
     }
 
+    fn current_user_sid() -> Result<String, String> {
+        let mut token = std::ptr::null_mut();
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err("读取安装用户身份失败".to_string());
+        }
+        let mut size = 0;
+        unsafe {
+            let _ = GetTokenInformation(
+                token,
+                TokenUser,
+                std::ptr::null_mut(),
+                0,
+                &mut size,
+            );
+        }
+        if size == 0 {
+            unsafe { CloseHandle(token) };
+            return Err("读取安装用户 SID 大小失败".to_string());
+        }
+        let mut buffer = vec![0u8; size as usize];
+        let read = unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr() as *mut std::ffi::c_void,
+                size,
+                &mut size,
+            )
+        };
+        if read == 0 {
+            unsafe { CloseHandle(token) };
+            return Err("读取安装用户 SID 失败".to_string());
+        }
+        let token_user = unsafe { &*(buffer.as_ptr() as *const TOKEN_USER) };
+        let mut sid_text = std::ptr::null_mut();
+        let converted = unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut sid_text) };
+        if converted == 0 {
+            unsafe { CloseHandle(token) };
+            return Err("格式化安装用户 SID 失败".to_string());
+        }
+        let mut length = 0;
+        unsafe {
+            while *sid_text.add(length) != 0 {
+                length += 1;
+            }
+        }
+        let sid = unsafe { String::from_utf16_lossy(std::slice::from_raw_parts(sid_text, length)) };
+        unsafe {
+            let _ = windows_sys::Win32::Foundation::LocalFree(sid_text as _);
+            CloseHandle(token);
+        }
+        Ok(sid)
+    }
+
+    pub fn ensure_install_user_sid(data_dir: &Path) -> Result<(), String> {
+        fs::write(data_dir.join(USER_SID_FILE), current_user_sid()?)
+            .map_err(|e| format!("保存 Service 安装用户身份失败：{e}"))
+    }
+
     pub fn ensure_install_token(data_dir: &Path) -> Result<(), String> {
         ensure_token(data_dir).map(|_| ())
     }
@@ -274,6 +341,7 @@ mod windows_impl {
         }
     }
 
+    #[cfg(not(test))]
     fn service_process_id() -> Result<Option<u32>, String> {
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
             .map_err(|error| format!("查询 MioProxy Service 失败：{error}"))?;
@@ -457,14 +525,13 @@ mod windows_impl {
         data(response).map(Some)
     }
 
-    pub(crate) async fn request_core_status(
+    pub(crate) async fn request_service_status(
         app: &AppHandle,
-    ) -> Result<Option<crate::mihomo::CoreStatus>, String> {
+    ) -> Result<Option<ServiceStatusData>, String> {
         let Some(response) = try_request(app, ServiceCommand::Status).await? else {
             return Ok(None);
         };
-        let status: ServiceStatusData = data(response)?;
-        Ok(Some(status.core))
+        data(response).map(Some)
     }
 
     pub(crate) async fn request_reload(app: &AppHandle) -> Result<Option<Value>, String> {
@@ -507,6 +574,23 @@ mod windows_impl {
         };
         let value: ServiceTunData = data(response)?;
         Ok(Some(value.into_snapshot()))
+    }
+
+    pub(crate) async fn restore_for_lifecycle(app: &AppHandle) -> Result<(), String> {
+        let Some(response) = try_request(
+            app,
+            ServiceCommand::TunSetEnabled {
+                enabled: false,
+                profile_id: None,
+                system_proxy_enabled: false,
+            },
+        )
+        .await?
+        else {
+            return Ok(());
+        };
+        let _: ServiceTunData = data(response)?;
+        Ok(())
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -758,6 +842,9 @@ rules:
             if self.owns_core()? {
                 return self.core_status().await;
             }
+            if self.has_tun_recovery() {
+                self.disable_tun().await?;
+            }
             if let Some(pid) = external_mihomo_pids(None).into_iter().next() {
                 return Err(format!(
                     "检测到已有 Mihomo 进程（PID {pid}），拒绝启动以避免双实例"
@@ -808,11 +895,10 @@ rules:
 
         async fn stop(&self) -> Result<crate::mihomo::CoreStatus, String> {
             let owns_core = self.owns_core()?;
+            if self.has_tun_recovery() {
+                self.disable_tun().await?;
+            }
             if owns_core {
-                let tun_status = self.tun_data()?.status;
-                if tun_status == "running" || tun_status == "starting" || tun_status == "stopping" {
-                    self.disable_tun().await?;
-                }
                 if let Some(mut child) = self
                     .child
                     .lock()
@@ -913,6 +999,16 @@ rules:
             if current_status == crate::tun::TunStatus::Error && self.has_tun_recovery() {
                 return Err("Service TUN 仍有待恢复状态，请先执行停止/恢复".to_string());
             }
+            if config::configured_tun_enabled_at(&self.data_dir, &profile_id)?
+                || mihomo::api_get("/configs")
+                    .await
+                    .ok()
+                    .and_then(|value| value.get("tun").cloned())
+                    .and_then(|value| value.get("enable").and_then(Value::as_bool))
+                    == Some(true)
+            {
+                return Err("当前配置或 Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string());
+            }
             let previous_override = config::override_content_at(&self.data_dir)?;
             let snapshot = crate::tun::capture_snapshot().await?;
             {
@@ -970,9 +1066,18 @@ rules:
                     )
                 .await;
             }
-            let baseline = crate::tun::capture_snapshot().await.map_err(|error| {
-                format!("TUN 网卡就绪后无法建立网络基线：{error}")
-            })?;
+            let baseline = match crate::tun::capture_snapshot().await {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    return self
+                        .rollback_tun(
+                            &profile_id,
+                            &previous_override,
+                            format!("TUN 网卡就绪后无法建立网络基线：{error}"),
+                        )
+                        .await;
+                }
+            };
             {
                 let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
                 tun.status = crate::tun::TunStatus::Running;
@@ -1006,45 +1111,63 @@ rules:
         ) -> Result<ServiceTunData, String> {
             let recovery =
                 config::restore_override_content_at(&self.data_dir, previous_override).map(|_| ());
-            let recovery = if recovery.is_ok() && mihomo::is_running().await {
+            let owns_core = self.owns_core().unwrap_or(false) && mihomo::is_running().await;
+            let recovery = if recovery.is_ok() && owns_core {
                 self.apply_profile(profile_id).await.map(|_| ())
             } else if recovery.is_ok() {
                 config::restore_profile_config_at(&self.data_dir, profile_id)
             } else {
                 recovery
-            };
-            let message = match recovery {
+            }
+            .and_then(|_| self.clear_tun_persisted());
+            match recovery {
                 Ok(()) => {
-                    let _ = self.clear_tun_persisted();
-                    format!("{reason}；已恢复原始配置")
+                    let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
+                    *tun = ServiceTunState {
+                        status: crate::tun::TunStatus::Disabled,
+                        message: Some(format!("{reason}；已恢复原始配置")),
+                        ..ServiceTunState::default()
+                    };
+                    Err(reason)
                 }
-                Err(error) => format!("{reason}；TUN 回滚也失败：{error}"),
-            };
-            let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
-            tun.status = crate::tun::TunStatus::Error;
-            tun.message = Some(message.clone());
-            Err(message)
+                Err(error) => {
+                    let message = format!("{reason}；TUN 回滚也失败：{error}");
+                    let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
+                    tun.status = crate::tun::TunStatus::Error;
+                    tun.message = Some(message.clone());
+                    tun.profile_id = Some(profile_id.to_string());
+                    tun.previous_override = Some(previous_override.to_string());
+                    Err(message)
+                }
+            }
         }
 
         async fn disable_tun(&self) -> Result<ServiceTunData, String> {
+            let _transition = self.tun_transition.lock().await;
+            self.disable_tun_inner().await
+        }
+
+        async fn disable_tun_inner(&self) -> Result<ServiceTunData, String> {
             let persisted = self.read_tun_persisted()?;
-            let previous = persisted
-                .as_ref()
-                .map(|state| state.previous_override.clone())
-                .or_else(|| {
-                    self.tun
-                        .lock()
-                        .ok()
-                        .and_then(|tun| tun.previous_override.clone())
-                });
-            let profile_id = persisted
-                .as_ref()
-                .map(|state| state.profile_id.clone())
-                .or_else(|| self.tun.lock().ok().and_then(|tun| tun.profile_id.clone()));
+            let (previous, profile_id) = {
+                let in_memory = self
+                    .tun
+                    .lock()
+                    .map_err(|_| "Service TUN 状态锁异常")?;
+                let previous = persisted
+                    .as_ref()
+                    .map(|state| state.previous_override.clone())
+                    .or_else(|| in_memory.previous_override.clone());
+                let profile_id = persisted
+                    .as_ref()
+                    .map(|state| state.profile_id.clone())
+                    .or_else(|| in_memory.profile_id.clone());
+                (previous, profile_id)
+            };
             let Some(previous) = previous else {
-                let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
-                tun.status = crate::tun::TunStatus::Disabled;
-                tun.message = None;
+                if let Ok(mut tun) = self.tun.lock() {
+                    *tun = ServiceTunState::default();
+                }
                 return self.tun_data();
             };
             {
@@ -1060,25 +1183,36 @@ rules:
                 }
                 return Err(message);
             }
-            if mihomo::is_running().await {
-                let Some(profile_id) = profile_id else {
-                    let message = "停止 TUN 缺少 Profile".to_string();
-                    if let Ok(mut tun) = self.tun.lock() {
-                        tun.status = crate::tun::TunStatus::Error;
-                        tun.message = Some(message.clone());
-                    }
-                    return Err(message);
-                };
-                if let Err(error) = self.apply_profile(&profile_id).await {
-                    let message = format!("Mihomo 停止 TUN 失败：{error}");
-                    if let Ok(mut tun) = self.tun.lock() {
-                        tun.status = crate::tun::TunStatus::Error;
-                        tun.message = Some(message.clone());
-                    }
-                    return Err(message);
+            let Some(profile_id) = profile_id else {
+                let message = "停止 TUN 缺少 Profile".to_string();
+                if let Ok(mut tun) = self.tun.lock() {
+                    tun.status = crate::tun::TunStatus::Error;
+                    tun.message = Some(message.clone());
                 }
+                return Err(message);
+            };
+            let owns_core = self.owns_core().unwrap_or(false) && mihomo::is_running().await;
+            let restore = if owns_core {
+                self.apply_profile(&profile_id).await.map(|_| ())
+            } else {
+                config::restore_profile_config_at(&self.data_dir, &profile_id)
+            };
+            if let Err(error) = restore {
+                let message = format!("停止 TUN 后恢复配置失败：{error}");
+                if let Ok(mut tun) = self.tun.lock() {
+                    tun.status = crate::tun::TunStatus::Error;
+                    tun.message = Some(message.clone());
+                }
+                return Err(message);
             }
-            self.clear_tun_persisted()?;
+            if let Err(error) = self.clear_tun_persisted() {
+                let message = format!("清理 Service TUN 恢复状态失败：{error}");
+                if let Ok(mut tun) = self.tun.lock() {
+                    tun.status = crate::tun::TunStatus::Error;
+                    tun.message = Some(message.clone());
+                }
+                return Err(message);
+            }
             {
                 let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
                 *tun = ServiceTunState::default();
@@ -1113,16 +1247,20 @@ rules:
                 Ok(()) => {
                     self.clear_tun_persisted()?;
                     let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
-                    tun.status = crate::tun::TunStatus::Error;
-                    tun.message = Some("Service 上次异常退出，已恢复 TUN 原始配置".to_string());
-                    tun.profile_id = Some(persisted.profile_id);
-                    tun.snapshot = Some(persisted.snapshot);
+                    *tun = ServiceTunState {
+                        status: crate::tun::TunStatus::Disabled,
+                        message: Some("Service 上次异常退出，已恢复 TUN 原始配置".to_string()),
+                        ..ServiceTunState::default()
+                    };
                     Ok(tun.message.clone())
                 }
                 Err(error) => {
                     let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
                     tun.status = crate::tun::TunStatus::Error;
                     tun.message = Some(format!("Service TUN 启动恢复失败：{error}"));
+                    tun.previous_override = Some(persisted.previous_override);
+                    tun.profile_id = Some(persisted.profile_id);
+                    tun.snapshot = Some(persisted.snapshot);
                     Ok(tun.message.clone())
                 }
             }
@@ -1169,6 +1307,7 @@ rules:
                 .map_err(|e| e.to_string())?),
                 ServiceCommand::Reload => self.reload().await,
                 ServiceCommand::ApplyProfile { profile_id } => {
+                    let _transition = self.tun_transition.lock().await;
                     if self.tun_data()?.status != "disabled" {
                         return Err("请先关闭 TUN，再切换 Profile".to_string());
                     }
@@ -1188,11 +1327,7 @@ rules:
         }
 
         async fn shutdown(&self) -> Result<(), String> {
-            let status = self.tun_data()?;
-            if status.status == "running"
-                || status.status == "starting"
-                || status.status == "stopping"
-            {
+            if self.has_tun_recovery() {
                 let _ = self.disable_tun().await;
             }
             if let Some(mut child) = self
@@ -1209,6 +1344,7 @@ rules:
 
         async fn monitor(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
             let mut previous_tick = unsafe { GetTickCount64() };
+            let mut was_active = false;
             loop {
                 tokio::select! {
                     changed = shutdown.changed() => {
@@ -1219,12 +1355,25 @@ rules:
                 if *shutdown.borrow() {
                     return;
                 }
+                let _transition = self.tun_transition.lock().await;
                 let tun = match self.tun_data() {
-                    Ok(tun) if tun.status == "running" => tun,
-                    _ => continue,
+                    Ok(tun) if tun.status != "disabled" && self.has_tun_recovery() => tun,
+                    _ => {
+                        was_active = false;
+                        continue;
+                    }
                 };
                 if !self.owns_core().unwrap_or(false) || !mihomo::is_running().await {
+                    let _ = self.disable_tun_inner().await;
+                    was_active = false;
                     continue;
+                }
+                if tun.status != "running" {
+                    continue;
+                }
+                if !was_active {
+                    previous_tick = unsafe { GetTickCount64() };
+                    was_active = true;
                 }
                 let now = unsafe { GetTickCount64() };
                 let wake_gap = now.saturating_sub(previous_tick) > 30_000;
@@ -1255,9 +1404,18 @@ rules:
                 }
                 match self.apply_profile(&profile_id).await {
                     Ok(_) => {
+                        if !self.owns_core().unwrap_or(false) || !mihomo::is_running().await {
+                            let _ = self.disable_tun_inner().await;
+                            was_active = false;
+                            continue;
+                        }
+                        let baseline = crate::tun::capture_snapshot().await.ok();
                         if let Ok(mut current) = self.tun.lock() {
                             current.status = crate::tun::TunStatus::Running;
                             current.message = None;
+                            if let Some(baseline) = baseline {
+                                current.snapshot = Some(baseline);
+                            }
                         }
                         let _ = self.write_tun_persisted();
                     }
@@ -1304,8 +1462,27 @@ rules:
         }
     }
 
-    fn server_attributes() -> Result<SECURITY_ATTRIBUTES, String> {
-        let sddl = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;AU)\0";
+    fn server_attributes(data_dir: &Path) -> Result<SECURITY_ATTRIBUTES, String> {
+        #[cfg(test)]
+        let _ = data_dir;
+        #[cfg(test)]
+        let sid = "AU".to_string();
+        #[cfg(not(test))]
+        let sid = {
+            let sid = fs::read_to_string(data_dir.join(USER_SID_FILE))
+                .map_err(|e| format!("读取 Service 安装用户身份失败：{e}"))?
+                .trim()
+                .to_string();
+            if !sid.starts_with("S-")
+                || sid
+                    .chars()
+                    .any(|character| !character.is_ascii_alphanumeric() && character != '-')
+            {
+                return Err("Service 安装用户 SID 无效".to_string());
+            }
+            sid
+        };
+        let sddl = format!("D:P(A;;GA;;;SY)(A;;GA;;;{sid})\0");
         let wide = sddl.encode_utf16().collect::<Vec<u16>>();
         let mut descriptor = std::ptr::null_mut();
         let converted = unsafe {
@@ -1326,14 +1503,14 @@ rules:
         })
     }
 
-    fn create_server(first: bool) -> Result<NamedPipeServer, String> {
+    fn create_server(first: bool, data_dir: &Path) -> Result<NamedPipeServer, String> {
         let mut options = ServerOptions::new();
         options
             .first_pipe_instance(first)
             .max_instances(1)
             .in_buffer_size(16 * 1024)
             .out_buffer_size(16 * 1024);
-        let mut attributes = server_attributes()?;
+        let mut attributes = server_attributes(data_dir)?;
         let server = unsafe {
             options.create_with_security_attributes_raw(
                 pipe_name(),
@@ -1349,21 +1526,41 @@ rules:
         server
     }
 
+    const MAX_REQUEST_BYTES: usize = 64 * 1024;
+
+    async fn read_request_line(server: &mut NamedPipeServer) -> Result<String, String> {
+        let mut request = Vec::with_capacity(1024);
+        let mut chunk = [0u8; 1024];
+        loop {
+            let read = tokio::time::timeout(Duration::from_secs(5), server.read(&mut chunk))
+                .await
+                .map_err(|_| "读取 Service 请求超时".to_string())?
+                .map_err(|e| format!("读取 Service 请求失败：{e}"))?;
+            if read == 0 {
+                break;
+            }
+            let newline = chunk[..read].iter().position(|byte| *byte == b'\n');
+            let take = newline.map_or(read, |index| index + 1);
+            if request.len() + take > MAX_REQUEST_BYTES {
+                return Err("Service 请求超过大小限制".to_string());
+            }
+            request.extend_from_slice(&chunk[..take]);
+            if newline.is_some() {
+                break;
+            }
+        }
+        String::from_utf8(request).map_err(|e| format!("Service 请求不是 UTF-8：{e}"))
+    }
+
     async fn handle_client(
-        server: NamedPipeServer,
+        mut server: NamedPipeServer,
         runtime: &ServiceRuntime,
         expected_token: &str,
     ) -> Result<(), String> {
-        let mut reader = BufReader::new(server);
-        let mut line = String::new();
-        reader
-            .read_line(&mut line)
-            .await
-            .map_err(|e| format!("读取 Service 请求失败：{e}"))?;
+        let line = read_request_line(&mut server).await?;
         let request = match serde_json::from_str::<ServiceRequest>(&line) {
             Ok(request) => request,
             Err(error) => {
-                let mut server = reader.into_inner();
                 let line =
                     serde_json::to_string(&response_error(format!("Service 请求无效：{error}")))
                         .map_err(|error| error.to_string())?
@@ -1393,7 +1590,6 @@ rules:
                 Err(error) => response_error(error),
             }
         };
-        let mut server = reader.into_inner();
         let line = serde_json::to_string(&response).map_err(|e| e.to_string())? + "\n";
         server
             .write_all(line.as_bytes())
@@ -1404,10 +1600,11 @@ rules:
 
     async fn create_server_until_ready(
         first: bool,
+        data_dir: &Path,
         shutdown: &mut watch::Receiver<bool>,
     ) -> Result<Option<NamedPipeServer>, String> {
         loop {
-            match create_server(first) {
+            match create_server(first, data_dir) {
                 Ok(server) => return Ok(Some(server)),
                 Err(error) if !first && error.contains("os error 231") => {
                     tokio::select! {
@@ -1436,7 +1633,7 @@ rules:
         let monitor = tokio::spawn(runtime.clone().monitor(shutdown.clone()));
         let mut first = true;
         loop {
-            let Some(server) = create_server_until_ready(first, &mut shutdown).await? else {
+            let Some(server) = create_server_until_ready(first, &runtime.data_dir, &mut shutdown).await? else {
                 let _ = runtime.shutdown().await;
                 break;
             };
@@ -1585,12 +1782,14 @@ rules:
 }
 
 #[cfg(windows)]
-pub use windows_impl::{ensure_install_token, run_service_console, run_service_daemon};
+pub use windows_impl::{
+    ensure_install_token, ensure_install_user_sid, run_service_console, run_service_daemon,
+};
 
 #[cfg(windows)]
 pub(crate) use windows_impl::{
-    request_apply_profile, request_core, request_core_status, request_reload, request_tun,
-    service_tun_status,
+    request_apply_profile, request_core, request_reload, request_service_status, request_tun,
+    restore_for_lifecycle, service_tun_status,
 };
 
 #[cfg(not(windows))]
@@ -1617,9 +1816,9 @@ pub(crate) async fn request_core(
 }
 
 #[cfg(not(windows))]
-pub(crate) async fn request_core_status(
+pub(crate) async fn request_service_status(
     _app: &AppHandle,
-) -> Result<Option<crate::mihomo::CoreStatus>, String> {
+) -> Result<Option<ServiceStatusData>, String> {
     Ok(None)
 }
 
@@ -1634,6 +1833,11 @@ pub(crate) async fn request_apply_profile(
     _profile_id: &str,
 ) -> Result<Option<crate::config::ConfigApplyResult>, String> {
     Ok(None)
+}
+
+#[cfg(not(windows))]
+pub(crate) async fn restore_for_lifecycle(_app: &AppHandle) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(not(windows))]

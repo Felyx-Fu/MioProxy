@@ -6,6 +6,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose, Engine as _};
+use percent_encoding::percent_decode_str;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
@@ -126,6 +127,13 @@ fn set_alpn(map: &mut Mapping, url: &Url) {
     }
 }
 
+fn decode_userinfo(value: &str, kind: &str, index: usize) -> Result<String, String> {
+    percent_decode_str(value)
+        .decode_utf8()
+        .map(|decoded| decoded.into_owned())
+        .map_err(|_| format!("第 {index} 个 {kind} 节点用户信息不是有效 UTF-8"))
+}
+
 fn proxy_name(url: &Url, index: usize, used_names: &mut HashSet<String>) -> String {
     let candidate = url
         .fragment()
@@ -168,7 +176,7 @@ fn parse_proxy_uri(
     let map = match scheme.as_str() {
         "vless" => {
             let mut map = proxy_base(&url, name, "vless")?;
-            let uuid = url.username();
+            let uuid = decode_userinfo(url.username(), "VLESS", index)?;
             if uuid.is_empty() {
                 return Err(format!("第 {index} 个 VLESS 节点缺少 UUID"));
             }
@@ -204,7 +212,21 @@ fn parse_proxy_uri(
                 }
                 map.insert(value_key("reality-opts"), Value::Mapping(reality));
             }
-            if network == "grpc" {
+            if network.eq_ignore_ascii_case("ws") {
+                let mut ws = Mapping::new();
+                if let Some(path) = query_value(&url, "path") {
+                    set_string(&mut ws, "path", path);
+                }
+                if let Some(host) = query_value(&url, "host") {
+                    let mut headers = Mapping::new();
+                    set_string(&mut headers, "Host", host);
+                    ws.insert(value_key("headers"), Value::Mapping(headers));
+                }
+                if !ws.is_empty() {
+                    map.insert(value_key("ws-opts"), Value::Mapping(ws));
+                }
+            }
+            if network.eq_ignore_ascii_case("grpc") {
                 if let Some(service_name) = query_value(&url, "serviceName") {
                     let mut grpc = Mapping::new();
                     set_string(&mut grpc, "grpc-service-name", service_name);
@@ -215,8 +237,10 @@ fn parse_proxy_uri(
         }
         "hysteria2" | "hy2" => {
             let mut map = proxy_base(&url, name, "hysteria2")?;
-            let password =
-                query_value(&url, "password").unwrap_or_else(|| url.username().to_string());
+            let password = match query_value(&url, "password") {
+                Some(value) => value,
+                None => decode_userinfo(url.username(), "Hysteria2", index)?,
+            };
             if password.is_empty() {
                 return Err(format!("第 {index} 个 Hysteria2 节点缺少密码"));
             }
@@ -238,9 +262,17 @@ fn parse_proxy_uri(
         }
         "tuic" => {
             let mut map = proxy_base(&url, name, "tuic")?;
-            let uuid = query_value(&url, "uuid").unwrap_or_else(|| url.username().to_string());
-            let password =
-                query_value(&url, "password").or_else(|| url.password().map(ToOwned::to_owned));
+            let uuid = match query_value(&url, "uuid") {
+                Some(value) => value,
+                None => decode_userinfo(url.username(), "TUIC", index)?,
+            };
+            let password = if let Some(value) = query_value(&url, "password") {
+                Some(value)
+            } else {
+                url.password()
+                    .map(|value| decode_userinfo(value, "TUIC", index))
+                    .transpose()?
+            };
             if uuid.is_empty() || password.as_deref().is_none_or(str::is_empty) {
                 return Err(format!("第 {index} 个 TUIC 节点缺少 UUID 或密码"));
             }
@@ -401,13 +433,14 @@ pub fn profile_add(app: AppHandle, name: String, url: String) -> Result<Profile,
 
 #[tauri::command]
 pub async fn profile_download(app: AppHandle, id: String) -> Result<Profile, String> {
+    let _transition = crate::tun::lock_transitions().await;
     if crate::tun::is_active(&app) {
         return Err("请先关闭 TUN，再更新 Profile".to_string());
     }
-    if let Some(tun) = crate::service::service_tun_status(&app).await?
-        && tun.status != crate::tun::TunStatus::Disabled
-    {
-        return Err("请先关闭 Service 管理的 TUN，再更新 Profile".to_string());
+    if let Some(tun) = crate::service::service_tun_status(&app).await? {
+        if tun.status != crate::tun::TunStatus::Disabled {
+            return Err("请先关闭 Service 管理的 TUN，再更新 Profile".to_string());
+        }
     }
     let mut profiles = read_profiles(&app)?;
     let profile = profiles
@@ -464,6 +497,7 @@ pub async fn profile_apply(app: AppHandle, id: String) -> Result<String, String>
 
 #[tauri::command]
 pub async fn profile_remove(app: AppHandle, id: String) -> Result<(), String> {
+    let _transition = crate::tun::lock_transitions().await;
     if crate::tun::is_active(&app) {
         return Err("请先关闭 TUN，再删除 Profile".to_string());
     }
@@ -525,5 +559,24 @@ mod tests {
     fn keeps_mihomo_yaml_profiles_unchanged() {
         let source = "mixed-port: 7890\nproxies: []\n";
         assert_eq!(normalize_subscription_body(source).unwrap(), source);
+    }
+
+    #[test]
+    fn imports_ws_options_and_decodes_userinfo() {
+        let source = concat!(
+            "vless://11111111-1111-1111-1111-111111111111@example.com:443?type=ws&path=%2Fedge&host=cdn.example.com#WS\n",
+            "hysteria2://p%40ss@example.org:443#Hy2\n",
+            "tuic://22222222-2222-2222-2222-222222222222:pass%40word@example.net:443#TUIC\n",
+        );
+        let yaml = normalize_subscription_body(source).unwrap();
+        let value = serde_yaml::from_str::<Value>(&yaml).unwrap();
+        let proxies = value["proxies"].as_sequence().unwrap();
+        assert_eq!(proxies[0]["ws-opts"]["path"].as_str(), Some("/edge"));
+        assert_eq!(
+            proxies[0]["ws-opts"]["headers"]["Host"].as_str(),
+            Some("cdn.example.com")
+        );
+        assert_eq!(proxies[1]["password"].as_str(), Some("p@ss"));
+        assert_eq!(proxies[2]["password"].as_str(), Some("pass@word"));
     }
 }

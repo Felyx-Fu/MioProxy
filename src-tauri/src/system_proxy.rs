@@ -149,7 +149,7 @@ pub fn recover_stale_state(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn restore_for_lifecycle(app: &AppHandle) -> Result<(), String> {
+async fn restore_for_lifecycle_inner(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<SystemProxyState>();
     let snapshot = state
         .snapshot
@@ -169,11 +169,17 @@ pub async fn restore_for_lifecycle(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+pub async fn restore_for_lifecycle(app: &AppHandle) -> Result<(), String> {
+    let _transition = crate::tun::lock_transitions().await;
+    restore_for_lifecycle_inner(app).await
+}
+
 pub async fn restore_after_core_exit(app: &AppHandle) {
     let _ = restore_for_lifecycle(app).await;
 }
 
 pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxyStatus, String> {
+    let _transition = crate::tun::lock_transitions().await;
     if enabled {
         if let Some(service_tun) = crate::service::service_tun_status(&app).await? {
             if service_tun.status != crate::tun::TunStatus::Disabled {
@@ -203,7 +209,7 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
         *state.snapshot.lock().map_err(|_| "System Proxy 状态锁异常")? = Some(snapshot);
         *state.enabled.lock().map_err(|_| "System Proxy 状态锁异常")? = true;
     } else {
-        restore_for_lifecycle(&app).await?;
+        restore_for_lifecycle_inner(&app).await?;
     }
     let result = status(&app).await;
     if let Ok(next) = &result {
