@@ -91,9 +91,7 @@ mod windows_impl {
         sync::{Arc, Mutex},
         time::Duration,
     };
-
-    #[cfg(not(test))]
-    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
 
     use serde::Deserialize;
     use serde_json::json;
@@ -1440,12 +1438,19 @@ rules:
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
+                .access_mode(
+                    windows_sys::Win32::Foundation::GENERIC_WRITE
+                        | windows_sys::Win32::Storage::FileSystem::DELETE,
+                )
+                // Deliberately omit FILE_SHARE_DELETE and FILE_SHARE_WRITE. The
+                // verified object cannot be renamed or modified while privileged
+                // content is written and installed through this same handle.
+                .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
                 .open(&temp)
                 .map_err(|e| e.to_string())?;
             file.write_all(bytes).map_err(|e| e.to_string())?;
             file.sync_all().map_err(|e| e.to_string())?;
-            drop(file);
-            replace_file(&temp, path)
+            replace_file(&file, path)
         })();
         if result.is_err() {
             let _ = fs::remove_file(&temp);
@@ -1453,15 +1458,34 @@ rules:
         result
     }
 
-    fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
+    fn replace_file(source: &fs::File, destination: &Path) -> Result<(), String> {
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::Storage::FileSystem::{
-            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+            SetFileInformationByHandle, FileRenameInfo, FILE_RENAME_INFO,
         };
-        let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-        let destination: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
+        let destination: Vec<u16> = destination.as_os_str().encode_wide().collect();
+        let header_size = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+        let byte_len = header_size + destination.len() * std::mem::size_of::<u16>();
+        // Allocate in pointer-sized words so the FILE_RENAME_INFO header is aligned.
+        let mut info = vec![0usize; byte_len.div_ceil(std::mem::size_of::<usize>())];
+        let rename = info.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        unsafe {
+            (*rename).Anonymous.ReplaceIfExists = true;
+            (*rename).RootDirectory = std::ptr::null_mut();
+            (*rename).FileNameLength = (destination.len() * std::mem::size_of::<u16>()) as u32;
+            std::ptr::copy_nonoverlapping(
+                destination.as_ptr(),
+                (*rename).FileName.as_mut_ptr(),
+                destination.len(),
+            );
+        }
         let ok = unsafe {
-            MoveFileExW(source.as_ptr(), destination.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+            SetFileInformationByHandle(
+                source.as_raw_handle(),
+                FileRenameInfo,
+                rename.cast(),
+                byte_len as u32,
+            )
         };
         if ok == 0 {
             Err(io::Error::last_os_error().to_string())
