@@ -226,9 +226,13 @@ rules:
 }
 
 pub(crate) async fn api_get(path: &str) -> Result<Value, String> {
+    api_get_with_timeout(path, Duration::from_secs(2)).await
+}
+
+async fn api_get_with_timeout(path: &str, timeout: Duration) -> Result<Value, String> {
     let url = format!("http://{CONTROLLER}{path}");
     Client::builder()
-        .timeout(Duration::from_secs(2))
+        .timeout(timeout)
         .build()
         .map_err(|e| e.to_string())?
         .get(url)
@@ -605,10 +609,13 @@ pub async fn mihomo_select_proxy(
 #[tauri::command]
 pub async fn mihomo_proxy_delay(proxy: String, url: Option<String>) -> Result<Value, String> {
     let target = url.unwrap_or_else(|| DEFAULT_DELAY_URL.to_string());
-    api_get(&format!(
-        "/proxies/{}/delay?url={}&timeout=5000",
-        encode_path_segment(&proxy),
-        encode_path_segment(&target),
-    ))
+    api_get_with_timeout(
+        &format!(
+            "/proxies/{}/delay?url={}&timeout=5000",
+            encode_path_segment(&proxy),
+            encode_path_segment(&target),
+        ),
+        Duration::from_secs(7),
+    )
     .await
 }
