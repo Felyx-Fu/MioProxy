@@ -219,9 +219,9 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
 }
 
 pub async fn status(app: &AppHandle) -> Result<SystemProxyStatus, String> {
-    let state = app.state::<SystemProxyState>();
-    let enabled = *state.enabled.lock().map_err(|_| "System Proxy 状态锁异常")?;
     let snapshot = read_snapshot()?;
+    // Read the HKCU value shared by all GUI processes, rather than process-local state.
+    let enabled = snapshot.proxy_enable.unwrap_or_default() != 0;
     Ok(SystemProxyStatus {
         enabled,
         core_running: mihomo::is_running().await,

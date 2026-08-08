@@ -84,7 +84,8 @@ pub(crate) fn token_path(data_dir: &std::path::Path) -> std::path::PathBuf {
 mod windows_impl {
     use super::*;
     use std::{
-        fs, io,
+        fs::{self, OpenOptions},
+        io::{self, Write},
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
         sync::{Arc, Mutex},
@@ -709,16 +710,10 @@ mod windows_impl {
                     .ok_or_else(|| "Service TUN 缺少网络快照".to_string())?,
             };
             let path = self.service_tun_path();
-            let temp = path.with_extension("tmp");
-            fs::write(
-                &temp,
-                serde_json::to_vec_pretty(&state).map_err(|e| e.to_string())?,
+            write_atomic(
+                &path,
+                &serde_json::to_vec_pretty(&state).map_err(|e| e.to_string())?,
             )
-            .map_err(|e| e.to_string())?;
-            if path.exists() {
-                fs::remove_file(&path).map_err(|e| e.to_string())?;
-            }
-            fs::rename(temp, path).map_err(|e| e.to_string())
         }
 
         fn clear_tun_persisted(&self) -> Result<(), String> {
@@ -1438,12 +1433,41 @@ rules:
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let temp = path.with_extension("tmp");
-        fs::write(&temp, bytes).map_err(|e| e.to_string())?;
-        if path.exists() {
-            fs::remove_file(path).map_err(|e| e.to_string())?;
+        let mut random = [0u8; 16];
+        getrandom::fill(&mut random).map_err(|e| e.to_string())?;
+        let temp = path.with_extension(format!("{:032x}.tmp", u128::from_le_bytes(random)));
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)
+                .map_err(|e| e.to_string())?;
+            file.write_all(bytes).map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
+            drop(file);
+            replace_file(&temp, path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
         }
-        fs::rename(temp, path).map_err(|e| e.to_string())
+        result
+    }
+
+    fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+        let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+        let destination: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
+        let ok = unsafe {
+            MoveFileExW(source.as_ptr(), destination.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+        };
+        if ok == 0 {
+            Err(io::Error::last_os_error().to_string())
+        } else {
+            Ok(())
+        }
     }
 
     fn response_ok(data: Value) -> ServiceResponse {

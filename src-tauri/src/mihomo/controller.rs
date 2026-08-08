@@ -374,6 +374,8 @@ pub async fn mihomo_start(
                     traffic::stop(&emitter);
                     logs::stop(&emitter);
                     crate::system_proxy::restore_after_core_exit(&emitter).await;
+                    // Roll TUN back immediately, before Mihomo can be restarted.
+                    crate::tun::on_mihomo_exit(&emitter).await;
                     crate::tray::update_current_node(&emitter).await;
                     let stop_requested = emitter
                         .state::<CoreState>()

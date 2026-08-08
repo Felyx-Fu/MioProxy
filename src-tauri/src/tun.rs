@@ -1,5 +1,6 @@
 use std::{
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     path::PathBuf,
     process::Command,
     sync::Mutex,
@@ -93,13 +94,52 @@ fn write_persisted(app: &AppHandle, state: &PersistedTunState) -> Result<(), Str
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let temp = path.with_extension("tmp");
     let bytes = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
-    fs::write(&temp, bytes).map_err(|e| e.to_string())?;
-    if path.exists() {
-        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    atomic_replace(&path, &bytes)
+}
+
+fn atomic_replace(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(|e| e.to_string())?;
+    let temp = path.with_extension(format!("{:032x}.tmp", u128::from_le_bytes(random)));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        drop(file);
+        replace_file(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
     }
-    fs::rename(temp, path).map_err(|e| e.to_string())
+    result
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &std::path::Path, destination: &std::path::Path) -> Result<(), String> {
+    fs::rename(source, destination).map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn replace_file(source: &std::path::Path, destination: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
+    let ok = unsafe {
+        MoveFileExW(source.as_ptr(), destination.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+    };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        Ok(())
+    }
 }
 
 fn read_persisted(app: &AppHandle) -> Result<Option<PersistedTunState>, String> {
