@@ -871,6 +871,15 @@ rules:
                     )
                     .await;
             }
+            if let Err(error) = crate::tun::wait_for_tun_ready().await {
+                return self
+                    .rollback_tun(
+                        &profile_id,
+                        &previous_override,
+                        format!("TUN 网卡启动失败：{error}"),
+                    )
+                    .await;
+            }
             {
                 let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
                 tun.status = crate::tun::TunStatus::Running;

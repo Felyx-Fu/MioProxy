@@ -28,9 +28,9 @@ pub enum TunStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkSnapshot {
-    pub default_route: String,
-    pub dns_servers: String,
-    pub adapters: String,
+    pub default_route: Value,
+    pub dns_servers: Value,
+    pub adapters: Value,
     pub mihomo_running: bool,
     pub captured_at: u64,
 }
@@ -125,7 +125,7 @@ fn is_admin() -> bool {
     false
 }
 
-fn powershell(script: &str) -> Result<String, String> {
+fn powershell_json(script: &str) -> Result<Value, String> {
     let output = Command::new("powershell.exe")
         .args([
             "-NoProfile",
@@ -144,11 +144,26 @@ fn powershell(script: &str) -> Result<String, String> {
         ));
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(if value.is_empty() {
-        "[]".to_string()
-    } else {
-        value
-    })
+    serde_json::from_str(if value.is_empty() { "[]" } else { &value })
+        .map_err(|e| format!("解析 Windows 网络状态失败：{e}"))
+}
+
+const TUN_INTERFACE_READY_SCRIPT: &str = r#"
+$adapter = Get-NetAdapter -Name 'MioProxy' -ErrorAction SilentlyContinue
+[bool]($adapter -and $adapter.Status -eq 'Up') | ConvertTo-Json -Compress
+"#;
+
+pub(crate) async fn wait_for_tun_ready() -> Result<(), String> {
+    for _ in 0..30 {
+        if powershell_json(TUN_INTERFACE_READY_SCRIPT)?
+            .as_bool()
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    Err("Mihomo 未创建状态为 Up 的 MioProxy TUN 网卡".to_string())
 }
 
 pub(crate) async fn capture_snapshot() -> Result<NetworkSnapshot, String> {
@@ -156,13 +171,13 @@ pub(crate) async fn capture_snapshot() -> Result<NetworkSnapshot, String> {
     if !mihomo_running {
         return Err("Mihomo 未运行，无法创建 TUN 运行前快照".to_string());
     }
-    let default_route = powershell(
+    let default_route = powershell_json(
         "Get-NetRoute -DestinationPrefix '0.0.0.0/0' -PolicyStore ActiveStore | Sort-Object RouteMetric | Select-Object -First 1 | Select-Object InterfaceAlias,InterfaceIndex,NextHop,RouteMetric | ConvertTo-Json -Compress",
     )?;
-    let dns_servers = powershell(
+    let dns_servers = powershell_json(
         "Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object { $_.ServerAddresses } | Select-Object InterfaceAlias,ServerAddresses | ConvertTo-Json -Compress",
     )?;
-    let adapters = powershell(
+    let adapters = powershell_json(
         "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object Name,InterfaceDescription,ifIndex,MacAddress,Status | ConvertTo-Json -Compress",
     )?;
     Ok(NetworkSnapshot {
@@ -354,6 +369,16 @@ async fn enable_tun(
             &profile_id,
             &previous_override,
             "TUN 配置加载后未确认运行".to_string(),
+        )
+        .await;
+    }
+    if let Err(error) = wait_for_tun_ready().await {
+        return rollback_enable(
+            app,
+            state,
+            &profile_id,
+            &previous_override,
+            format!("TUN 网卡启动失败：{error}"),
         )
         .await;
     }
@@ -578,4 +603,43 @@ pub fn start_monitor(app: AppHandle) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NetworkSnapshot;
+
+    #[test]
+    fn network_snapshot_preserves_structured_network_state() {
+        let snapshot = serde_json::from_str::<NetworkSnapshot>(
+            r#"{
+                "defaultRoute": {"interfaceIndex": 7, "nextHop": "192.168.1.1"},
+                "dnsServers": [{"interfaceAlias": "Wi-Fi", "serverAddresses": ["1.1.1.1"]}],
+                "adapters": [],
+                "mihomoRunning": true,
+                "capturedAt": 123
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(snapshot.default_route["interfaceIndex"], 7);
+        assert_eq!(snapshot.dns_servers[0]["interfaceAlias"], "Wi-Fi");
+        assert!(snapshot.adapters.is_array());
+    }
+
+    #[test]
+    fn network_snapshot_reads_legacy_string_fields() {
+        let snapshot = serde_json::from_str::<NetworkSnapshot>(
+            r#"{
+                "defaultRoute": "{}",
+                "dnsServers": "[]",
+                "adapters": "[]",
+                "mihomoRunning": true,
+                "capturedAt": 123
+            }"#,
+        )
+        .unwrap();
+        assert!(snapshot.default_route.is_string());
+        assert!(snapshot.dns_servers.is_string());
+        assert!(snapshot.adapters.is_string());
+    }
 }

@@ -160,10 +160,12 @@ export type DnsSettings = {
 
 export type TunStatus = "disabled" | "starting" | "running" | "stopping" | "error";
 
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
 export type NetworkSnapshot = {
-  defaultRoute: string;
-  dnsServers: string;
-  adapters: string;
+  defaultRoute: JsonValue;
+  dnsServers: JsonValue;
+  adapters: JsonValue;
   mihomoRunning: boolean;
   capturedAt: number;
 };
