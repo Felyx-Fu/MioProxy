@@ -1,5 +1,5 @@
 import { AlertTriangle, Check, CirclePower, Network, RefreshCw, Route, ShieldCheck, Wifi } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { mihomoApi, type ServiceConnectionStatus, type TunStatus, type TunStatusSnapshot } from "../api/mihomo";
 
 const STATUS_LABELS: Record<TunStatus, string> = {
@@ -27,14 +27,24 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled }: {
   const [service, setService] = useState<ServiceConnectionStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestInFlight = useRef(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (clearError = true) => {
+    if (requestInFlight.current) {
+      return;
+    }
+    requestInFlight.current = true;
     try {
       const [nextSnapshot, nextService] = await Promise.all([mihomoApi.tunStatus(), mihomoApi.serviceStatus()]);
       setSnapshot(nextSnapshot);
       setService(nextService);
+      if (clearError) {
+        setError(null);
+      }
     } catch (value) {
       setError(value instanceof Error ? value.message : String(value));
+    } finally {
+      requestInFlight.current = false;
     }
   }, []);
 
@@ -45,6 +55,9 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled }: {
   }, [load]);
 
   async function toggle() {
+    if (requestInFlight.current) {
+      return;
+    }
     const enabled = snapshot?.status === "disabled";
     if (enabled && !profileId) {
       setError("请先选择已下载的 Profile");
@@ -61,12 +74,15 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled }: {
     );
     setLoading(true);
     setError(null);
+    requestInFlight.current = true;
     try {
       setSnapshot(await mihomoApi.tunSetEnabled(enabled, profileId));
     } catch (value) {
       setError(value instanceof Error ? value.message : String(value));
-      await load();
+      requestInFlight.current = false;
+      await load(false);
     } finally {
+      requestInFlight.current = false;
       setLoading(false);
     }
   }

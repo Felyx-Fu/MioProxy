@@ -373,6 +373,7 @@ pub async fn mihomo_start(
                     }
                     traffic::stop(&emitter);
                     logs::stop(&emitter);
+                    crate::tun::on_mihomo_exit(&emitter).await;
                     crate::system_proxy::restore_after_core_exit(&emitter).await;
                     crate::tray::update_current_node(&emitter).await;
                     let stop_requested = emitter

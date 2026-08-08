@@ -28,7 +28,6 @@ pub struct ProxySnapshot {
 #[derive(Default)]
 pub struct SystemProxyState {
     snapshot: Mutex<Option<ProxySnapshot>>,
-    enabled: Mutex<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -161,7 +160,6 @@ async fn restore_for_lifecycle_inner(app: &AppHandle) -> Result<(), String> {
         write_snapshot(&snapshot)?;
         clear_persisted_snapshot(app)?;
         *state.snapshot.lock().map_err(|_| "System Proxy 状态锁异常")? = None;
-        *state.enabled.lock().map_err(|_| "System Proxy 状态锁异常")? = false;
     }
     if let Ok(next) = status(app).await {
         crate::tray::update_proxy_label(app, next.enabled, next.core_running);
@@ -194,12 +192,13 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
         }
 
         let state = app.state::<SystemProxyState>();
-        if *state.enabled.lock().map_err(|_| "System Proxy 状态锁异常")? {
+        let current = read_snapshot()?;
+        if current.proxy_enable == Some(1) {
             return status(&app).await;
         }
 
         let mixed_port = mihomo::mixed_port(&app)?;
-        let snapshot = read_snapshot()?;
+        let snapshot = current;
         persist_snapshot(&app, &snapshot)?;
         if let Err(error) = write_mioproxy_settings(mixed_port, &snapshot) {
             let _ = write_snapshot(&snapshot);
@@ -207,7 +206,6 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
             return Err(format!("开启系统代理失败：{error}"));
         }
         *state.snapshot.lock().map_err(|_| "System Proxy 状态锁异常")? = Some(snapshot);
-        *state.enabled.lock().map_err(|_| "System Proxy 状态锁异常")? = true;
     } else {
         restore_for_lifecycle_inner(&app).await?;
     }
@@ -219,11 +217,9 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
 }
 
 pub async fn status(app: &AppHandle) -> Result<SystemProxyStatus, String> {
-    let state = app.state::<SystemProxyState>();
-    let enabled = *state.enabled.lock().map_err(|_| "System Proxy 状态锁异常")?;
     let snapshot = read_snapshot()?;
     Ok(SystemProxyStatus {
-        enabled,
+        enabled: snapshot.proxy_enable == Some(1),
         core_running: mihomo::is_running().await,
         mixed_port: mihomo::mixed_port(app)?,
         proxy_server: snapshot.proxy_server,

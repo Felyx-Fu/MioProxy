@@ -84,7 +84,9 @@ pub(crate) fn token_path(data_dir: &std::path::Path) -> std::path::PathBuf {
 mod windows_impl {
     use super::*;
     use std::{
-        fs, io,
+        fs,
+        io::{self, Write},
+        os::windows::{ffi::OsStrExt, fs::MetadataExt},
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
         sync::{Arc, Mutex},
@@ -114,6 +116,7 @@ mod windows_impl {
             },
             GetTokenInformation, TokenUser, TOKEN_USER, TOKEN_QUERY, SECURITY_ATTRIBUTES,
         },
+        Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH},
         System::{
             Diagnostics::ToolHelp::{
                 CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -226,8 +229,9 @@ mod windows_impl {
     fn ensure_token(data_dir: &Path) -> Result<String, String> {
         fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
         let path = token_path(data_dir);
+        ensure_not_reparse(&path)?;
         if path.exists() {
-            let token = fs::read_to_string(path).map_err(|e| e.to_string())?;
+            let token = fs::read_to_string(&path).map_err(|e| e.to_string())?;
             if !token.trim().is_empty() {
                 return Ok(token.trim().to_string());
             }
@@ -238,7 +242,7 @@ mod windows_impl {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        fs::write(token_path(data_dir), &token).map_err(|e| e.to_string())?;
+        write_atomic(&path, token.as_bytes())?;
         Ok(token)
     }
 
@@ -297,7 +301,8 @@ mod windows_impl {
     }
 
     pub fn ensure_install_user_sid(data_dir: &Path) -> Result<(), String> {
-        fs::write(data_dir.join(USER_SID_FILE), current_user_sid()?)
+        let sid = current_user_sid()?;
+        write_atomic(&data_dir.join(USER_SID_FILE), sid.as_bytes())
             .map_err(|e| format!("保存 Service 安装用户身份失败：{e}"))
     }
 
@@ -709,16 +714,8 @@ mod windows_impl {
                     .ok_or_else(|| "Service TUN 缺少网络快照".to_string())?,
             };
             let path = self.service_tun_path();
-            let temp = path.with_extension("tmp");
-            fs::write(
-                &temp,
-                serde_json::to_vec_pretty(&state).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
-            if path.exists() {
-                fs::remove_file(&path).map_err(|e| e.to_string())?;
-            }
-            fs::rename(temp, path).map_err(|e| e.to_string())
+            let bytes = serde_json::to_vec_pretty(&state).map_err(|e| e.to_string())?;
+            write_atomic(&path, &bytes)
         }
 
         fn clear_tun_persisted(&self) -> Result<(), String> {
@@ -1434,16 +1431,100 @@ rules:
         }
     }
 
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+    fn ensure_not_reparse(path: &Path) -> Result<(), String> {
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.to_string()),
+        };
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(format!("拒绝写入 Reparse Point 路径：{}", path.display()));
+        }
+        Ok(())
+    }
+
+    fn replace_file(temp: &Path, path: &Path) -> Result<(), String> {
+        let source = temp
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let target = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let moved = unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                target.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if moved == 0 {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        Ok(())
+    }
+
     fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            ensure_not_reparse(parent)?;
         }
-        let temp = path.with_extension("tmp");
-        fs::write(&temp, bytes).map_err(|e| e.to_string())?;
-        if path.exists() {
-            fs::remove_file(path).map_err(|e| e.to_string())?;
+        ensure_not_reparse(path)?;
+
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("无法生成临时文件名：{}", path.display()))?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("无法确定临时文件目录：{}", path.display()))?;
+        let mut temp = None;
+        for _ in 0..8 {
+            let mut random = [0u8; 16];
+            getrandom::fill(&mut random).map_err(|e| format!("生成临时文件名失败：{e}"))?;
+            let suffix = random
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let candidate = parent.join(format!(".{file_name}.{suffix}.tmp"));
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(mut file) => {
+                    let result = file
+                        .write_all(bytes)
+                        .and_then(|_| file.flush())
+                        .and_then(|_| file.sync_all());
+                    if let Err(error) = result {
+                        drop(file);
+                        let _ = fs::remove_file(&candidate);
+                        return Err(error.to_string());
+                    }
+                    if let Err(error) = ensure_not_reparse(&candidate) {
+                        drop(file);
+                        let _ = fs::remove_file(&candidate);
+                        return Err(error);
+                    }
+                    temp = Some(candidate);
+                    break;
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.to_string()),
+            }
         }
-        fs::rename(temp, path).map_err(|e| e.to_string())
+        let temp = temp.ok_or_else(|| "无法创建唯一临时文件".to_string())?;
+        if let Err(error) = replace_file(&temp, path) {
+            let _ = fs::remove_file(&temp);
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn response_ok(data: Value) -> ServiceResponse {
@@ -1473,7 +1554,9 @@ rules:
         let sid = "AU".to_string();
         #[cfg(not(test))]
         let sid = {
-            let sid = fs::read_to_string(data_dir.join(USER_SID_FILE))
+            let sid_path = data_dir.join(USER_SID_FILE);
+            ensure_not_reparse(&sid_path)?;
+            let sid = fs::read_to_string(sid_path)
                 .map_err(|e| format!("读取 Service 安装用户身份失败：{e}"))?
                 .trim()
                 .to_string();
