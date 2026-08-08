@@ -23,7 +23,7 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-threa
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 winreg = "0.55"
-windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Networking_WinInet", "Win32_Security_Authorization", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Shell"] }
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Networking_WinInet", "Win32_Security_Authorization", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Shell"] }
 getrandom = "0.3"
 
 [target.'cfg(windows)'.dependencies]

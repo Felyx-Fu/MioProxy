@@ -110,6 +110,10 @@ mod windows_impl {
             SECURITY_ATTRIBUTES,
         },
         System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+                TH32CS_SNAPPROCESS,
+            },
             JobObjects::{
                 AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
                 SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -124,6 +128,37 @@ mod windows_impl {
 
     fn is_admin() -> bool {
         unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() != 0 }
+    }
+
+    fn external_mihomo_pids(excluded_pid: Option<u32>) -> Vec<u32> {
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+            return Vec::new();
+        }
+
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut pids = Vec::new();
+        let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+        while has_entry {
+            let name_end = entry
+                .szExeFile
+                .iter()
+                .position(|character| *character == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..name_end]).to_ascii_lowercase();
+            let is_mihomo = name
+                .strip_suffix(".exe")
+                .is_some_and(|stem| stem == "mihomo" || stem.starts_with("mihomo-"));
+            if is_mihomo && excluded_pid != Some(entry.th32ProcessID) {
+                pids.push(entry.th32ProcessID);
+            }
+            has_entry = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        }
+        unsafe { CloseHandle(snapshot) };
+        pids
     }
 
     struct JobGuard {
@@ -196,6 +231,10 @@ mod windows_impl {
         Ok(token)
     }
 
+    pub fn ensure_install_token(data_dir: &Path) -> Result<(), String> {
+        ensure_token(data_dir).map(|_| ())
+    }
+
     fn client_token(app: &AppHandle) -> Result<String, String> {
         let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
         let path = token_path(&data_dir);
@@ -206,6 +245,14 @@ mod windows_impl {
 
     fn is_pipe_missing(error: &io::Error) -> bool {
         matches!(error.raw_os_error(), Some(2 | 3))
+    }
+
+    fn pipe_name() -> String {
+        #[cfg(test)]
+        if let Some(name) = std::env::var_os("MIOPROXY_TEST_PIPE_NAME") {
+            return name.to_string_lossy().into_owned();
+        }
+        PIPE_NAME.to_string()
     }
 
     fn service_is_installed() -> Result<bool, String> {
@@ -224,7 +271,7 @@ mod windows_impl {
         app: &AppHandle,
         command: ServiceCommand,
     ) -> Result<Option<ServiceResponse>, String> {
-        let mut client = match ClientOptions::new().open(PIPE_NAME) {
+        let mut client = match ClientOptions::new().open(pipe_name()) {
             Ok(client) => client,
             Err(error) if is_pipe_missing(&error) => {
                 if service_is_installed()? {
@@ -642,6 +689,11 @@ rules:
             if self.owns_core()? {
                 return self.core_status().await;
             }
+            if let Some(pid) = external_mihomo_pids(None).into_iter().next() {
+                return Err(format!(
+                    "检测到已有 Mihomo 进程（PID {pid}），拒绝启动以避免双实例"
+                ));
+            }
             if mihomo::is_running().await {
                 return Err("检测到已有非 Service 管理的 Mihomo，拒绝启动以避免双实例".to_string());
             }
@@ -703,7 +755,7 @@ rules:
                         .map_err(|e| format!("Service 停止 Mihomo 失败：{e}"))?;
                     let _ = child.wait();
                 }
-            } else if mihomo::is_running().await {
+            } else if !external_mihomo_pids(None).is_empty() || mihomo::is_running().await {
                 return Err("当前 Mihomo 不是 Service 管理，拒绝停止".to_string());
             }
             self.core_status().await
@@ -976,13 +1028,21 @@ rules:
         async fn status(&self) -> Result<ServiceStatusData, String> {
             let core = self.core_status().await?;
             let running = core.running;
-            let owns_core = self.owns_core()?;
+            self.refresh_child()?;
+            let owned_pid = self
+                .child
+                .lock()
+                .map_err(|_| "Service Mihomo 状态锁异常")?
+                .as_ref()
+                .map(Child::id);
+            let owns_core = owned_pid.is_some();
             let tun = self.tun_data()?;
             Ok(ServiceStatusData {
                 core,
                 running,
                 owns_core,
-                ownership_conflict: running && !owns_core,
+                ownership_conflict: running && !owns_core
+                    || !external_mihomo_pids(owned_pid).is_empty(),
                 admin: is_admin(),
                 tun_status: tun.status,
                 tun_message: tun.message,
@@ -1173,7 +1233,7 @@ rules:
         let mut attributes = server_attributes()?;
         let server = unsafe {
             options.create_with_security_attributes_raw(
-                PIPE_NAME,
+                pipe_name(),
                 &mut attributes as *mut SECURITY_ATTRIBUTES as *mut std::ffi::c_void,
             )
         }
@@ -1336,6 +1396,14 @@ rules:
                     .unwrap()
                     .as_nanos()
             ));
+            let test_pipe = format!(
+                r"\\.\pipe\MioProxyServiceTest-{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            std::env::set_var("MIOPROXY_TEST_PIPE_NAME", &test_pipe);
             let (sender, receiver) = watch::channel(false);
             let daemon = tokio::spawn(run_service_daemon(
                 data_dir.clone(),
@@ -1346,7 +1414,7 @@ rules:
             let mut client = None;
             for _ in 0..50 {
                 if let Ok(token) = fs::read_to_string(&token_path) {
-                    if let Ok(next) = ClientOptions::new().open(PIPE_NAME) {
+                    if let Ok(next) = ClientOptions::new().open(&test_pipe) {
                         client = Some((next, token));
                         break;
                     }
@@ -1376,7 +1444,7 @@ rules:
 
             let mut mismatch_client = None;
             for _ in 0..50 {
-                if let Ok(next) = ClientOptions::new().open(PIPE_NAME) {
+                if let Ok(next) = ClientOptions::new().open(&test_pipe) {
                     mismatch_client = Some(next);
                     break;
                 }
@@ -1406,13 +1474,14 @@ rules:
                 .is_some_and(|error| error.contains("协议版本不匹配")));
             let _ = sender.send(true);
             daemon.await.unwrap().unwrap();
+            std::env::remove_var("MIOPROXY_TEST_PIPE_NAME");
             let _ = fs::remove_dir_all(data_dir);
         }
     }
 }
 
 #[cfg(windows)]
-pub use windows_impl::{run_service_console, run_service_daemon};
+pub use windows_impl::{ensure_install_token, run_service_console, run_service_daemon};
 
 #[cfg(windows)]
 pub(crate) use windows_impl::{
