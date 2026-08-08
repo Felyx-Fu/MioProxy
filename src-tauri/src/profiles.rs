@@ -134,11 +134,7 @@ fn decode_userinfo(value: &str, kind: &str, index: usize) -> Result<String, Stri
         .map_err(|_| format!("第 {index} 个 {kind} 节点用户信息不是有效 UTF-8"))
 }
 
-fn proxy_name(
-    url: &Url,
-    index: usize,
-    used_names: &mut HashSet<String>,
-) -> Result<String, String> {
+fn proxy_name(url: &Url, index: usize, used_names: &mut HashSet<String>) -> Result<String, String> {
     let candidate = url
         .fragment()
         .map(|fragment| {
@@ -601,8 +597,7 @@ mod tests {
 
     #[test]
     fn accepts_unpadded_standard_base64() {
-        let source =
-            "vless://11111111-1111-1111-1111-111111111111@example.com:443#A~";
+        let source = "vless://11111111-1111-1111-1111-111111111111@example.com:443#A~";
         let encoded = general_purpose::STANDARD_NO_PAD.encode(source);
         let yaml = normalize_subscription_body(&encoded).unwrap();
         let value = serde_yaml::from_str::<Value>(&yaml).unwrap();
@@ -611,8 +606,7 @@ mod tests {
 
     #[test]
     fn decodes_percent_encoded_proxy_names() {
-        let source =
-            "vless://11111111-1111-1111-1111-111111111111@example.com:443#Hong%20Kong";
+        let source = "vless://11111111-1111-1111-1111-111111111111@example.com:443#Hong%20Kong";
         let yaml = normalize_subscription_body(source).unwrap();
         let value = serde_yaml::from_str::<Value>(&yaml).unwrap();
         assert_eq!(value["proxies"][0]["name"].as_str(), Some("Hong Kong"));

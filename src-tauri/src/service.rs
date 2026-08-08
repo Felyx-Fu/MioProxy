@@ -100,7 +100,9 @@ mod windows_impl {
     use serde_json::json;
     use tokio::{
         io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-        net::windows::named_pipe::{ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions},
+        net::windows::named_pipe::{
+            ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
+        },
         sync::{watch, Mutex as AsyncMutex},
     };
 
@@ -113,10 +115,10 @@ mod windows_impl {
         Foundation::{CloseHandle, HANDLE},
         Security::{
             Authorization::{
-                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-                ConvertSidToStringSidW,
+                ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+                SDDL_REVISION_1,
             },
-            GetTokenInformation, TokenUser, TOKEN_USER, TOKEN_QUERY, SECURITY_ATTRIBUTES,
+            GetTokenInformation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
         },
         Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH},
         System::{
@@ -255,13 +257,7 @@ mod windows_impl {
         }
         let mut size = 0;
         unsafe {
-            let _ = GetTokenInformation(
-                token,
-                TokenUser,
-                std::ptr::null_mut(),
-                0,
-                &mut size,
-            );
+            let _ = GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut size);
         }
         if size == 0 {
             unsafe { CloseHandle(token) };
@@ -364,14 +360,12 @@ mod windows_impl {
     #[cfg(not(test))]
     fn verify_service_pipe(client: &NamedPipeClient) -> Result<(), String> {
         let mut server_pid = 0;
-        let ok = unsafe {
-            GetNamedPipeServerProcessId(client.as_raw_handle(), &mut server_pid)
-        };
+        let ok = unsafe { GetNamedPipeServerProcessId(client.as_raw_handle(), &mut server_pid) };
         if ok == 0 {
             return Err("无法确认 MioProxy Service IPC 服务端身份".to_string());
         }
-        let expected_pid = service_process_id()?
-            .ok_or_else(|| "MioProxy Service 当前没有运行进程".to_string())?;
+        let expected_pid =
+            service_process_id()?.ok_or_else(|| "MioProxy Service 当前没有运行进程".to_string())?;
         if server_pid != expected_pid {
             return Err("MioProxy Service IPC 服务端身份不匹配".to_string());
         }
@@ -962,12 +956,26 @@ rules:
                 let _ = fs::remove_file(&candidate);
                 return Err(format!("Mihomo 配置校验失败：{error}"));
             }
-            write_atomic(&self.config_path(), yaml.as_bytes())?;
+            let stable = self.config_path();
+            if let Err(error) = write_atomic(&stable, yaml.as_bytes()) {
+                let _ = fs::remove_file(&candidate);
+                let rollback = mihomo::api_put(
+                    "/configs?force=true",
+                    json!({ "path": stable.display().to_string() }),
+                )
+                .await;
+                return Err(match rollback {
+                    Ok(_) => format!("保存稳定配置失败：{error}；已回滚运行配置"),
+                    Err(rollback_error) => {
+                        format!("保存稳定配置失败：{error}；回滚运行配置失败：{rollback_error}")
+                    }
+                });
+            }
             let _ = fs::remove_file(candidate);
             Ok(crate::config::ConfigApplyResult {
                 profile_id: profile_id.to_string(),
                 profile_name,
-                path: self.config_path().display().to_string(),
+                path: stable.display().to_string(),
                 controller_validated: true,
                 override_active,
             })
@@ -1020,7 +1028,9 @@ rules:
                     .and_then(|value| value.get("enable").and_then(Value::as_bool))
                     == Some(true)
             {
-                return Err("当前配置或 Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string());
+                return Err(
+                    "当前配置或 Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string()
+                );
             }
             let previous_override = config::override_content_at(&self.data_dir)?;
             let snapshot = crate::tun::capture_snapshot().await?;
@@ -1077,7 +1087,7 @@ rules:
                         &previous_override,
                         format!("TUN 网卡启动失败：{error}"),
                     )
-                .await;
+                    .await;
             }
             let baseline = match crate::tun::capture_snapshot().await {
                 Ok(snapshot) => snapshot,
@@ -1163,10 +1173,7 @@ rules:
         async fn disable_tun_inner(&self) -> Result<ServiceTunData, String> {
             let persisted = self.read_tun_persisted()?;
             let (previous, profile_id) = {
-                let in_memory = self
-                    .tun
-                    .lock()
-                    .map_err(|_| "Service TUN 状态锁异常")?;
+                let in_memory = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
                 let previous = persisted
                     .as_ref()
                     .map(|state| state.previous_override.clone())
@@ -1732,7 +1739,9 @@ rules:
         let monitor = tokio::spawn(runtime.clone().monitor(shutdown.clone()));
         let mut first = true;
         loop {
-            let Some(server) = create_server_until_ready(first, &runtime.data_dir, &mut shutdown).await? else {
+            let Some(server) =
+                create_server_until_ready(first, &runtime.data_dir, &mut shutdown).await?
+            else {
                 let _ = runtime.shutdown().await;
                 break;
             };

@@ -472,7 +472,10 @@ async fn enable_tun(
         &profile_id,
     )? || runtime_tun_enabled().await == Some(true)
     {
-        set_error(state, "当前配置或 Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string())?;
+        set_error(
+            state,
+            "当前配置或 Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string(),
+        )?;
         return Err("当前配置或 Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string());
     }
 
@@ -512,7 +515,10 @@ async fn enable_tun(
         )
         .await;
     }
-    if !mihomo::is_running().await || !mihomo::owns_core(app) || runtime_tun_enabled().await != Some(true) {
+    if !mihomo::is_running().await
+        || !mihomo::owns_core(app)
+        || runtime_tun_enabled().await != Some(true)
+    {
         return rollback_enable(
             app,
             state,
@@ -566,10 +572,7 @@ async fn enable_tun(
     response(state)
 }
 
-async fn disable_tun(
-    app: &AppHandle,
-    state: &TunState,
-) -> Result<TunStatusSnapshot, String> {
+async fn disable_tun(app: &AppHandle, state: &TunState) -> Result<TunStatusSnapshot, String> {
     let Some(active) = active_runtime(state)? else {
         set_runtime(state, |runtime| {
             runtime.status = TunStatus::Disabled;
@@ -689,7 +692,10 @@ pub async fn on_mihomo_exit(app: &AppHandle) {
                 .and_then(|runtime| persisted_for(runtime).ok())
         }),
         Err(error) => {
-            let _ = set_error(&state, format!("Mihomo 异常退出，TUN 恢复状态损坏：{error}"));
+            let _ = set_error(
+                &state,
+                format!("Mihomo 异常退出，TUN 恢复状态损坏：{error}"),
+            );
             return;
         }
     };

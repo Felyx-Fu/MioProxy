@@ -34,12 +34,12 @@ pub fn run() {
         .manage(tun::TunState::default())
         .manage(tray::TrayState::default())
         .setup(|app| {
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|error| Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error>)?;
-            mihomo::initialize_secret(&data_dir)
-                .map_err(|error| Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error>)?;
+            let data_dir = app.path().app_data_dir().map_err(|error| {
+                Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error>
+            })?;
+            mihomo::initialize_secret(&data_dir).map_err(|error| {
+                Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error>
+            })?;
             if let Err(error) = system_proxy::recover_stale_state(app.handle()) {
                 eprintln!("恢复系统代理状态失败：{error}");
             }
@@ -114,11 +114,8 @@ pub fn run() {
                     if let Err(error) = service::restore_for_lifecycle(app).await {
                         errors.push(format!("Service TUN 清理失败：{error}"));
                     }
-                    if let Err(error) = tun::restore_for_lifecycle(
-                        app,
-                        &app.state::<tun::TunState>(),
-                    )
-                    .await
+                    if let Err(error) =
+                        tun::restore_for_lifecycle(app, &app.state::<tun::TunState>()).await
                     {
                         errors.push(format!("GUI TUN 清理失败：{error}"));
                     }

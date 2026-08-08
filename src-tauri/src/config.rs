@@ -104,7 +104,7 @@ fn timestamp() -> u64 {
         .as_secs()
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         ensure_not_reparse(parent)?;
@@ -351,6 +351,7 @@ pub(crate) fn build_value_at(data_dir: &Path, profile_id: &str) -> Result<BuiltC
         .file_path
         .as_ref()
         .ok_or_else(|| "请先下载这个 Profile".to_string())?;
+    let source_path = profile_source_path_at(data_dir, source_path)?;
     let source =
         fs::read_to_string(source_path).map_err(|e| format!("读取 Profile YAML 失败：{e}"))?;
     if source.trim().is_empty() {
@@ -377,6 +378,27 @@ pub(crate) fn build_value_at(data_dir: &Path, profile_id: &str) -> Result<BuiltC
         value: base,
         override_active: !override_content.trim().is_empty(),
     })
+}
+
+fn profile_source_path_at(
+    data_dir: &Path,
+    source_path: &str,
+) -> Result<std::path::PathBuf, String> {
+    let profiles_dir = data_dir.join("profiles");
+    ensure_not_reparse(&profiles_dir)?;
+    let source_path = Path::new(source_path);
+    if !source_path.is_absolute() || !source_path.starts_with(&profiles_dir) {
+        return Err("Profile 文件必须位于应用数据目录的 profiles 文件夹内".to_string());
+    }
+    ensure_not_reparse(source_path)?;
+    let profiles_root =
+        fs::canonicalize(&profiles_dir).map_err(|e| format!("解析 Profile 目录失败：{e}"))?;
+    let canonical_source =
+        fs::canonicalize(source_path).map_err(|e| format!("解析 Profile 文件失败：{e}"))?;
+    if !canonical_source.starts_with(&profiles_root) {
+        return Err("Profile 文件必须位于应用数据目录的 profiles 文件夹内".to_string());
+    }
+    Ok(canonical_source)
 }
 
 pub(crate) fn configured_tun_enabled_at(data_dir: &Path, profile_id: &str) -> Result<bool, String> {
@@ -828,7 +850,9 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(&data_dir).unwrap();
-        let source_path = data_dir.join("profile.yaml");
+        let profiles_dir = data_dir.join("profiles");
+        fs::create_dir_all(&profiles_dir).unwrap();
+        let source_path = profiles_dir.join("profile.yaml");
         fs::write(
             &source_path,
             "mixed-port: 7890\nproxies: []\nproxy-groups: []\nrules: [MATCH,DIRECT]\n",

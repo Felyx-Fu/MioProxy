@@ -1,14 +1,16 @@
 use std::{
     fs,
-    io::{ErrorKind, Write},
+    io::{ErrorKind, Read, Write},
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
-        OnceLock,
+        Mutex, OnceLock,
     },
     time::Duration,
 };
+
+#[cfg(windows)]
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -27,18 +29,51 @@ const LEGACY_CONTROLLER_SECRET: &str = "mioproxy-v01-local";
 const DEFAULT_DELAY_URL: &str = "https://www.gstatic.com/generate_204";
 static CONTROLLER_SECRET: OnceLock<String> = OnceLock::new();
 
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+fn read_existing_secret(path: &Path) -> Result<Option<String>, String> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("读取 Mihomo Controller 令牌失败：{error}")),
+    };
+    #[cfg(windows)]
+    {
+        let metadata = file
+            .metadata()
+            .map_err(|e| format!("检查 Mihomo Controller 令牌失败：{e}"))?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err("拒绝读取 Reparse Point 形式的 Mihomo Controller 令牌".to_string());
+        }
+    }
+    let mut value = String::new();
+    file.read_to_string(&mut value)
+        .map_err(|e| format!("读取 Mihomo Controller 令牌失败：{e}"))?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
 pub(crate) fn initialize_secret(data_dir: &Path) -> Result<(), String> {
     fs::create_dir_all(data_dir).map_err(|e| format!("创建 Mihomo 数据目录失败：{e}"))?;
     let path = data_dir.join(CONTROLLER_SECRET_FILE);
-    let secret = match fs::read_to_string(&path)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
+    let secret = match read_existing_secret(&path)? {
         Some(secret) => secret,
         None => {
             let mut bytes = [0u8; 32];
-            getrandom::fill(&mut bytes).map_err(|e| format!("生成 Mihomo Controller 令牌失败：{e}"))?;
+            getrandom::fill(&mut bytes)
+                .map_err(|e| format!("生成 Mihomo Controller 令牌失败：{e}"))?;
             let candidate = bytes
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
@@ -67,23 +102,17 @@ pub(crate) fn initialize_secret(data_dir: &Path) -> Result<(), String> {
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                     let mut winner = None;
                     for _ in 0..100 {
-                        winner = fs::read_to_string(&path)
-                            .ok()
-                            .map(|value| value.trim().to_string())
-                            .filter(|value| !value.is_empty());
+                        winner = read_existing_secret(&path)?;
                         if winner.is_some() {
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(5));
                     }
-                    winner.ok_or_else(|| {
-                        "读取并发初始化的 Mihomo Controller 令牌失败".to_string()
-                    })?
+                    winner
+                        .ok_or_else(|| "读取并发初始化的 Mihomo Controller 令牌失败".to_string())?
                 }
                 Err(error) => {
-                    return Err(format!(
-                        "创建 Mihomo Controller 令牌文件失败：{error}"
-                    ));
+                    return Err(format!("创建 Mihomo Controller 令牌文件失败：{error}"));
                 }
             }
         }
@@ -104,7 +133,7 @@ pub(crate) fn initialize_secret(data_dir: &Path) -> Result<(), String> {
                         serde_yaml::Value::String(secret.clone()),
                     );
                     if let Ok(yaml) = serde_yaml::to_string(&value) {
-                        fs::write(&config_path, yaml)
+                        crate::config::write_atomic(&config_path, yaml.as_bytes())
                             .map_err(|e| format!("更新 Mihomo Controller 令牌失败：{e}"))?;
                     }
                 }
@@ -117,10 +146,7 @@ pub(crate) fn initialize_secret(data_dir: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn secret() -> &'static str {
-    CONTROLLER_SECRET
-        .get()
-        .map(String::as_str)
-        .unwrap_or("")
+    CONTROLLER_SECRET.get().map(String::as_str).unwrap_or("")
 }
 
 pub struct CoreState {
@@ -215,11 +241,7 @@ pub(crate) async fn api_get(path: &str) -> Result<Value, String> {
         .map_err(|e| e.to_string())
 }
 
-async fn api_put_with_secret(
-    path: &str,
-    payload: Value,
-    bearer: &str,
-) -> Result<Value, String> {
+async fn api_put_with_secret(path: &str, payload: Value, bearer: &str) -> Result<Value, String> {
     let url = format!("http://{CONTROLLER}{path}");
     let response = Client::builder()
         .timeout(Duration::from_secs(5))

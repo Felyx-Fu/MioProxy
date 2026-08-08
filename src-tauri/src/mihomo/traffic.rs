@@ -142,9 +142,10 @@ async fn run(app: AppHandle) {
 
         let request = match format!("ws://{CONTROLLER}/traffic").into_client_request() {
             Ok(mut request) => {
-                request
-                    .headers_mut()
-                    .insert("Authorization", format!("Bearer {}", secret()).parse().unwrap());
+                request.headers_mut().insert(
+                    "Authorization",
+                    format!("Bearer {}", secret()).parse().unwrap(),
+                );
                 request
             }
             Err(_) => {
