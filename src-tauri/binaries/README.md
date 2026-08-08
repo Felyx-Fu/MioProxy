@@ -19,5 +19,15 @@ npm run service:build
 ```
 
 The service binary is written as `mioproxy-service-x86_64-pc-windows-msvc.exe`.
-Install it once from an elevated terminal with `--install`; after that the GUI
-uses the `MioProxyService` named pipe and does not start a second Mihomo process.
+Install it once from an elevated terminal, using the same data directory as the
+GUI:
+
+```powershell
+.\mioproxy-service-x86_64-pc-windows-msvc.exe --install `
+  --data-dir "$env:APPDATA\dev.MioProxy" `
+  --mihomo-path ".\mihomo-x86_64-pc-windows-msvc.exe"
+```
+
+After installation the GUI uses the `MioProxyService` named pipe and does not
+start a second Mihomo process. Uninstall with `--uninstall` from an elevated
+terminal.
