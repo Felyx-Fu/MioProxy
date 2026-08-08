@@ -178,7 +178,7 @@ pub(crate) async fn capture_snapshot() -> Result<NetworkSnapshot, String> {
         return Err("Mihomo 未运行，无法创建 TUN 运行前快照".to_string());
     }
     let default_route = powershell_json(
-        "$routes = @(Get-NetRoute -PolicyStore ActiveStore | Where-Object { $_.DestinationPrefix -in @('0.0.0.0/0', '::/0') } | Sort-Object RouteMetric | Select-Object -First 2 DestinationPrefix,InterfaceAlias,InterfaceIndex,NextHop,RouteMetric,AddressFamily); $routes | ConvertTo-Json -Compress",
+        "$routes = @(Get-NetRoute -PolicyStore ActiveStore | Where-Object { $_.DestinationPrefix -in @('0.0.0.0/0', '::/0') } | Group-Object DestinationPrefix | ForEach-Object { $_.Group | Sort-Object RouteMetric | Select-Object -First 1 DestinationPrefix,InterfaceAlias,InterfaceIndex,NextHop,RouteMetric,AddressFamily }); $routes | ConvertTo-Json -Compress",
     )?;
     let dns_servers = powershell_json(
         "Get-DnsClientServerAddress | Where-Object { $_.AddressFamily -in @(2, 23) -and $_.ServerAddresses } | Select-Object InterfaceAlias,AddressFamily,ServerAddresses | ConvertTo-Json -Compress",
@@ -323,7 +323,10 @@ async fn enable_tun(
 ) -> Result<TunStatusSnapshot, String> {
     let current = runtime_snapshot(state)?;
     if matches!(current.status, TunStatus::Running) {
-        return response(state);
+        if mihomo::owns_core(app) && mihomo::is_running().await {
+            return response(state);
+        }
+        return disable_tun(app, state).await;
     }
     if matches!(current.status, TunStatus::Starting | TunStatus::Stopping) {
         return Err("TUN 正在切换，请稍候".to_string());

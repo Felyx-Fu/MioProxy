@@ -988,7 +988,11 @@ rules:
                 .map_err(|_| "Service TUN 状态锁异常")?
                 .status;
             if current_status == crate::tun::TunStatus::Running {
-                return self.tun_data();
+                if self.owns_core()? && mihomo::is_running().await {
+                    return self.tun_data();
+                }
+                self.disable_tun_inner().await?;
+                return Err("Service Mihomo 已退出，TUN 原始配置已恢复，请重新启动内核".to_string());
             }
             if matches!(
                 current_status,
