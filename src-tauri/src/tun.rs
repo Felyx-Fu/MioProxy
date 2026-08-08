@@ -287,7 +287,7 @@ pub(crate) async fn capture_snapshot() -> Result<NetworkSnapshot, String> {
         return Err("Mihomo 未运行，无法创建 TUN 运行前快照".to_string());
     }
     let default_route = powershell_json(
-        "$routes = @(Get-NetRoute -PolicyStore ActiveStore | Where-Object { $_.DestinationPrefix -in @('0.0.0.0/0', '::/0') } | Group-Object DestinationPrefix | ForEach-Object { $_.Group | Sort-Object RouteMetric | Select-Object -First 1 DestinationPrefix,InterfaceAlias,InterfaceIndex,NextHop,RouteMetric,AddressFamily }); $routes | ConvertTo-Json -Compress",
+        "$routes = @(Get-NetRoute -PolicyStore ActiveStore | Where-Object { $_.DestinationPrefix -in @('0.0.0.0/0', '::/0') } | ForEach-Object { $route = $_; $interface = Get-NetIPInterface -InterfaceIndex $route.InterfaceIndex -AddressFamily $route.AddressFamily -ErrorAction SilentlyContinue | Select-Object -First 1; $interfaceMetric = if ($null -eq $interface) { 0 } else { [int]$interface.InterfaceMetric }; [pscustomobject]@{ DestinationPrefix = $route.DestinationPrefix; InterfaceAlias = $route.InterfaceAlias; InterfaceIndex = $route.InterfaceIndex; NextHop = $route.NextHop; RouteMetric = [int]$route.RouteMetric; InterfaceMetric = $interfaceMetric; EffectiveMetric = [int]$route.RouteMetric + $interfaceMetric; AddressFamily = $route.AddressFamily } } | Group-Object DestinationPrefix | ForEach-Object { $_.Group | Sort-Object EffectiveMetric,RouteMetric,InterfaceIndex | Select-Object -First 1 }); $routes | ConvertTo-Json -Compress",
     )?;
     let dns_servers = powershell_json(
         "Get-DnsClientServerAddress | Where-Object { $_.AddressFamily -in @(2, 23) -and $_.ServerAddresses } | Select-Object InterfaceAlias,AddressFamily,ServerAddresses | ConvertTo-Json -Compress",
@@ -670,11 +670,17 @@ pub async fn on_mihomo_exit(app: &AppHandle) {
         return;
     };
     let runtime = runtime_snapshot(&state).ok();
-    let persisted = read_persisted(app).ok().flatten().or_else(|| {
-        runtime
-            .as_ref()
-            .and_then(|runtime| persisted_for(runtime).ok())
-    });
+    let persisted = match read_persisted(app) {
+        Ok(persisted) => persisted.or_else(|| {
+            runtime
+                .as_ref()
+                .and_then(|runtime| persisted_for(runtime).ok())
+        }),
+        Err(error) => {
+            let _ = set_error(&state, format!("Mihomo 异常退出，TUN 恢复状态损坏：{error}"));
+            return;
+        }
+    };
     let Some(persisted) = persisted else {
         return;
     };
@@ -710,8 +716,13 @@ pub async fn recover_after_startup(app: AppHandle) {
     let Some(state) = app.try_state::<TunState>() else {
         return;
     };
-    let Ok(Some(persisted)) = read_persisted(&app) else {
-        return;
+    let persisted = match read_persisted(&app) {
+        Ok(Some(persisted)) => persisted,
+        Ok(None) => return,
+        Err(error) => {
+            let _ = set_error(&state, format!("TUN 启动恢复状态损坏：{error}"));
+            return;
+        }
     };
     let restore = config::restore_override_content(&app, &persisted.previous_override);
     let apply = if restore.is_ok() && mihomo::owns_core(&app) && mihomo::is_running().await {
@@ -797,10 +808,11 @@ pub fn start_monitor(app: AppHandle) {
             });
             match config::apply_config(app.clone(), profile_id).await {
                 Ok(_) => {
+                    let baseline = capture_snapshot().await.unwrap_or(refreshed_snapshot);
                     let _ = set_runtime(&state, |current| {
                         current.status = TunStatus::Running;
                         current.message = None;
-                        current.snapshot = Some(refreshed_snapshot.clone());
+                        current.snapshot = Some(baseline);
                     });
                     if let Ok(current) = runtime_snapshot(&state) {
                         if let Ok(persisted) = persisted_for(&current) {

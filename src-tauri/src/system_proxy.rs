@@ -193,11 +193,20 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
 
         let state = app.state::<SystemProxyState>();
         let current = read_snapshot()?;
-        if current.proxy_enable == Some(1) {
+        let mixed_port = mihomo::mixed_port(&app)?;
+        let endpoint = format!("127.0.0.1:{mixed_port}");
+        let owned_by_mioproxy = current.proxy_enable == Some(1)
+            && current.proxy_server.as_deref() == Some(endpoint.as_str())
+            && (state
+                .snapshot
+                .lock()
+                .map_err(|_| "System Proxy 状态锁异常")?
+                .is_some()
+                || read_persisted_snapshot(&app)?.is_some());
+        if owned_by_mioproxy {
             return status(&app).await;
         }
 
-        let mixed_port = mihomo::mixed_port(&app)?;
         let snapshot = current;
         persist_snapshot(&app, &snapshot)?;
         if let Err(error) = write_mioproxy_settings(mixed_port, &snapshot) {
