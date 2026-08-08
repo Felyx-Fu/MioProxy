@@ -104,13 +104,34 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building MioProxy")
         .run(|app, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                let _ = tauri::async_runtime::block_on(service::restore_for_lifecycle(app));
-                let _ = tauri::async_runtime::block_on(tun::restore_for_lifecycle(
-                    app,
-                    &app.state::<tun::TunState>(),
-                ));
-                let _ = tauri::async_runtime::block_on(system_proxy::restore_for_lifecycle(app));
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                let lifecycle = app.state::<AppLifecycle>();
+                if lifecycle.exiting.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+                let errors = tauri::async_runtime::block_on(async {
+                    let mut errors = Vec::new();
+                    if let Err(error) = service::restore_for_lifecycle(app).await {
+                        errors.push(format!("Service TUN 清理失败：{error}"));
+                    }
+                    if let Err(error) = tun::restore_for_lifecycle(
+                        app,
+                        &app.state::<tun::TunState>(),
+                    )
+                    .await
+                    {
+                        errors.push(format!("GUI TUN 清理失败：{error}"));
+                    }
+                    if let Err(error) = system_proxy::restore_for_lifecycle(app).await {
+                        errors.push(format!("系统代理清理失败：{error}"));
+                    }
+                    errors
+                });
+                if !errors.is_empty() {
+                    lifecycle.exiting.store(false, Ordering::SeqCst);
+                    eprintln!("退出前清理未完成：{}", errors.join("；"));
+                    api.prevent_exit();
+                }
             }
         });
 }

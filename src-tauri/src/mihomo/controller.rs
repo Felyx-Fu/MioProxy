@@ -23,6 +23,7 @@ use super::{logs, traffic};
 
 pub(crate) const CONTROLLER: &str = "127.0.0.1:9090";
 const CONTROLLER_SECRET_FILE: &str = "controller-secret";
+const LEGACY_CONTROLLER_SECRET: &str = "mioproxy-v01-local";
 const DEFAULT_DELAY_URL: &str = "https://www.gstatic.com/generate_204";
 static CONTROLLER_SECRET: OnceLock<String> = OnceLock::new();
 
@@ -214,14 +215,18 @@ pub(crate) async fn api_get(path: &str) -> Result<Value, String> {
         .map_err(|e| e.to_string())
 }
 
-pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String> {
+async fn api_put_with_secret(
+    path: &str,
+    payload: Value,
+    bearer: &str,
+) -> Result<Value, String> {
     let url = format!("http://{CONTROLLER}{path}");
     let response = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .map_err(|e| e.to_string())?
         .put(url)
-        .bearer_auth(secret())
+        .bearer_auth(bearer)
         .json(&payload)
         .send()
         .await
@@ -233,6 +238,31 @@ pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String>
         return Ok(Value::Null);
     }
     serde_json::from_str(&body).map_err(|e| e.to_string())
+}
+
+pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String> {
+    api_put_with_secret(path, payload, secret()).await
+}
+
+async fn migrate_legacy_controller_session(app: &AppHandle) -> Result<bool, String> {
+    let (_, config) = runtime_paths(app)?;
+    if !config.exists() {
+        return Ok(false);
+    }
+    let payload = serde_json::json!({ "path": config.display().to_string() });
+    if api_put_with_secret("/configs?force=true", payload, LEGACY_CONTROLLER_SECRET)
+        .await
+        .is_err()
+    {
+        return Ok(false);
+    }
+    for _ in 0..20 {
+        if is_running().await {
+            return Ok(true);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err("检测到旧版 Mihomo 会话，但切换 Controller 令牌后仍无法连接".to_string())
 }
 
 pub(crate) async fn api_delete(path: &str) -> Result<Value, String> {
@@ -333,6 +363,13 @@ pub async fn mihomo_start(
         if let Ok(proxy_status) = crate::system_proxy::status(&app).await {
             crate::tray::update_proxy_label(&app, proxy_status.enabled, proxy_status.core_running);
         }
+        return status_for(&app, true);
+    }
+
+    if migrate_legacy_controller_session(&app).await? {
+        traffic::start(&app);
+        logs::start(&app);
+        crate::tray::update_current_node(&app).await;
         return status_for(&app, true);
     }
 

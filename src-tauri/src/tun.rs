@@ -787,11 +787,13 @@ pub fn start_monitor(app: AppHandle) {
             let Some(state) = app.try_state::<TunState>() else {
                 return;
             };
+            let transition = lock_transitions().await;
             let Ok(Some(runtime)) = active_runtime(&state) else {
                 was_active = false;
                 continue;
             };
             if !mihomo::is_running().await || !mihomo::owns_core(&app) {
+                drop(transition);
                 on_mihomo_exit(&app).await;
                 was_active = false;
                 continue;
@@ -800,7 +802,6 @@ pub fn start_monitor(app: AppHandle) {
                 last_tick = Instant::now();
                 was_active = true;
             }
-            let _transition = lock_transitions().await;
             let wake_gap = last_tick.elapsed() > Duration::from_secs(30);
             last_tick = Instant::now();
             let Ok(current) = capture_snapshot().await else {

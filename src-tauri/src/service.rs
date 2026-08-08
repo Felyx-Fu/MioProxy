@@ -103,6 +103,8 @@ mod windows_impl {
         net::windows::named_pipe::{ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions},
         sync::{watch, Mutex as AsyncMutex},
     };
+
+    static REQUEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
     use windows_service::{
         service::ServiceAccess,
         service_manager::{ServiceManager, ServiceManagerAccess},
@@ -401,6 +403,7 @@ mod windows_impl {
         app: &AppHandle,
         command: ServiceCommand,
     ) -> Result<Option<ServiceResponse>, String> {
+        let _request = REQUEST_LOCK.lock().await;
         let mut client = match open_client().await {
             Ok(client) => client,
             Err(error) if is_pipe_missing(&error) => {
@@ -582,20 +585,29 @@ mod windows_impl {
     }
 
     pub(crate) async fn restore_for_lifecycle(app: &AppHandle) -> Result<(), String> {
-        let Some(response) = try_request(
-            app,
-            ServiceCommand::TunSetEnabled {
-                enabled: false,
-                profile_id: None,
-                system_proxy_enabled: false,
-            },
-        )
-        .await?
-        else {
-            return Ok(());
+        let command = ServiceCommand::TunSetEnabled {
+            enabled: false,
+            profile_id: None,
+            system_proxy_enabled: false,
         };
-        let _: ServiceTunData = data(response)?;
-        Ok(())
+        let mut last_error = None;
+        for attempt in 0..20 {
+            match try_request(app, command.clone()).await {
+                Ok(None) => return Ok(()),
+                Ok(Some(response)) => match data::<ServiceTunData>(response) {
+                    Ok(_) => return Ok(()),
+                    Err(error) => last_error = Some(error),
+                },
+                Err(error) => last_error = Some(error),
+            }
+            if attempt < 19 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+        Err(format!(
+            "退出前等待 MioProxy Service 清理 TUN 失败：{}",
+            last_error.unwrap_or_else(|| "未知错误".to_string())
+        ))
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]

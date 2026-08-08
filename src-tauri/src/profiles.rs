@@ -243,6 +243,12 @@ fn parse_proxy_uri(
                     map.insert(value_key("grpc-opts"), Value::Mapping(grpc));
                 }
             }
+            if query_bool(&url, "allowInsecure").or_else(|| query_bool(&url, "insecure"))
+                == Some(true)
+            {
+                set_bool(&mut map, "skip-cert-verify", true);
+            }
+            set_alpn(&mut map, &url);
             map
         }
         "hysteria2" | "hy2" => {
@@ -540,7 +546,7 @@ mod tests {
     #[test]
     fn normalizes_base64_proxy_subscription() {
         let source = concat!(
-            "vless://11111111-1111-1111-1111-111111111111@example.com:443?type=grpc&security=reality&pbk=public-key&sid=short-id&sni=example.com&serviceName=update&fp=chrome#Alpha\n",
+            "vless://11111111-1111-1111-1111-111111111111@example.com:443?type=grpc&security=reality&pbk=public-key&sid=short-id&sni=example.com&serviceName=update&fp=chrome&alpn=h2&allowInsecure=1#Alpha\n",
             "hysteria2://password@example.org:443?insecure=1&sni=example.org&obfs=salamander&obfs-password=obfs-pass#Beta\n",
             "tuic://22222222-2222-2222-2222-222222222222:password@example.net:443?insecure=1&sni=example.net&congestion_control=bbr&udp_relay_mode=quic#Gamma\n",
         );
@@ -555,6 +561,8 @@ mod tests {
             proxies[0]["reality-opts"]["public-key"].as_str(),
             Some("public-key")
         );
+        assert_eq!(proxies[0]["alpn"][0].as_str(), Some("h2"));
+        assert_eq!(proxies[0]["skip-cert-verify"].as_bool(), Some(true));
         assert_eq!(proxies[1]["type"].as_str(), Some("hysteria2"));
         assert_eq!(proxies[1]["skip-cert-verify"].as_bool(), Some(true));
         assert_eq!(proxies[2]["type"].as_str(), Some("tuic"));
