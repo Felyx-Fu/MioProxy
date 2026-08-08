@@ -48,9 +48,19 @@ pub(crate) fn initialize_secret(data_dir: &Path) -> Result<(), String> {
                 .open(&path)
             {
                 Ok(mut file) => {
-                    file.write_all(candidate.as_bytes())
+                    if let Err(error) = file
+                        .write_all(candidate.as_bytes())
                         .and_then(|_| file.flush())
-                        .map_err(|e| format!("保存 Mihomo Controller 令牌失败：{e}"))?;
+                    {
+                        drop(file);
+                        let cleanup = fs::remove_file(&path);
+                        return Err(match cleanup {
+                            Ok(()) => format!("保存 Mihomo Controller 令牌失败：{error}"),
+                            Err(cleanup_error) => format!(
+                                "保存 Mihomo Controller 令牌失败：{error}；清理不完整令牌文件失败：{cleanup_error}"
+                            ),
+                        });
+                    }
                     candidate
                 }
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {

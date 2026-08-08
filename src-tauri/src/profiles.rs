@@ -134,19 +134,29 @@ fn decode_userinfo(value: &str, kind: &str, index: usize) -> Result<String, Stri
         .map_err(|_| format!("第 {index} 个 {kind} 节点用户信息不是有效 UTF-8"))
 }
 
-fn proxy_name(url: &Url, index: usize, used_names: &mut HashSet<String>) -> String {
+fn proxy_name(
+    url: &Url,
+    index: usize,
+    used_names: &mut HashSet<String>,
+) -> Result<String, String> {
     let candidate = url
         .fragment()
+        .map(|fragment| {
+            percent_decode_str(fragment)
+                .decode_utf8()
+                .map(|decoded| decoded.into_owned())
+                .map_err(|_| format!("第 {index} 个订阅节点名称不是有效 UTF-8"))
+        })
+        .transpose()?
         .filter(|fragment| !fragment.trim().is_empty())
-        .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("Node {index}"));
     if used_names.insert(candidate.clone()) {
-        return candidate;
+        return Ok(candidate);
     }
     for suffix in 2.. {
         let unique = format!("{candidate} {suffix}");
         if used_names.insert(unique.clone()) {
-            return unique;
+            return Ok(unique);
         }
     }
     unreachable!("the suffix loop always returns a unique name")
@@ -171,7 +181,7 @@ fn parse_proxy_uri(
     used_names: &mut HashSet<String>,
 ) -> Result<Value, String> {
     let url = Url::parse(line).map_err(|_| format!("第 {index} 个订阅节点 URL 无效"))?;
-    let name = proxy_name(&url, index, used_names);
+    let name = proxy_name(&url, index, used_names)?;
     let scheme = url.scheme().to_ascii_lowercase();
     let map = match scheme.as_str() {
         "vless" => {
@@ -376,6 +386,7 @@ fn decode_subscription_source(body: &str) -> Result<String, String> {
         .collect::<String>();
     let decoded = [
         general_purpose::STANDARD.decode(compact.as_bytes()),
+        general_purpose::STANDARD_NO_PAD.decode(compact.as_bytes()),
         general_purpose::URL_SAFE.decode(compact.as_bytes()),
         general_purpose::URL_SAFE_NO_PAD.decode(compact.as_bytes()),
     ]
@@ -578,5 +589,24 @@ mod tests {
         );
         assert_eq!(proxies[1]["password"].as_str(), Some("p@ss"));
         assert_eq!(proxies[2]["password"].as_str(), Some("pass@word"));
+    }
+
+    #[test]
+    fn accepts_unpadded_standard_base64() {
+        let source =
+            "vless://11111111-1111-1111-1111-111111111111@example.com:443#A~";
+        let encoded = general_purpose::STANDARD_NO_PAD.encode(source);
+        let yaml = normalize_subscription_body(&encoded).unwrap();
+        let value = serde_yaml::from_str::<Value>(&yaml).unwrap();
+        assert_eq!(value["proxies"][0]["name"].as_str(), Some("A~"));
+    }
+
+    #[test]
+    fn decodes_percent_encoded_proxy_names() {
+        let source =
+            "vless://11111111-1111-1111-1111-111111111111@example.com:443#Hong%20Kong";
+        let yaml = normalize_subscription_body(source).unwrap();
+        let value = serde_yaml::from_str::<Value>(&yaml).unwrap();
+        assert_eq!(value["proxies"][0]["name"].as_str(), Some("Hong Kong"));
     }
 }

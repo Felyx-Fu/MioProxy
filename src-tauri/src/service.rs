@@ -979,9 +979,6 @@ rules:
             if profile_id.trim().is_empty() {
                 return Err("启用 TUN 需要已下载的 Profile".to_string());
             }
-            if !self.owns_core()? || !mihomo::is_running().await {
-                return Err("Service 尚未拥有运行中的 Mihomo".to_string());
-            }
             let current_status = self
                 .tun
                 .lock()
@@ -993,6 +990,9 @@ rules:
                 }
                 self.disable_tun_inner().await?;
                 return Err("Service Mihomo 已退出，TUN 原始配置已恢复，请重新启动内核".to_string());
+            }
+            if !self.owns_core()? || !mihomo::is_running().await {
+                return Err("Service 尚未拥有运行中的 Mihomo".to_string());
             }
             if matches!(
                 current_status,
