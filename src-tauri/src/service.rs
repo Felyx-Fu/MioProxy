@@ -84,22 +84,29 @@ pub(crate) fn token_path(data_dir: &std::path::Path) -> std::path::PathBuf {
 mod windows_impl {
     use super::*;
     use std::{
-        fs::{self, OpenOptions},
+        fs,
         io::{self, Write},
+        os::windows::{ffi::OsStrExt, fs::MetadataExt},
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
         sync::{Arc, Mutex},
         time::Duration,
     };
-    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+
+    #[cfg(not(test))]
+    use std::os::windows::io::AsRawHandle;
 
     use serde::Deserialize;
     use serde_json::json;
     use tokio::{
         io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-        net::windows::named_pipe::{ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions},
+        net::windows::named_pipe::{
+            ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
+        },
         sync::{watch, Mutex as AsyncMutex},
     };
+
+    static REQUEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
     use windows_service::{
         service::ServiceAccess,
         service_manager::{ServiceManager, ServiceManagerAccess},
@@ -108,11 +115,12 @@ mod windows_impl {
         Foundation::{CloseHandle, HANDLE},
         Security::{
             Authorization::{
-                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-                ConvertSidToStringSidW,
+                ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+                GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
             },
-            GetTokenInformation, TokenUser, TOKEN_USER, TOKEN_QUERY, SECURITY_ATTRIBUTES,
+            OWNER_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
         },
+        Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH},
         System::{
             Diagnostics::ToolHelp::{
                 CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -124,10 +132,7 @@ mod windows_impl {
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             },
             SystemInformation::GetTickCount64,
-            Threading::{
-                GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_SET_QUOTA,
-                PROCESS_TERMINATE,
-            },
+            Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
         },
     };
 
@@ -225,8 +230,7 @@ mod windows_impl {
     fn ensure_token(data_dir: &Path) -> Result<String, String> {
         fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
         let path = token_path(data_dir);
-        if path.exists() {
-            let token = fs::read_to_string(path).map_err(|e| e.to_string())?;
+        if let Some(token) = config::read_text_file_at(&path, "读取 Service 令牌")? {
             if !token.trim().is_empty() {
                 return Ok(token.trim().to_string());
             }
@@ -237,49 +241,20 @@ mod windows_impl {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        fs::write(token_path(data_dir), &token).map_err(|e| e.to_string())?;
+        write_atomic(&path, token.as_bytes())?;
         Ok(token)
     }
 
-    fn current_user_sid() -> Result<String, String> {
-        let mut token = std::ptr::null_mut();
-        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-            return Err("读取安装用户身份失败".to_string());
+    fn sid_to_string(
+        sid: windows_sys::Win32::Security::PSID,
+        label: &str,
+    ) -> Result<String, String> {
+        if sid.is_null() {
+            return Err(format!("{label}为空"));
         }
-        let mut size = 0;
-        unsafe {
-            let _ = GetTokenInformation(
-                token,
-                TokenUser,
-                std::ptr::null_mut(),
-                0,
-                &mut size,
-            );
-        }
-        if size == 0 {
-            unsafe { CloseHandle(token) };
-            return Err("读取安装用户 SID 大小失败".to_string());
-        }
-        let mut buffer = vec![0u8; size as usize];
-        let read = unsafe {
-            GetTokenInformation(
-                token,
-                TokenUser,
-                buffer.as_mut_ptr() as *mut std::ffi::c_void,
-                size,
-                &mut size,
-            )
-        };
-        if read == 0 {
-            unsafe { CloseHandle(token) };
-            return Err("读取安装用户 SID 失败".to_string());
-        }
-        let token_user = unsafe { &*(buffer.as_ptr() as *const TOKEN_USER) };
         let mut sid_text = std::ptr::null_mut();
-        let converted = unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut sid_text) };
-        if converted == 0 {
-            unsafe { CloseHandle(token) };
-            return Err("格式化安装用户 SID 失败".to_string());
+        if unsafe { ConvertSidToStringSidW(sid, &mut sid_text) } == 0 {
+            return Err(format!("格式化{label}失败"));
         }
         let mut length = 0;
         unsafe {
@@ -290,13 +265,64 @@ mod windows_impl {
         let sid = unsafe { String::from_utf16_lossy(std::slice::from_raw_parts(sid_text, length)) };
         unsafe {
             let _ = windows_sys::Win32::Foundation::LocalFree(sid_text as _);
-            CloseHandle(token);
         }
         Ok(sid)
     }
 
-    pub fn ensure_install_user_sid(data_dir: &Path) -> Result<(), String> {
-        fs::write(data_dir.join(USER_SID_FILE), current_user_sid()?)
+    fn data_dir_owner_sid(data_dir: &Path) -> Result<String, String> {
+        let path = data_dir
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let mut owner = std::ptr::null_mut();
+        let mut descriptor = std::ptr::null_mut();
+        let error = unsafe {
+            GetNamedSecurityInfoW(
+                path.as_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        let result = if error != 0 {
+            Err(format!("读取数据目录所有者失败：Windows 错误 {error}"))
+        } else {
+            sid_to_string(owner, "数据目录所有者 SID")
+        };
+        if !descriptor.is_null() {
+            unsafe {
+                let _ = windows_sys::Win32::Foundation::LocalFree(descriptor as _);
+            }
+        }
+        result
+    }
+
+    fn validate_sid(raw: &str) -> Result<String, String> {
+        let sid = raw.trim();
+        if !sid.starts_with("S-")
+            || sid
+                .chars()
+                .any(|character| !character.is_ascii_alphanumeric() && character != '-')
+        {
+            return Err("Service 安装用户 SID 无效".to_string());
+        }
+        Ok(sid.to_string())
+    }
+
+    pub fn ensure_install_user_sid(
+        data_dir: &Path,
+        explicit_sid: Option<&str>,
+    ) -> Result<(), String> {
+        let sid = match explicit_sid {
+            Some(sid) => validate_sid(sid)?,
+            None => data_dir_owner_sid(data_dir)?,
+        };
+        write_atomic(&data_dir.join(USER_SID_FILE), sid.as_bytes())
             .map_err(|e| format!("保存 Service 安装用户身份失败：{e}"))
     }
 
@@ -356,14 +382,12 @@ mod windows_impl {
     #[cfg(not(test))]
     fn verify_service_pipe(client: &NamedPipeClient) -> Result<(), String> {
         let mut server_pid = 0;
-        let ok = unsafe {
-            GetNamedPipeServerProcessId(client.as_raw_handle(), &mut server_pid)
-        };
+        let ok = unsafe { GetNamedPipeServerProcessId(client.as_raw_handle(), &mut server_pid) };
         if ok == 0 {
             return Err("无法确认 MioProxy Service IPC 服务端身份".to_string());
         }
-        let expected_pid = service_process_id()?
-            .ok_or_else(|| "MioProxy Service 当前没有运行进程".to_string())?;
+        let expected_pid =
+            service_process_id()?.ok_or_else(|| "MioProxy Service 当前没有运行进程".to_string())?;
         if server_pid != expected_pid {
             return Err("MioProxy Service IPC 服务端身份不匹配".to_string());
         }
@@ -395,6 +419,7 @@ mod windows_impl {
         app: &AppHandle,
         command: ServiceCommand,
     ) -> Result<Option<ServiceResponse>, String> {
+        let _request = REQUEST_LOCK.lock().await;
         let mut client = match open_client().await {
             Ok(client) => client,
             Err(error) if is_pipe_missing(&error) => {
@@ -576,20 +601,29 @@ mod windows_impl {
     }
 
     pub(crate) async fn restore_for_lifecycle(app: &AppHandle) -> Result<(), String> {
-        let Some(response) = try_request(
-            app,
-            ServiceCommand::TunSetEnabled {
-                enabled: false,
-                profile_id: None,
-                system_proxy_enabled: false,
-            },
-        )
-        .await?
-        else {
-            return Ok(());
+        let command = ServiceCommand::TunSetEnabled {
+            enabled: false,
+            profile_id: None,
+            system_proxy_enabled: false,
         };
-        let _: ServiceTunData = data(response)?;
-        Ok(())
+        let mut last_error = None;
+        for attempt in 0..20 {
+            match try_request(app, command.clone()).await {
+                Ok(None) => return Ok(()),
+                Ok(Some(response)) => match data::<ServiceTunData>(response) {
+                    Ok(_) => return Ok(()),
+                    Err(error) => last_error = Some(error),
+                },
+                Err(error) => last_error = Some(error),
+            }
+            if attempt < 19 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+        Err(format!(
+            "退出前等待 MioProxy Service 清理 TUN 失败：{}",
+            last_error.unwrap_or_else(|| "未知错误".to_string())
+        ))
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -682,13 +716,20 @@ mod windows_impl {
 
         fn read_tun_persisted(&self) -> Result<Option<PersistedServiceTunState>, String> {
             let path = self.service_tun_path();
-            if !path.exists() {
+            let Some(content) = config::read_text_file_at(&path, "读取 Service TUN 恢复状态")?
+            else {
                 return Ok(None);
-            }
-            let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+            };
             serde_json::from_str(&content)
                 .map(Some)
                 .map_err(|e| e.to_string())
+        }
+
+        fn set_recovery_error(&self, error: String) -> Result<(), String> {
+            let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
+            tun.status = crate::tun::TunStatus::Error;
+            tun.message = Some(format!("Service TUN 启动恢复失败：{error}"));
+            Ok(())
         }
 
         fn write_tun_persisted(&self) -> Result<(), String> {
@@ -708,22 +749,22 @@ mod windows_impl {
                     .ok_or_else(|| "Service TUN 缺少网络快照".to_string())?,
             };
             let path = self.service_tun_path();
-            write_atomic(
-                &path,
-                &serde_json::to_vec_pretty(&state).map_err(|e| e.to_string())?,
-            )
+            let bytes = serde_json::to_vec_pretty(&state).map_err(|e| e.to_string())?;
+            write_atomic(&path, &bytes)
         }
 
         fn clear_tun_persisted(&self) -> Result<(), String> {
             let path = self.service_tun_path();
-            if path.exists() {
-                fs::remove_file(path).map_err(|e| e.to_string())?;
+            match fs::symlink_metadata(&path) {
+                Ok(_) => fs::remove_file(path).map_err(|e| e.to_string())?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
             }
             Ok(())
         }
 
         fn has_tun_recovery(&self) -> bool {
-            self.service_tun_path().exists()
+            fs::symlink_metadata(self.service_tun_path()).is_ok()
                 || self
                     .tun
                     .lock()
@@ -806,13 +847,13 @@ rules:
                 mixed_port: Option<u16>,
                 mode: Option<String>,
             }
-            if !self.config_path().exists() {
+            let Some(content) =
+                config::read_text_file_at(&self.config_path(), "读取 Service 配置")?
+            else {
                 return Ok((7890, "rule".to_string()));
-            }
-            let value = serde_yaml::from_str::<RuntimeConfig>(
-                &fs::read_to_string(self.config_path()).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
+            };
+            let value =
+                serde_yaml::from_str::<RuntimeConfig>(&content).map_err(|e| e.to_string())?;
             Ok((
                 value.mixed_port.unwrap_or(7890),
                 value.mode.unwrap_or_else(|| "rule".to_string()),
@@ -946,12 +987,26 @@ rules:
                 let _ = fs::remove_file(&candidate);
                 return Err(format!("Mihomo 配置校验失败：{error}"));
             }
-            write_atomic(&self.config_path(), yaml.as_bytes())?;
+            let stable = self.config_path();
+            if let Err(error) = write_atomic(&stable, yaml.as_bytes()) {
+                let _ = fs::remove_file(&candidate);
+                let rollback = mihomo::api_put(
+                    "/configs?force=true",
+                    json!({ "path": stable.display().to_string() }),
+                )
+                .await;
+                return Err(match rollback {
+                    Ok(_) => format!("保存稳定配置失败：{error}；已回滚运行配置"),
+                    Err(rollback_error) => {
+                        format!("保存稳定配置失败：{error}；回滚运行配置失败：{rollback_error}")
+                    }
+                });
+            }
             let _ = fs::remove_file(candidate);
             Ok(crate::config::ConfigApplyResult {
                 profile_id: profile_id.to_string(),
                 profile_name,
-                path: self.config_path().display().to_string(),
+                path: stable.display().to_string(),
                 controller_validated: true,
                 override_active,
             })
@@ -1004,7 +1059,9 @@ rules:
                     .and_then(|value| value.get("enable").and_then(Value::as_bool))
                     == Some(true)
             {
-                return Err("当前配置或 Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string());
+                return Err(
+                    "当前配置或 Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string()
+                );
             }
             let previous_override = config::override_content_at(&self.data_dir)?;
             let snapshot = crate::tun::capture_snapshot().await?;
@@ -1061,7 +1118,7 @@ rules:
                         &previous_override,
                         format!("TUN 网卡启动失败：{error}"),
                     )
-                .await;
+                    .await;
             }
             let baseline = match crate::tun::capture_snapshot().await {
                 Ok(snapshot) => snapshot,
@@ -1147,10 +1204,7 @@ rules:
         async fn disable_tun_inner(&self) -> Result<ServiceTunData, String> {
             let persisted = self.read_tun_persisted()?;
             let (previous, profile_id) = {
-                let in_memory = self
-                    .tun
-                    .lock()
-                    .map_err(|_| "Service TUN 状态锁异常")?;
+                let in_memory = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
                 let previous = persisted
                     .as_ref()
                     .map(|state| state.previous_override.clone())
@@ -1324,8 +1378,11 @@ rules:
         }
 
         async fn shutdown(&self) -> Result<(), String> {
+            let mut errors = Vec::new();
             if self.has_tun_recovery() {
-                let _ = self.disable_tun().await;
+                if let Err(error) = self.disable_tun().await {
+                    errors.push(format!("Service TUN 清理失败：{error}"));
+                }
             }
             if let Some(mut child) = self
                 .child
@@ -1333,10 +1390,18 @@ rules:
                 .map_err(|_| "Service Mihomo 状态锁异常")?
                 .take()
             {
-                let _ = child.kill();
-                let _ = child.wait();
+                if let Err(error) = child.kill() {
+                    errors.push(format!("Service 停止 Mihomo 失败：{error}"));
+                }
+                if let Err(error) = child.wait() {
+                    errors.push(format!("等待 Service Mihomo 退出失败：{error}"));
+                }
             }
-            Ok(())
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("；"))
+            }
         }
 
         async fn monitor(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
@@ -1427,71 +1492,100 @@ rules:
         }
     }
 
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+    fn ensure_not_reparse(path: &Path) -> Result<(), String> {
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.to_string()),
+        };
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(format!("拒绝写入 Reparse Point 路径：{}", path.display()));
+        }
+        Ok(())
+    }
+
+    fn replace_file(temp: &Path, path: &Path) -> Result<(), String> {
+        let source = temp
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let target = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let moved = unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                target.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if moved == 0 {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        Ok(())
+    }
+
     fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            ensure_not_reparse(parent)?;
         }
-        let mut random = [0u8; 16];
-        getrandom::fill(&mut random).map_err(|e| e.to_string())?;
-        let temp = path.with_extension(format!("{:032x}.tmp", u128::from_le_bytes(random)));
-        let result = (|| {
-            let mut file = OpenOptions::new()
+        ensure_not_reparse(path)?;
+
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("无法生成临时文件名：{}", path.display()))?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("无法确定临时文件目录：{}", path.display()))?;
+        let mut temp = None;
+        for _ in 0..8 {
+            let mut random = [0u8; 16];
+            getrandom::fill(&mut random).map_err(|e| format!("生成临时文件名失败：{e}"))?;
+            let suffix = random
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let candidate = parent.join(format!(".{file_name}.{suffix}.tmp"));
+            match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .access_mode(
-                    windows_sys::Win32::Foundation::GENERIC_WRITE
-                        | windows_sys::Win32::Storage::FileSystem::DELETE,
-                )
-                // Deliberately omit FILE_SHARE_DELETE and FILE_SHARE_WRITE. The
-                // verified object cannot be renamed or modified while privileged
-                // content is written and installed through this same handle.
-                .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
-                .open(&temp)
-                .map_err(|e| e.to_string())?;
-            file.write_all(bytes).map_err(|e| e.to_string())?;
-            file.sync_all().map_err(|e| e.to_string())?;
-            replace_file(&file, path)
-        })();
-        if result.is_err() {
+                .open(&candidate)
+            {
+                Ok(mut file) => {
+                    let result = file
+                        .write_all(bytes)
+                        .and_then(|_| file.flush())
+                        .and_then(|_| file.sync_all());
+                    if let Err(error) = result {
+                        drop(file);
+                        let _ = fs::remove_file(&candidate);
+                        return Err(error.to_string());
+                    }
+                    if let Err(error) = ensure_not_reparse(&candidate) {
+                        drop(file);
+                        let _ = fs::remove_file(&candidate);
+                        return Err(error);
+                    }
+                    temp = Some(candidate);
+                    break;
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        let temp = temp.ok_or_else(|| "无法创建唯一临时文件".to_string())?;
+        if let Err(error) = replace_file(&temp, path) {
             let _ = fs::remove_file(&temp);
+            return Err(error);
         }
-        result
-    }
-
-    fn replace_file(source: &fs::File, destination: &Path) -> Result<(), String> {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            SetFileInformationByHandle, FileRenameInfo, FILE_RENAME_INFO,
-        };
-        let destination: Vec<u16> = destination.as_os_str().encode_wide().collect();
-        let header_size = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
-        let byte_len = header_size + destination.len() * std::mem::size_of::<u16>();
-        // Allocate in pointer-sized words so the FILE_RENAME_INFO header is aligned.
-        let mut info = vec![0usize; byte_len.div_ceil(std::mem::size_of::<usize>())];
-        let rename = info.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-        unsafe {
-            (*rename).Anonymous.ReplaceIfExists = true;
-            (*rename).RootDirectory = std::ptr::null_mut();
-            (*rename).FileNameLength = (destination.len() * std::mem::size_of::<u16>()) as u32;
-            std::ptr::copy_nonoverlapping(
-                destination.as_ptr(),
-                (*rename).FileName.as_mut_ptr(),
-                destination.len(),
-            );
-        }
-        let ok = unsafe {
-            SetFileInformationByHandle(
-                source.as_raw_handle(),
-                FileRenameInfo,
-                rename.cast(),
-                byte_len as u32,
-            )
-        };
-        if ok == 0 {
-            Err(io::Error::last_os_error().to_string())
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 
     fn response_ok(data: Value) -> ServiceResponse {
@@ -1521,18 +1615,12 @@ rules:
         let sid = "AU".to_string();
         #[cfg(not(test))]
         let sid = {
-            let sid = fs::read_to_string(data_dir.join(USER_SID_FILE))
-                .map_err(|e| format!("读取 Service 安装用户身份失败：{e}"))?
+            let sid_path = data_dir.join(USER_SID_FILE);
+            let sid = config::read_text_file_at(&sid_path, "读取 Service 安装用户身份")?
+                .ok_or_else(|| "读取 Service 安装用户身份失败：文件不存在".to_string())?
                 .trim()
                 .to_string();
-            if !sid.starts_with("S-")
-                || sid
-                    .chars()
-                    .any(|character| !character.is_ascii_alphanumeric() && character != '-')
-            {
-                return Err("Service 安装用户 SID 无效".to_string());
-            }
-            sid
+            validate_sid(&sid)?
         };
         let sddl = format!("D:P(A;;GA;;;SY)(A;;GA;;;{sid})\0");
         let wide = sddl.encode_utf16().collect::<Vec<u16>>();
@@ -1681,20 +1769,22 @@ rules:
         mihomo::initialize_secret(&data_dir)?;
         let expected_token = ensure_token(&data_dir)?;
         let runtime = Arc::new(ServiceRuntime::new(data_dir, mihomo_path)?);
-        let _ = runtime.recover().await?;
+        if let Err(error) = runtime.recover().await {
+            runtime.set_recovery_error(error)?;
+        }
         let monitor = tokio::spawn(runtime.clone().monitor(shutdown.clone()));
         let mut first = true;
-        loop {
-            let Some(server) = create_server_until_ready(first, &runtime.data_dir, &mut shutdown).await? else {
-                let _ = runtime.shutdown().await;
-                break;
+        let shutdown_result = loop {
+            let Some(server) =
+                create_server_until_ready(first, &runtime.data_dir, &mut shutdown).await?
+            else {
+                break runtime.shutdown().await;
             };
             first = false;
             tokio::select! {
                 changed = shutdown.changed() => {
                     if changed.is_err() || *shutdown.borrow() {
-                        let _ = runtime.shutdown().await;
-                        break;
+                        break runtime.shutdown().await;
                     }
                 }
                 connected = server.connect() => {
@@ -1703,9 +1793,9 @@ rules:
                     }
                 }
             }
-        }
+        };
         monitor.abort();
-        Ok(())
+        shutdown_result
     }
 
     pub async fn run_service_console(

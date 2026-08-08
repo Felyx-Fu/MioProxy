@@ -1,10 +1,18 @@
 use std::{
-    fs::{self, OpenOptions},
+    fs,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::Mutex,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+#[cfg(windows)]
+use std::os::windows::{ffi::OsStrExt, fs::MetadataExt};
+
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{
+    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
 };
 
 use serde::{Deserialize, Serialize};
@@ -67,6 +75,7 @@ struct TunRuntime {
     profile_id: Option<String>,
     previous_override: Option<String>,
     snapshot: Option<NetworkSnapshot>,
+    recovery_blocked: bool,
 }
 
 #[derive(Default)]
@@ -89,57 +98,118 @@ fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
         .join(STATE_FILE))
 }
 
-fn write_persisted(app: &AppHandle, state: &PersistedTunState) -> Result<(), String> {
-    let path = state_path(app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let bytes = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
-    atomic_replace(&path, &bytes)
-}
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
-fn atomic_replace(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
-    let mut random = [0u8; 16];
-    getrandom::fill(&mut random).map_err(|e| e.to_string())?;
-    let temp = path.with_extension(format!("{:032x}.tmp", u128::from_le_bytes(random)));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .map_err(|e| e.to_string())?;
-        file.write_all(bytes).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        drop(file);
-        replace_file(&temp, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
+#[cfg(windows)]
+fn ensure_not_reparse(path: &Path) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(format!("拒绝写入 Reparse Point 路径：{}", path.display()));
     }
-    result
+    Ok(())
 }
 
 #[cfg(not(windows))]
-fn replace_file(source: &std::path::Path, destination: &std::path::Path) -> Result<(), String> {
-    fs::rename(source, destination).map_err(|e| e.to_string())
+fn ensure_not_reparse(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(windows)]
-fn replace_file(source: &std::path::Path, destination: &std::path::Path) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+fn replace_file(temp: &Path, path: &Path) -> Result<(), String> {
+    let source = temp
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
     };
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
-    let ok = unsafe {
-        MoveFileExW(source.as_ptr(), destination.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
-    };
-    if ok == 0 {
-        Err(std::io::Error::last_os_error().to_string())
-    } else {
-        Ok(())
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
     }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(temp: &Path, path: &Path) -> Result<(), String> {
+    fs::rename(temp, path).map_err(|e| e.to_string())
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        ensure_not_reparse(parent)?;
+    }
+    ensure_not_reparse(path)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("无法生成临时文件名：{}", path.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("无法确定临时文件目录：{}", path.display()))?;
+    let mut temp = None;
+    for _ in 0..8 {
+        let mut random = [0u8; 16];
+        getrandom::fill(&mut random).map_err(|e| format!("生成临时文件名失败：{e}"))?;
+        let suffix = random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let candidate = parent.join(format!(".{file_name}.{suffix}.tmp"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(mut file) => {
+                let result = file
+                    .write_all(bytes)
+                    .and_then(|_| file.flush())
+                    .and_then(|_| file.sync_all());
+                if let Err(error) = result {
+                    drop(file);
+                    let _ = fs::remove_file(&candidate);
+                    return Err(error.to_string());
+                }
+                if let Err(error) = ensure_not_reparse(&candidate) {
+                    drop(file);
+                    let _ = fs::remove_file(&candidate);
+                    return Err(error);
+                }
+                temp = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    let temp = temp.ok_or_else(|| "无法创建唯一临时文件".to_string())?;
+    if let Err(error) = replace_file(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn write_persisted(app: &AppHandle, state: &PersistedTunState) -> Result<(), String> {
+    let path = state_path(app)?;
+    let bytes = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
+    write_atomic(&path, &bytes)
 }
 
 fn read_persisted(app: &AppHandle) -> Result<Option<PersistedTunState>, String> {
@@ -218,7 +288,7 @@ pub(crate) async fn capture_snapshot() -> Result<NetworkSnapshot, String> {
         return Err("Mihomo 未运行，无法创建 TUN 运行前快照".to_string());
     }
     let default_route = powershell_json(
-        "$routes = @(Get-NetRoute -PolicyStore ActiveStore | Where-Object { $_.DestinationPrefix -in @('0.0.0.0/0', '::/0') } | Group-Object DestinationPrefix | ForEach-Object { $_.Group | Sort-Object RouteMetric | Select-Object -First 1 DestinationPrefix,InterfaceAlias,InterfaceIndex,NextHop,RouteMetric,AddressFamily }); $routes | ConvertTo-Json -Compress",
+        "$routes = @(Get-NetRoute -PolicyStore ActiveStore | Where-Object { $_.DestinationPrefix -in @('0.0.0.0/0', '::/0') } | ForEach-Object { $route = $_; $interface = Get-NetIPInterface -InterfaceIndex $route.InterfaceIndex -AddressFamily $route.AddressFamily -ErrorAction SilentlyContinue | Select-Object -First 1; $interfaceMetric = if ($null -eq $interface) { 0 } else { [int]$interface.InterfaceMetric }; [pscustomobject]@{ DestinationPrefix = $route.DestinationPrefix; InterfaceAlias = $route.InterfaceAlias; InterfaceIndex = $route.InterfaceIndex; NextHop = $route.NextHop; RouteMetric = [int]$route.RouteMetric; InterfaceMetric = $interfaceMetric; EffectiveMetric = [int]$route.RouteMetric + $interfaceMetric; AddressFamily = $route.AddressFamily } } | Group-Object DestinationPrefix | ForEach-Object { $_.Group | Sort-Object EffectiveMetric,RouteMetric,InterfaceIndex | Select-Object -First 1 }); $routes | ConvertTo-Json -Compress",
     )?;
     let dns_servers = powershell_json(
         "Get-DnsClientServerAddress | Where-Object { $_.AddressFamily -in @(2, 23) -and $_.ServerAddresses } | Select-Object InterfaceAlias,AddressFamily,ServerAddresses | ConvertTo-Json -Compress",
@@ -263,16 +333,21 @@ fn set_runtime(state: &TunState, update: impl FnOnce(&mut TunRuntime)) -> Result
     Ok(())
 }
 
+fn requires_recovery(runtime: &TunRuntime) -> bool {
+    runtime.recovery_blocked
+        || matches!(
+            runtime.status,
+            TunStatus::Starting | TunStatus::Running | TunStatus::Stopping
+        )
+        || (runtime.status == TunStatus::Error
+            && runtime.previous_override.is_some()
+            && runtime.profile_id.is_some()
+            && runtime.snapshot.is_some())
+}
+
 fn active_runtime(state: &TunState) -> Result<Option<TunRuntime>, String> {
     let runtime = runtime_snapshot(state)?;
-    let active = matches!(
-        runtime.status,
-        TunStatus::Starting | TunStatus::Running | TunStatus::Stopping
-    ) || (runtime.status == TunStatus::Error
-        && runtime.previous_override.is_some()
-        && runtime.profile_id.is_some()
-        && runtime.snapshot.is_some());
-    Ok(active.then_some(runtime))
+    Ok(requires_recovery(&runtime).then_some(runtime))
 }
 
 pub(crate) fn is_active(app: &AppHandle) -> bool {
@@ -397,7 +472,10 @@ async fn enable_tun(
         &profile_id,
     )? || runtime_tun_enabled().await == Some(true)
     {
-        set_error(state, "当前配置或 Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string())?;
+        set_error(
+            state,
+            "当前配置或 Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string(),
+        )?;
         return Err("当前配置或 Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string());
     }
 
@@ -409,6 +487,7 @@ async fn enable_tun(
         profile_id: Some(profile_id.clone()),
         previous_override: Some(previous_override.clone()),
         snapshot: Some(snapshot.clone()),
+        ..TunRuntime::default()
     };
     set_runtime(state, |current| *current = runtime.clone())?;
     if let Err(error) = write_persisted(app, &persisted_for(&runtime)?) {
@@ -436,7 +515,10 @@ async fn enable_tun(
         )
         .await;
     }
-    if !mihomo::is_running().await || !mihomo::owns_core(app) || runtime_tun_enabled().await != Some(true) {
+    if !mihomo::is_running().await
+        || !mihomo::owns_core(app)
+        || runtime_tun_enabled().await != Some(true)
+    {
         return rollback_enable(
             app,
             state,
@@ -490,10 +572,7 @@ async fn enable_tun(
     response(state)
 }
 
-async fn disable_tun(
-    app: &AppHandle,
-    state: &TunState,
-) -> Result<TunStatusSnapshot, String> {
+async fn disable_tun(app: &AppHandle, state: &TunState) -> Result<TunStatusSnapshot, String> {
     let Some(active) = active_runtime(state)? else {
         set_runtime(state, |runtime| {
             runtime.status = TunStatus::Disabled;
@@ -501,6 +580,11 @@ async fn disable_tun(
         })?;
         return response(state);
     };
+    if active.recovery_blocked {
+        return Err(active.message.unwrap_or_else(|| {
+            "TUN 恢复状态无法读取；请修复或移除 tun-state.json 后重启应用".to_string()
+        }));
+    }
     let profile_id = active
         .profile_id
         .clone()
@@ -544,6 +628,9 @@ pub async fn tun_status(
     app: AppHandle,
     state: State<'_, TunState>,
 ) -> Result<TunStatusSnapshot, String> {
+    if active_runtime(&state)?.is_some() {
+        return response(&state);
+    }
     if let Some(snapshot) = crate::service::service_tun_status(&app).await? {
         return Ok(snapshot);
     }
@@ -559,6 +646,12 @@ pub async fn tun_set_enabled(
 ) -> Result<TunStatusSnapshot, String> {
     let _transition = lock_transitions().await;
     let system_proxy_enabled = system_proxy::status(&app).await?.enabled;
+    if active_runtime(&state)?.is_some() {
+        if enabled {
+            return Err("GUI TUN 会话仍在运行，请先关闭本地 TUN".to_string());
+        }
+        return disable_tun(&app, &state).await;
+    }
     if let Some(snapshot) =
         crate::service::request_tun(&app, enabled, profile_id.clone(), system_proxy_enabled).await?
     {
@@ -601,11 +694,20 @@ pub async fn on_mihomo_exit(app: &AppHandle) {
         return;
     };
     let runtime = runtime_snapshot(&state).ok();
-    let persisted = read_persisted(app).ok().flatten().or_else(|| {
-        runtime
-            .as_ref()
-            .and_then(|runtime| persisted_for(runtime).ok())
-    });
+    let persisted = match read_persisted(app) {
+        Ok(persisted) => persisted.or_else(|| {
+            runtime
+                .as_ref()
+                .and_then(|runtime| persisted_for(runtime).ok())
+        }),
+        Err(error) => {
+            let _ = set_error(
+                &state,
+                format!("Mihomo 异常退出，TUN 恢复状态损坏：{error}"),
+            );
+            return;
+        }
+    };
     let Some(persisted) = persisted else {
         return;
     };
@@ -641,8 +743,22 @@ pub async fn recover_after_startup(app: AppHandle) {
     let Some(state) = app.try_state::<TunState>() else {
         return;
     };
-    let Ok(Some(persisted)) = read_persisted(&app) else {
-        return;
+    let persisted = match read_persisted(&app) {
+        Ok(Some(persisted)) => persisted,
+        Ok(None) => return,
+        Err(error) => {
+            let _ = set_runtime(&state, |current| {
+                *current = TunRuntime {
+                    status: TunStatus::Error,
+                    message: Some(format!(
+                        "{error}；无法确认 TUN 是否已恢复，请修复或移除 tun-state.json 后重启应用"
+                    )),
+                    recovery_blocked: true,
+                    ..TunRuntime::default()
+                };
+            });
+            return;
+        }
     };
     let restore = config::restore_override_content(&app, &persisted.previous_override);
     let apply = if restore.is_ok() && mihomo::owns_core(&app) && mihomo::is_running().await {
@@ -686,11 +802,13 @@ pub fn start_monitor(app: AppHandle) {
             let Some(state) = app.try_state::<TunState>() else {
                 return;
             };
+            let transition = lock_transitions().await;
             let Ok(Some(runtime)) = active_runtime(&state) else {
                 was_active = false;
                 continue;
             };
             if !mihomo::is_running().await || !mihomo::owns_core(&app) {
+                drop(transition);
                 on_mihomo_exit(&app).await;
                 was_active = false;
                 continue;
@@ -699,7 +817,6 @@ pub fn start_monitor(app: AppHandle) {
                 last_tick = Instant::now();
                 was_active = true;
             }
-            let _transition = lock_transitions().await;
             let wake_gap = last_tick.elapsed() > Duration::from_secs(30);
             last_tick = Instant::now();
             let Ok(current) = capture_snapshot().await else {
@@ -728,10 +845,11 @@ pub fn start_monitor(app: AppHandle) {
             });
             match config::apply_config(app.clone(), profile_id).await {
                 Ok(_) => {
+                    let baseline = capture_snapshot().await.unwrap_or(refreshed_snapshot);
                     let _ = set_runtime(&state, |current| {
                         current.status = TunStatus::Running;
                         current.message = None;
-                        current.snapshot = Some(refreshed_snapshot.clone());
+                        current.snapshot = Some(baseline);
                     });
                     if let Ok(current) = runtime_snapshot(&state) {
                         if let Ok(persisted) = persisted_for(&current) {
@@ -749,7 +867,18 @@ pub fn start_monitor(app: AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::NetworkSnapshot;
+    use super::{requires_recovery, NetworkSnapshot, TunRuntime, TunStatus};
+
+    #[test]
+    fn corrupted_persisted_state_blocks_normal_tun_operations() {
+        let runtime = TunRuntime {
+            status: TunStatus::Error,
+            recovery_blocked: true,
+            ..TunRuntime::default()
+        };
+
+        assert!(requires_recovery(&runtime));
+    }
 
     #[test]
     fn network_snapshot_preserves_structured_network_state() {

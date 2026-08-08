@@ -91,9 +91,11 @@ mod windows_service_host {
     }
 
     fn copy_protected_binary(source: &Path, target: &Path, label: &str) -> Result<(), String> {
-        let source = fs::canonicalize(source)
-            .map_err(|e| format!("解析 {label} 路径失败：{e}"))?;
-        if fs::canonicalize(target).ok().is_some_and(|current| current == source) {
+        let source = fs::canonicalize(source).map_err(|e| format!("解析 {label} 路径失败：{e}"))?;
+        if fs::canonicalize(target)
+            .ok()
+            .is_some_and(|current| current == source)
+        {
             return Ok(());
         }
         fs::copy(&source, target)
@@ -102,10 +104,8 @@ mod windows_service_host {
     }
 
     fn install(args: &[OsString]) -> Result<(), String> {
-        let source_executable = fs::canonicalize(
-            env::current_exe().map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| format!("解析 Service 可执行文件路径失败：{e}"))?;
+        let source_executable = fs::canonicalize(env::current_exe().map_err(|e| e.to_string())?)
+            .map_err(|e| format!("解析 Service 可执行文件路径失败：{e}"))?;
         let data_dir = option(args, "--data-dir")
             .map(PathBuf::from)
             .unwrap_or_else(default_data_dir);
@@ -115,9 +115,10 @@ mod windows_service_host {
         let source_mihomo_path = fs::canonicalize(source_mihomo_path)
             .map_err(|e| format!("解析 Service Mihomo 路径失败：{e}"))?;
         fs::create_dir_all(&data_dir).map_err(|e| format!("创建 Service 数据目录失败：{e}"))?;
-        let data_dir = fs::canonicalize(&data_dir)
-            .map_err(|e| format!("解析 Service 数据目录失败：{e}"))?;
-        service::ensure_install_user_sid(&data_dir)?;
+        let data_dir =
+            fs::canonicalize(&data_dir).map_err(|e| format!("解析 Service 数据目录失败：{e}"))?;
+        let user_sid = option(args, "--user-sid").map(|value| value.to_string_lossy().into_owned());
+        service::ensure_install_user_sid(&data_dir, user_sid.as_deref())?;
         service::ensure_install_token(&data_dir)?;
         let manager = ServiceManager::local_computer(
             None::<&str>,
@@ -189,9 +190,9 @@ mod windows_service_host {
         let service = match manager.create_service(&info, service_access) {
             Ok(service) => service,
             Err(windows_service::Error::Winapi(error)) if error.raw_os_error() == Some(1073) => {
-                existing_service.take().ok_or_else(|| {
-                    "MioProxy Service 已存在，但无法重新打开它".to_string()
-                })?
+                existing_service
+                    .take()
+                    .ok_or_else(|| "MioProxy Service 已存在，但无法重新打开它".to_string())?
             }
             Err(error) => return Err(format!("创建 MioProxy Service 失败：{error}")),
         };
@@ -241,6 +242,14 @@ mod windows_service_host {
             if !stopped {
                 return Err("MioProxy Service 未能在 10 秒内停止".to_string());
             }
+        }
+        let final_status = service
+            .query_status()
+            .map_err(|e| format!("查询 MioProxy Service 停止结果失败：{e}"))?;
+        if final_status.exit_code != ServiceExitCode::NO_ERROR {
+            return Err(
+                "MioProxy Service 停止时未完成 TUN 恢复，已保留 Service 以便重试清理".to_string(),
+            );
         }
         service
             .delete()

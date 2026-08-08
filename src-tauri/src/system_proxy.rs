@@ -1,8 +1,4 @@
-use std::{
-    fs,
-    path::PathBuf,
-    sync::Mutex,
-};
+use std::{fs, path::PathBuf, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -13,7 +9,8 @@ use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
 use crate::mihomo;
 
-const INTERNET_SETTINGS_PATH: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
+const INTERNET_SETTINGS_PATH: &str =
+    "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,7 +25,6 @@ pub struct ProxySnapshot {
 #[derive(Default)]
 pub struct SystemProxyState {
     snapshot: Mutex<Option<ProxySnapshot>>,
-    enabled: Mutex<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,7 +38,10 @@ pub struct SystemProxyStatus {
 
 fn settings_key() -> Result<RegKey, String> {
     RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey_with_flags(INTERNET_SETTINGS_PATH, winreg::enums::KEY_READ | winreg::enums::KEY_WRITE)
+        .open_subkey_with_flags(
+            INTERNET_SETTINGS_PATH,
+            winreg::enums::KEY_READ | winreg::enums::KEY_WRITE,
+        )
         .map_err(|e| format!("读取 Windows 代理设置失败：{e}"))
 }
 
@@ -73,7 +72,8 @@ fn write_optional_string(key: &RegKey, name: &str, value: &Option<String>) -> Re
 fn write_snapshot(snapshot: &ProxySnapshot) -> Result<(), String> {
     let key = settings_key()?;
     if let Some(value) = snapshot.proxy_enable {
-        key.set_value("ProxyEnable", &value).map_err(|e| e.to_string())?;
+        key.set_value("ProxyEnable", &value)
+            .map_err(|e| e.to_string())?;
     } else {
         delete_value(&key, "ProxyEnable");
     }
@@ -81,7 +81,8 @@ fn write_snapshot(snapshot: &ProxySnapshot) -> Result<(), String> {
     write_optional_string(&key, "ProxyOverride", &snapshot.proxy_override)?;
     write_optional_string(&key, "AutoConfigURL", &snapshot.auto_config_url)?;
     if let Some(value) = snapshot.auto_detect {
-        key.set_value("AutoDetect", &value).map_err(|e| e.to_string())?;
+        key.set_value("AutoDetect", &value)
+            .map_err(|e| e.to_string())?;
     } else {
         delete_value(&key, "AutoDetect");
     }
@@ -91,14 +92,17 @@ fn write_snapshot(snapshot: &ProxySnapshot) -> Result<(), String> {
 
 fn write_mioproxy_settings(mixed_port: u16, original: &ProxySnapshot) -> Result<(), String> {
     let key = settings_key()?;
-    key.set_value("ProxyEnable", &1u32).map_err(|e| e.to_string())?;
-    key.set_value("ProxyServer", &format!("127.0.0.1:{mixed_port}")).map_err(|e| e.to_string())?;
+    key.set_value("ProxyEnable", &1u32)
+        .map_err(|e| e.to_string())?;
+    key.set_value("ProxyServer", &format!("127.0.0.1:{mixed_port}"))
+        .map_err(|e| e.to_string())?;
     let override_value = original
         .proxy_override
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("<local>");
-    key.set_value("ProxyOverride", &override_value).map_err(|e| e.to_string())?;
+    key.set_value("ProxyOverride", &override_value)
+        .map_err(|e| e.to_string())?;
     delete_value(&key, "AutoConfigURL");
     delete_value(&key, "AutoDetect");
     notify_settings_changed();
@@ -107,13 +111,27 @@ fn write_mioproxy_settings(mixed_port: u16, original: &ProxySnapshot) -> Result<
 
 fn notify_settings_changed() {
     unsafe {
-        let _ = InternetSetOptionW(std::ptr::null_mut(), INTERNET_OPTION_SETTINGS_CHANGED, std::ptr::null_mut(), 0);
-        let _ = InternetSetOptionW(std::ptr::null_mut(), INTERNET_OPTION_REFRESH, std::ptr::null_mut(), 0);
+        let _ = InternetSetOptionW(
+            std::ptr::null_mut(),
+            INTERNET_OPTION_SETTINGS_CHANGED,
+            std::ptr::null_mut(),
+            0,
+        );
+        let _ = InternetSetOptionW(
+            std::ptr::null_mut(),
+            INTERNET_OPTION_REFRESH,
+            std::ptr::null_mut(),
+            0,
+        );
     }
 }
 
 fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("system-proxy-state.json"))
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("system-proxy-state.json"))
 }
 
 fn persist_snapshot(app: &AppHandle, snapshot: &ProxySnapshot) -> Result<(), String> {
@@ -121,7 +139,11 @@ fn persist_snapshot(app: &AppHandle, snapshot: &ProxySnapshot) -> Result<(), Str
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    fs::write(path, serde_json::to_vec_pretty(snapshot).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(snapshot).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn read_persisted_snapshot(app: &AppHandle) -> Result<Option<ProxySnapshot>, String> {
@@ -130,7 +152,9 @@ fn read_persisted_snapshot(app: &AppHandle) -> Result<Option<ProxySnapshot>, Str
         return Ok(None);
     }
     let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&content).map(Some).map_err(|e| format!("代理状态恢复文件损坏：{e}"))
+    serde_json::from_str(&content)
+        .map(Some)
+        .map_err(|e| format!("代理状态恢复文件损坏：{e}"))
 }
 
 fn clear_persisted_snapshot(app: &AppHandle) -> Result<(), String> {
@@ -160,8 +184,10 @@ async fn restore_for_lifecycle_inner(app: &AppHandle) -> Result<(), String> {
     if let Some(snapshot) = snapshot {
         write_snapshot(&snapshot)?;
         clear_persisted_snapshot(app)?;
-        *state.snapshot.lock().map_err(|_| "System Proxy 状态锁异常")? = None;
-        *state.enabled.lock().map_err(|_| "System Proxy 状态锁异常")? = false;
+        *state
+            .snapshot
+            .lock()
+            .map_err(|_| "System Proxy 状态锁异常")? = None;
     }
     if let Ok(next) = status(app).await {
         crate::tray::update_proxy_label(app, next.enabled, next.core_running);
@@ -194,20 +220,32 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
         }
 
         let state = app.state::<SystemProxyState>();
-        if *state.enabled.lock().map_err(|_| "System Proxy 状态锁异常")? {
+        let current = read_snapshot()?;
+        let mixed_port = mihomo::mixed_port(&app)?;
+        let endpoint = format!("127.0.0.1:{mixed_port}");
+        let owned_by_mioproxy = current.proxy_enable == Some(1)
+            && current.proxy_server.as_deref() == Some(endpoint.as_str())
+            && (state
+                .snapshot
+                .lock()
+                .map_err(|_| "System Proxy 状态锁异常")?
+                .is_some()
+                || read_persisted_snapshot(&app)?.is_some());
+        if owned_by_mioproxy {
             return status(&app).await;
         }
 
-        let mixed_port = mihomo::mixed_port(&app)?;
-        let snapshot = read_snapshot()?;
+        let snapshot = current;
         persist_snapshot(&app, &snapshot)?;
         if let Err(error) = write_mioproxy_settings(mixed_port, &snapshot) {
             let _ = write_snapshot(&snapshot);
             let _ = clear_persisted_snapshot(&app);
             return Err(format!("开启系统代理失败：{error}"));
         }
-        *state.snapshot.lock().map_err(|_| "System Proxy 状态锁异常")? = Some(snapshot);
-        *state.enabled.lock().map_err(|_| "System Proxy 状态锁异常")? = true;
+        *state
+            .snapshot
+            .lock()
+            .map_err(|_| "System Proxy 状态锁异常")? = Some(snapshot);
     } else {
         restore_for_lifecycle_inner(&app).await?;
     }
@@ -220,10 +258,8 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
 
 pub async fn status(app: &AppHandle) -> Result<SystemProxyStatus, String> {
     let snapshot = read_snapshot()?;
-    // Read the HKCU value shared by all GUI processes, rather than process-local state.
-    let enabled = snapshot.proxy_enable.unwrap_or_default() != 0;
     Ok(SystemProxyStatus {
-        enabled,
+        enabled: snapshot.proxy_enable == Some(1),
         core_running: mihomo::is_running().await,
         mixed_port: mihomo::mixed_port(app)?,
         proxy_server: snapshot.proxy_server,
@@ -236,6 +272,9 @@ pub async fn system_proxy_status(app: AppHandle) -> Result<SystemProxyStatus, St
 }
 
 #[tauri::command]
-pub async fn system_proxy_set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxyStatus, String> {
+pub async fn system_proxy_set_enabled(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<SystemProxyStatus, String> {
     set_enabled(app, enabled).await
 }

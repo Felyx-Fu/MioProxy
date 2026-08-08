@@ -1,7 +1,19 @@
 use std::{
     fs,
+    io::{self, Read, Write},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
+};
+
+#[cfg(windows)]
+use std::os::windows::{
+    ffi::OsStrExt,
+    fs::{MetadataExt, OpenOptionsExt},
+};
+
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{
+    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
 };
 
 use serde::{Deserialize, Serialize};
@@ -95,15 +107,147 @@ fn timestamp() -> u64 {
         .as_secs()
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        ensure_not_reparse(parent)?;
     }
-    let temp = path.with_extension("tmp");
-    fs::write(&temp, bytes).map_err(|e| e.to_string())?;
-    if path.exists() {
-        fs::remove_file(path).map_err(|e| e.to_string())?;
+    ensure_not_reparse(path)?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("无法生成临时文件名：{}", path.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("无法确定临时文件目录：{}", path.display()))?;
+    let mut temp = None;
+    for _ in 0..8 {
+        let mut random = [0u8; 16];
+        getrandom::fill(&mut random).map_err(|e| format!("生成临时文件名失败：{e}"))?;
+        let suffix = random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let candidate = parent.join(format!(".{file_name}.{suffix}.tmp"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(mut file) => {
+                let result = file
+                    .write_all(bytes)
+                    .and_then(|_| file.flush())
+                    .and_then(|_| file.sync_all());
+                if let Err(error) = result {
+                    drop(file);
+                    let _ = fs::remove_file(&candidate);
+                    return Err(error.to_string());
+                }
+                if let Err(error) = ensure_not_reparse(&candidate) {
+                    drop(file);
+                    let _ = fs::remove_file(&candidate);
+                    return Err(error);
+                }
+                temp = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
     }
+    let temp = temp.ok_or_else(|| "无法创建唯一临时文件".to_string())?;
+    if let Err(error) = replace_file(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+#[cfg(windows)]
+fn ensure_not_reparse(path: &Path) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(format!("拒绝写入 Reparse Point 路径：{}", path.display()));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn ensure_not_reparse(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+pub(crate) fn read_text_file_at(path: &Path, label: &str) -> Result<Option<String>, String> {
+    #[cfg(not(windows))]
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            return Err(format!("拒绝读取 Reparse Point 路径：{}", path.display()));
+        }
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("{label}失败：{error}")),
+    };
+    #[cfg(windows)]
+    {
+        let metadata = file
+            .metadata()
+            .map_err(|e| format!("检查 {label} 路径失败：{e}"))?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(format!("拒绝读取 Reparse Point 路径：{}", path.display()));
+        }
+    }
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .map_err(|e| format!("{label}失败：{e}"))?;
+    Ok(Some(content))
+}
+
+#[cfg(windows)]
+fn replace_file(temp: &Path, path: &Path) -> Result<(), String> {
+    let source = temp
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(temp: &Path, path: &Path) -> Result<(), String> {
     fs::rename(temp, path).map_err(|e| e.to_string())
 }
 
@@ -113,10 +257,9 @@ fn empty_mapping() -> Value {
 
 fn read_override_value_at(data_dir: &Path) -> Result<(Value, String), String> {
     let path = override_path_at(data_dir);
-    if !path.exists() {
+    let Some(content) = read_text_file_at(&path, "读取本地 Override")? else {
         return Ok((empty_mapping(), String::new()));
-    }
-    let content = fs::read_to_string(&path).map_err(|e| format!("读取本地 Override 失败：{e}"))?;
+    };
     if content.trim().is_empty() {
         return Ok((empty_mapping(), content));
     }
@@ -234,8 +377,8 @@ fn validate_config(value: &Value) -> Result<(), String> {
 
 pub(crate) fn build_value_at(data_dir: &Path, profile_id: &str) -> Result<BuiltConfig, String> {
     let profiles_path = data_dir.join("profiles.json");
-    let profiles_content =
-        fs::read_to_string(&profiles_path).map_err(|e| format!("读取 Profile 数据失败：{e}"))?;
+    let profiles_content = read_text_file_at(&profiles_path, "读取 Profile 数据")?
+        .ok_or_else(|| "读取 Profile 数据失败：文件不存在".to_string())?;
     let profile = serde_json::from_str::<Vec<profiles::Profile>>(&profiles_content)
         .map_err(|e| format!("Profile 数据损坏：{e}"))?
         .into_iter()
@@ -245,8 +388,9 @@ pub(crate) fn build_value_at(data_dir: &Path, profile_id: &str) -> Result<BuiltC
         .file_path
         .as_ref()
         .ok_or_else(|| "请先下载这个 Profile".to_string())?;
-    let source =
-        fs::read_to_string(source_path).map_err(|e| format!("读取 Profile YAML 失败：{e}"))?;
+    let source_path = profile_source_path_at(data_dir, source_path)?;
+    let source = read_text_file_at(&source_path, "读取 Profile YAML")?
+        .ok_or_else(|| "读取 Profile YAML 失败：文件不存在".to_string())?;
     if source.trim().is_empty() {
         return Err("Profile YAML 为空".to_string());
     }
@@ -271,6 +415,40 @@ pub(crate) fn build_value_at(data_dir: &Path, profile_id: &str) -> Result<BuiltC
         value: base,
         override_active: !override_content.trim().is_empty(),
     })
+}
+
+fn profile_source_path_at(
+    data_dir: &Path,
+    source_path: &str,
+) -> Result<std::path::PathBuf, String> {
+    let profiles_dir = data_dir.join("profiles");
+    ensure_not_reparse(&profiles_dir)?;
+    let source_path = Path::new(source_path);
+    if !source_path.is_absolute() || is_network_path(source_path) {
+        return Err("Profile 文件必须位于应用数据目录的 profiles 文件夹内".to_string());
+    }
+    ensure_not_reparse(source_path)?;
+    let profiles_root =
+        fs::canonicalize(&profiles_dir).map_err(|e| format!("解析 Profile 目录失败：{e}"))?;
+    let canonical_source =
+        fs::canonicalize(source_path).map_err(|e| format!("解析 Profile 文件失败：{e}"))?;
+    if !canonical_source.starts_with(&profiles_root) {
+        return Err("Profile 文件必须位于应用数据目录的 profiles 文件夹内".to_string());
+    }
+    Ok(canonical_source)
+}
+
+#[cfg(windows)]
+fn is_network_path(path: &Path) -> bool {
+    let value = path.as_os_str().to_string_lossy().to_ascii_lowercase();
+    value.starts_with(r"\\.\")
+        || value.starts_with(r"\\?\unc\")
+        || (value.starts_with(r"\\") && !value.starts_with(r"\\?\"))
+}
+
+#[cfg(not(windows))]
+fn is_network_path(_path: &Path) -> bool {
+    false
 }
 
 pub(crate) fn configured_tun_enabled_at(data_dir: &Path, profile_id: &str) -> Result<bool, String> {
@@ -722,7 +900,9 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(&data_dir).unwrap();
-        let source_path = data_dir.join("profile.yaml");
+        let profiles_dir = data_dir.join("profiles");
+        fs::create_dir_all(&profiles_dir).unwrap();
+        let source_path = profiles_dir.join("profile.yaml");
         fs::write(
             &source_path,
             "mixed-port: 7890\nproxies: []\nproxy-groups: []\nrules: [MATCH,DIRECT]\n",

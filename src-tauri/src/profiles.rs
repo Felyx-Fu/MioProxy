@@ -134,11 +134,7 @@ fn decode_userinfo(value: &str, kind: &str, index: usize) -> Result<String, Stri
         .map_err(|_| format!("第 {index} 个 {kind} 节点用户信息不是有效 UTF-8"))
 }
 
-fn proxy_name(
-    url: &Url,
-    index: usize,
-    used_names: &mut HashSet<String>,
-) -> Result<String, String> {
+fn proxy_name(url: &Url, index: usize, used_names: &mut HashSet<String>) -> Result<String, String> {
     let candidate = url
         .fragment()
         .map(|fragment| {
@@ -243,6 +239,12 @@ fn parse_proxy_uri(
                     map.insert(value_key("grpc-opts"), Value::Mapping(grpc));
                 }
             }
+            if query_bool(&url, "allowInsecure").or_else(|| query_bool(&url, "insecure"))
+                == Some(true)
+            {
+                set_bool(&mut map, "skip-cert-verify", true);
+            }
+            set_alpn(&mut map, &url);
             map
         }
         "hysteria2" | "hy2" => {
@@ -283,11 +285,16 @@ fn parse_proxy_uri(
                     .map(|value| decode_userinfo(value, "TUIC", index))
                     .transpose()?
             };
-            if uuid.is_empty() || password.as_deref().is_none_or(str::is_empty) {
+            let token = query_value(&url, "token");
+            let has_credentials =
+                !uuid.is_empty() && password.as_deref().is_some_and(|value| !value.is_empty());
+            if !has_credentials && token.is_none() {
                 return Err(format!("第 {index} 个 TUIC 节点缺少 UUID 或密码"));
             }
-            set_string(&mut map, "uuid", uuid);
-            set_string(&mut map, "password", password.unwrap_or_default());
+            if has_credentials {
+                set_string(&mut map, "uuid", uuid);
+                set_string(&mut map, "password", password.unwrap_or_default());
+            }
             if let Some(value) = query_value(&url, "sni") {
                 set_string(&mut map, "sni", value);
             }
@@ -306,7 +313,7 @@ fn parse_proxy_uri(
             if let Some(value) = query_bool(&url, "disable_sni") {
                 set_bool(&mut map, "disable-sni", value);
             }
-            if let Some(value) = query_value(&url, "token") {
+            if let Some(value) = token {
                 set_string(&mut map, "token", value);
             }
             set_alpn(&mut map, &url);
@@ -320,6 +327,7 @@ fn parse_proxy_uri(
 fn uri_subscription_to_yaml(source: &str) -> Result<String, String> {
     let mut proxies = Vec::new();
     let mut used_names = HashSet::new();
+    used_names.insert("DIRECT".to_string());
     for (offset, line) in source.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -540,7 +548,7 @@ mod tests {
     #[test]
     fn normalizes_base64_proxy_subscription() {
         let source = concat!(
-            "vless://11111111-1111-1111-1111-111111111111@example.com:443?type=grpc&security=reality&pbk=public-key&sid=short-id&sni=example.com&serviceName=update&fp=chrome#Alpha\n",
+            "vless://11111111-1111-1111-1111-111111111111@example.com:443?type=grpc&security=reality&pbk=public-key&sid=short-id&sni=example.com&serviceName=update&fp=chrome&alpn=h2&allowInsecure=1#Alpha\n",
             "hysteria2://password@example.org:443?insecure=1&sni=example.org&obfs=salamander&obfs-password=obfs-pass#Beta\n",
             "tuic://22222222-2222-2222-2222-222222222222:password@example.net:443?insecure=1&sni=example.net&congestion_control=bbr&udp_relay_mode=quic#Gamma\n",
         );
@@ -555,6 +563,8 @@ mod tests {
             proxies[0]["reality-opts"]["public-key"].as_str(),
             Some("public-key")
         );
+        assert_eq!(proxies[0]["alpn"][0].as_str(), Some("h2"));
+        assert_eq!(proxies[0]["skip-cert-verify"].as_bool(), Some(true));
         assert_eq!(proxies[1]["type"].as_str(), Some("hysteria2"));
         assert_eq!(proxies[1]["skip-cert-verify"].as_bool(), Some(true));
         assert_eq!(proxies[2]["type"].as_str(), Some("tuic"));
@@ -592,9 +602,38 @@ mod tests {
     }
 
     #[test]
+    fn accepts_tuic_token_authentication() {
+        let yaml = normalize_subscription_body(
+            "tuic://example.net:443?token=token-value&sni=example.net#Token",
+        )
+        .unwrap();
+        let value = serde_yaml::from_str::<Value>(&yaml).unwrap();
+        assert_eq!(value["proxies"][0]["token"].as_str(), Some("token-value"));
+        assert!(value["proxies"][0].get("uuid").is_none());
+        assert!(value["proxies"][0].get("password").is_none());
+    }
+
+    #[test]
+    fn reserves_direct_for_the_builtin_outbound() {
+        let yaml = normalize_subscription_body(
+            "vless://11111111-1111-1111-1111-111111111111@example.com:443#DIRECT",
+        )
+        .unwrap();
+        let value = serde_yaml::from_str::<Value>(&yaml).unwrap();
+        assert_eq!(value["proxies"][0]["name"].as_str(), Some("DIRECT 2"));
+        assert_eq!(
+            value["proxy-groups"][0]["proxies"][0].as_str(),
+            Some("DIRECT 2")
+        );
+        assert_eq!(
+            value["proxy-groups"][0]["proxies"][1].as_str(),
+            Some("DIRECT")
+        );
+    }
+
+    #[test]
     fn accepts_unpadded_standard_base64() {
-        let source =
-            "vless://11111111-1111-1111-1111-111111111111@example.com:443#A~";
+        let source = "vless://11111111-1111-1111-1111-111111111111@example.com:443#A~";
         let encoded = general_purpose::STANDARD_NO_PAD.encode(source);
         let yaml = normalize_subscription_body(&encoded).unwrap();
         let value = serde_yaml::from_str::<Value>(&yaml).unwrap();
@@ -603,8 +642,7 @@ mod tests {
 
     #[test]
     fn decodes_percent_encoded_proxy_names() {
-        let source =
-            "vless://11111111-1111-1111-1111-111111111111@example.com:443#Hong%20Kong";
+        let source = "vless://11111111-1111-1111-1111-111111111111@example.com:443#Hong%20Kong";
         let yaml = normalize_subscription_body(source).unwrap();
         let value = serde_yaml::from_str::<Value>(&yaml).unwrap();
         assert_eq!(value["proxies"][0]["name"].as_str(), Some("Hong Kong"));

@@ -1,14 +1,16 @@
 use std::{
     fs,
-    io::{ErrorKind, Write},
+    io::{ErrorKind, Read, Write},
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
-        OnceLock,
+        Mutex, OnceLock,
     },
     time::Duration,
 };
+
+#[cfg(windows)]
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -24,24 +26,58 @@ use super::{logs, traffic};
 
 pub(crate) const CONTROLLER: &str = "127.0.0.1:9090";
 const CONTROLLER_SECRET_FILE: &str = "controller-secret";
+const LEGACY_CONTROLLER_SECRET: &str = "mioproxy-v01-local";
 const DEFAULT_DELAY_URL: &str = "https://www.gstatic.com/generate_204";
 static CONTROLLER_SECRET: OnceLock<String> = OnceLock::new();
 // Keep fallback-core startup and termination recovery in one lifecycle critical
 // section. In particular, `child` must not be cleared until TUN rollback is done.
 static CORE_LIFECYCLE_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
 
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+fn read_existing_secret(path: &Path) -> Result<Option<String>, String> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("读取 Mihomo Controller 令牌失败：{error}")),
+    };
+    #[cfg(windows)]
+    {
+        let metadata = file
+            .metadata()
+            .map_err(|e| format!("检查 Mihomo Controller 令牌失败：{e}"))?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err("拒绝读取 Reparse Point 形式的 Mihomo Controller 令牌".to_string());
+        }
+    }
+    let mut value = String::new();
+    file.read_to_string(&mut value)
+        .map_err(|e| format!("读取 Mihomo Controller 令牌失败：{e}"))?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
 pub(crate) fn initialize_secret(data_dir: &Path) -> Result<(), String> {
     fs::create_dir_all(data_dir).map_err(|e| format!("创建 Mihomo 数据目录失败：{e}"))?;
     let path = data_dir.join(CONTROLLER_SECRET_FILE);
-    let secret = match fs::read_to_string(&path)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
+    let secret = match read_existing_secret(&path)? {
         Some(secret) => secret,
         None => {
             let mut bytes = [0u8; 32];
-            getrandom::fill(&mut bytes).map_err(|e| format!("生成 Mihomo Controller 令牌失败：{e}"))?;
+            getrandom::fill(&mut bytes)
+                .map_err(|e| format!("生成 Mihomo Controller 令牌失败：{e}"))?;
             let candidate = bytes
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
@@ -70,23 +106,17 @@ pub(crate) fn initialize_secret(data_dir: &Path) -> Result<(), String> {
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                     let mut winner = None;
                     for _ in 0..100 {
-                        winner = fs::read_to_string(&path)
-                            .ok()
-                            .map(|value| value.trim().to_string())
-                            .filter(|value| !value.is_empty());
+                        winner = read_existing_secret(&path)?;
                         if winner.is_some() {
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(5));
                     }
-                    winner.ok_or_else(|| {
-                        "读取并发初始化的 Mihomo Controller 令牌失败".to_string()
-                    })?
+                    winner
+                        .ok_or_else(|| "读取并发初始化的 Mihomo Controller 令牌失败".to_string())?
                 }
                 Err(error) => {
-                    return Err(format!(
-                        "创建 Mihomo Controller 令牌文件失败：{error}"
-                    ));
+                    return Err(format!("创建 Mihomo Controller 令牌文件失败：{error}"));
                 }
             }
         }
@@ -98,18 +128,16 @@ pub(crate) fn initialize_secret(data_dir: &Path) -> Result<(), String> {
         return Ok(());
     }
     let config_path = data_dir.join("config.yaml");
-    if config_path.exists() {
-        if let Ok(content) = fs::read_to_string(&config_path) {
-            if let Ok(mut value) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                if let Some(map) = value.as_mapping_mut() {
-                    map.insert(
-                        serde_yaml::Value::String("secret".to_string()),
-                        serde_yaml::Value::String(secret.clone()),
-                    );
-                    if let Ok(yaml) = serde_yaml::to_string(&value) {
-                        fs::write(&config_path, yaml)
-                            .map_err(|e| format!("更新 Mihomo Controller 令牌失败：{e}"))?;
-                    }
+    if let Some(content) = crate::config::read_text_file_at(&config_path, "读取 Mihomo 配置")? {
+        if let Ok(mut value) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+            if let Some(map) = value.as_mapping_mut() {
+                map.insert(
+                    serde_yaml::Value::String("secret".to_string()),
+                    serde_yaml::Value::String(secret.clone()),
+                );
+                if let Ok(yaml) = serde_yaml::to_string(&value) {
+                    crate::config::write_atomic(&config_path, yaml.as_bytes())
+                        .map_err(|e| format!("更新 Mihomo Controller 令牌失败：{e}"))?;
                 }
             }
         }
@@ -120,10 +148,7 @@ pub(crate) fn initialize_secret(data_dir: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn secret() -> &'static str {
-    CONTROLLER_SECRET
-        .get()
-        .map(String::as_str)
-        .unwrap_or("")
+    CONTROLLER_SECRET.get().map(String::as_str).unwrap_or("")
 }
 
 pub struct CoreState {
@@ -218,14 +243,14 @@ pub(crate) async fn api_get(path: &str) -> Result<Value, String> {
         .map_err(|e| e.to_string())
 }
 
-pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String> {
+async fn api_put_with_secret(path: &str, payload: Value, bearer: &str) -> Result<Value, String> {
     let url = format!("http://{CONTROLLER}{path}");
     let response = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .map_err(|e| e.to_string())?
         .put(url)
-        .bearer_auth(secret())
+        .bearer_auth(bearer)
         .json(&payload)
         .send()
         .await
@@ -237,6 +262,31 @@ pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String>
         return Ok(Value::Null);
     }
     serde_json::from_str(&body).map_err(|e| e.to_string())
+}
+
+pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String> {
+    api_put_with_secret(path, payload, secret()).await
+}
+
+async fn migrate_legacy_controller_session(app: &AppHandle) -> Result<bool, String> {
+    let (_, config) = runtime_paths(app)?;
+    if !config.exists() {
+        return Ok(false);
+    }
+    let payload = serde_json::json!({ "path": config.display().to_string() });
+    if api_put_with_secret("/configs?force=true", payload, LEGACY_CONTROLLER_SECRET)
+        .await
+        .is_err()
+    {
+        return Ok(false);
+    }
+    for _ in 0..20 {
+        if is_running().await {
+            return Ok(true);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err("检测到旧版 Mihomo 会话，但切换 Controller 令牌后仍无法连接".to_string())
 }
 
 pub(crate) async fn api_delete(path: &str) -> Result<Value, String> {
@@ -352,6 +402,13 @@ pub async fn mihomo_start(
         .is_some()
     {
         return Err("Mihomo 正在执行退出恢复，请稍后重试".to_string());
+    }
+
+    if migrate_legacy_controller_session(&app).await? {
+        traffic::start(&app);
+        logs::start(&app);
+        crate::tray::update_current_node(&app).await;
+        return status_for(&app, true);
     }
 
     let config = ensure_default_config(&app)?;

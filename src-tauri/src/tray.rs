@@ -29,10 +29,22 @@ impl Default for TrayState {
 pub fn setup(app: &AppHandle) -> Result<(), String> {
     let show_item = MenuItem::with_id(app, SHOW_WINDOW_ID, "显示 / 隐藏主窗口", true, None::<&str>)
         .map_err(|e| e.to_string())?;
-    let proxy_item = MenuItem::with_id(app, SYSTEM_PROXY_ID, "系统代理：已关闭", false, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let node_item = MenuItem::with_id(app, CURRENT_NODE_ID, "当前节点：未运行", false, None::<&str>)
-        .map_err(|e| e.to_string())?;
+    let proxy_item = MenuItem::with_id(
+        app,
+        SYSTEM_PROXY_ID,
+        "系统代理：已关闭",
+        false,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
+    let node_item = MenuItem::with_id(
+        app,
+        CURRENT_NODE_ID,
+        "当前节点：未运行",
+        false,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
     let exit_item = MenuItem::with_id(app, EXIT_ID, "退出 MioProxy", true, None::<&str>)
         .map_err(|e| e.to_string())?;
     let menu = MenuBuilder::new(app)
@@ -42,8 +54,14 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
 
     {
         let state = app.state::<TrayState>();
-        *state.system_proxy_item.lock().map_err(|_| "托盘状态锁异常")? = Some(proxy_item.clone());
-        *state.current_node_item.lock().map_err(|_| "托盘状态锁异常")? = Some(node_item.clone());
+        *state
+            .system_proxy_item
+            .lock()
+            .map_err(|_| "托盘状态锁异常")? = Some(proxy_item.clone());
+        *state
+            .current_node_item
+            .lock()
+            .map_err(|_| "托盘状态锁异常")? = Some(node_item.clone());
     }
 
     let mut builder = tauri::tray::TrayIconBuilder::with_id("mioproxy-tray")
@@ -91,13 +109,15 @@ fn toggle_system_proxy(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         match system_proxy::status(&handle).await {
-            Ok(current) => match system_proxy::set_enabled(handle.clone(), !current.enabled).await {
-                Ok(next) => update_proxy_label(&handle, next.enabled, next.core_running),
-                Err(error) => {
-                    update_proxy_label(&handle, current.enabled, current.core_running);
-                    let _ = handle.emit("system-proxy-error", error);
+            Ok(current) => {
+                match system_proxy::set_enabled(handle.clone(), !current.enabled).await {
+                    Ok(next) => update_proxy_label(&handle, next.enabled, next.core_running),
+                    Err(error) => {
+                        update_proxy_label(&handle, current.enabled, current.core_running);
+                        let _ = handle.emit("system-proxy-error", error);
+                    }
                 }
-            },
+            }
             Err(error) => {
                 let _ = handle.emit("system-proxy-error", error);
             }
@@ -106,12 +126,8 @@ fn toggle_system_proxy(app: &AppHandle) {
 }
 
 fn exit_app(app: &AppHandle) {
-    app.state::<crate::AppLifecycle>()
-        .exiting
-        .store(true, std::sync::atomic::Ordering::SeqCst);
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = system_proxy::restore_for_lifecycle(&handle).await;
         handle.exit(0);
     });
 }
@@ -144,7 +160,9 @@ pub async fn update_current_node(app: &AppHandle) {
         .ok()
         .and_then(|item| item.clone());
     if let Some(item) = item {
-        let node = mihomo::current_node().await.unwrap_or_else(|| "未运行".to_string());
+        let node = mihomo::current_node()
+            .await
+            .unwrap_or_else(|| "未运行".to_string());
         let _ = item.set_text(format!("当前节点：{node}"));
     }
 }

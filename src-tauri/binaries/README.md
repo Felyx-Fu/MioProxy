@@ -28,6 +28,10 @@ GUI:
   --mihomo-path ".\mihomo-x86_64-pc-windows-msvc.exe"
 ```
 
+The pipe ACL is granted to the data-directory owner. When an administrator
+installs the Service for another Windows user, pass that user's SID explicitly
+with `--user-sid` (for example, from `whoami /user`).
+
 Installation copies the Service and Mihomo binaries into the administrator-owned
 `%ProgramFiles%\MioProxy` directory before registering the Service.
 
