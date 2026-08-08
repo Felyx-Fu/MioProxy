@@ -327,6 +327,7 @@ fn parse_proxy_uri(
 fn uri_subscription_to_yaml(source: &str) -> Result<String, String> {
     let mut proxies = Vec::new();
     let mut used_names = HashSet::new();
+    used_names.insert("DIRECT".to_string());
     for (offset, line) in source.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -610,6 +611,24 @@ mod tests {
         assert_eq!(value["proxies"][0]["token"].as_str(), Some("token-value"));
         assert!(value["proxies"][0].get("uuid").is_none());
         assert!(value["proxies"][0].get("password").is_none());
+    }
+
+    #[test]
+    fn reserves_direct_for_the_builtin_outbound() {
+        let yaml = normalize_subscription_body(
+            "vless://11111111-1111-1111-1111-111111111111@example.com:443#DIRECT",
+        )
+        .unwrap();
+        let value = serde_yaml::from_str::<Value>(&yaml).unwrap();
+        assert_eq!(value["proxies"][0]["name"].as_str(), Some("DIRECT 2"));
+        assert_eq!(
+            value["proxy-groups"][0]["proxies"][0].as_str(),
+            Some("DIRECT 2")
+        );
+        assert_eq!(
+            value["proxy-groups"][0]["proxies"][1].as_str(),
+            Some("DIRECT")
+        );
     }
 
     #[test]

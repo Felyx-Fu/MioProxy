@@ -230,9 +230,7 @@ mod windows_impl {
     fn ensure_token(data_dir: &Path) -> Result<String, String> {
         fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
         let path = token_path(data_dir);
-        ensure_not_reparse(&path)?;
-        if path.exists() {
-            let token = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        if let Some(token) = config::read_text_file_at(&path, "读取 Service 令牌")? {
             if !token.trim().is_empty() {
                 return Ok(token.trim().to_string());
             }
@@ -718,13 +716,20 @@ mod windows_impl {
 
         fn read_tun_persisted(&self) -> Result<Option<PersistedServiceTunState>, String> {
             let path = self.service_tun_path();
-            if !path.exists() {
+            let Some(content) = config::read_text_file_at(&path, "读取 Service TUN 恢复状态")?
+            else {
                 return Ok(None);
-            }
-            let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+            };
             serde_json::from_str(&content)
                 .map(Some)
                 .map_err(|e| e.to_string())
+        }
+
+        fn set_recovery_error(&self, error: String) -> Result<(), String> {
+            let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
+            tun.status = crate::tun::TunStatus::Error;
+            tun.message = Some(format!("Service TUN 启动恢复失败：{error}"));
+            Ok(())
         }
 
         fn write_tun_persisted(&self) -> Result<(), String> {
@@ -750,14 +755,16 @@ mod windows_impl {
 
         fn clear_tun_persisted(&self) -> Result<(), String> {
             let path = self.service_tun_path();
-            if path.exists() {
-                fs::remove_file(path).map_err(|e| e.to_string())?;
+            match fs::symlink_metadata(&path) {
+                Ok(_) => fs::remove_file(path).map_err(|e| e.to_string())?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
             }
             Ok(())
         }
 
         fn has_tun_recovery(&self) -> bool {
-            self.service_tun_path().exists()
+            fs::symlink_metadata(self.service_tun_path()).is_ok()
                 || self
                     .tun
                     .lock()
@@ -840,13 +847,13 @@ rules:
                 mixed_port: Option<u16>,
                 mode: Option<String>,
             }
-            if !self.config_path().exists() {
+            let Some(content) =
+                config::read_text_file_at(&self.config_path(), "读取 Service 配置")?
+            else {
                 return Ok((7890, "rule".to_string()));
-            }
-            let value = serde_yaml::from_str::<RuntimeConfig>(
-                &fs::read_to_string(self.config_path()).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
+            };
+            let value =
+                serde_yaml::from_str::<RuntimeConfig>(&content).map_err(|e| e.to_string())?;
             Ok((
                 value.mixed_port.unwrap_or(7890),
                 value.mode.unwrap_or_else(|| "rule".to_string()),
@@ -1609,9 +1616,8 @@ rules:
         #[cfg(not(test))]
         let sid = {
             let sid_path = data_dir.join(USER_SID_FILE);
-            ensure_not_reparse(&sid_path)?;
-            let sid = fs::read_to_string(sid_path)
-                .map_err(|e| format!("读取 Service 安装用户身份失败：{e}"))?
+            let sid = config::read_text_file_at(&sid_path, "读取 Service 安装用户身份")?
+                .ok_or_else(|| "读取 Service 安装用户身份失败：文件不存在".to_string())?
                 .trim()
                 .to_string();
             validate_sid(&sid)?
@@ -1763,7 +1769,9 @@ rules:
         mihomo::initialize_secret(&data_dir)?;
         let expected_token = ensure_token(&data_dir)?;
         let runtime = Arc::new(ServiceRuntime::new(data_dir, mihomo_path)?);
-        let _ = runtime.recover().await?;
+        if let Err(error) = runtime.recover().await {
+            runtime.set_recovery_error(error)?;
+        }
         let monitor = tokio::spawn(runtime.clone().monitor(shutdown.clone()));
         let mut first = true;
         let shutdown_result = loop {
