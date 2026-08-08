@@ -1351,6 +1351,38 @@ rules:
             let status: ServiceStatusData = serde_json::from_value(response.data.unwrap()).unwrap();
             assert!(!status.running);
             assert!(!status.owns_core);
+            drop(reader);
+
+            let mut mismatch_client = None;
+            for _ in 0..50 {
+                if let Ok(next) = ClientOptions::new().open(PIPE_NAME) {
+                    mismatch_client = Some(next);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let mut mismatch_client =
+                mismatch_client.expect("Service did not accept a second client");
+            let mismatch_request = ServiceRequest {
+                protocol_version: SERVICE_PROTOCOL_VERSION + 1,
+                client_version: SERVICE_VERSION.to_string(),
+                token: token.trim().to_string(),
+                command: ServiceCommand::Status,
+            };
+            mismatch_client
+                .write_all((serde_json::to_string(&mismatch_request).unwrap() + "\n").as_bytes())
+                .await
+                .unwrap();
+            mismatch_client.flush().await.unwrap();
+            let mut mismatch_reader = BufReader::new(mismatch_client);
+            let mut mismatch_line = String::new();
+            mismatch_reader.read_line(&mut mismatch_line).await.unwrap();
+            let mismatch_response: ServiceResponse = serde_json::from_str(&mismatch_line).unwrap();
+            assert!(!mismatch_response.ok);
+            assert!(mismatch_response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("协议版本不匹配")));
             let _ = sender.send(true);
             daemon.await.unwrap().unwrap();
             let _ = fs::remove_dir_all(data_dir);
