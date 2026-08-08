@@ -543,6 +543,9 @@ pub(crate) async fn apply_config(
 }
 
 pub async fn apply_profile(app: AppHandle, profile_id: String) -> Result<String, String> {
+    if crate::tun::is_active(&app) {
+        return Err("请先关闭 TUN，再切换 Profile".to_string());
+    }
     let result =
         if let Some(result) = crate::service::request_apply_profile(&app, &profile_id).await? {
             result
@@ -563,6 +566,9 @@ pub async fn apply_profile(app: AppHandle, profile_id: String) -> Result<String,
 
 #[tauri::command]
 pub async fn config_apply(app: AppHandle, profile_id: String) -> Result<ConfigApplyResult, String> {
+    if crate::tun::is_active(&app) {
+        return Err("请先关闭 TUN，再应用配置".to_string());
+    }
     if let Some(result) = crate::service::request_apply_profile(&app, &profile_id).await? {
         return Ok(result);
     }

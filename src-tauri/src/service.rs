@@ -1000,6 +1000,9 @@ rules:
                 .map_err(|e| e.to_string())?),
                 ServiceCommand::Reload => self.reload().await,
                 ServiceCommand::ApplyProfile { profile_id } => {
+                    if self.tun_data()?.status != "disabled" {
+                        return Err("请先关闭 TUN，再切换 Profile".to_string());
+                    }
                     Ok(serde_json::to_value(self.apply_profile(&profile_id).await?)
                         .map_err(|e| e.to_string())?)
                 }
