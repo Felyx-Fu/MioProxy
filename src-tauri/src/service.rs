@@ -16,11 +16,14 @@ pub enum ServiceCommand {
     Stop,
     Reload,
     ApplyProfile {
+        #[serde(rename = "profileId")]
         profile_id: String,
     },
     TunSetEnabled {
         enabled: bool,
+        #[serde(rename = "profileId")]
         profile_id: Option<String>,
+        #[serde(rename = "systemProxyEnabled")]
         system_proxy_enabled: bool,
     },
 }
