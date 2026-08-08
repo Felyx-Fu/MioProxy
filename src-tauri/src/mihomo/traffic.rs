@@ -13,7 +13,7 @@ use tokio_tungstenite::{
     tungstenite::{client::IntoClientRequest, Message},
 };
 
-use super::{is_running, CONTROLLER, SECRET};
+use super::{is_running, secret, CONTROLLER};
 
 const EVENT: &str = "mihomo-traffic";
 const RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -144,7 +144,7 @@ async fn run(app: AppHandle) {
             Ok(mut request) => {
                 request
                     .headers_mut()
-                    .insert("Authorization", format!("Bearer {SECRET}").parse().unwrap());
+                    .insert("Authorization", format!("Bearer {}", secret()).parse().unwrap());
                 request
             }
             Err(_) => {

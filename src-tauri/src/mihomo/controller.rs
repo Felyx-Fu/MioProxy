@@ -1,8 +1,10 @@
 use std::{
     fs,
+    path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
         Mutex,
+        OnceLock,
     },
     time::Duration,
 };
@@ -19,8 +21,44 @@ use tauri_plugin_shell::{
 use super::{logs, traffic};
 
 pub(crate) const CONTROLLER: &str = "127.0.0.1:9090";
-pub(crate) const SECRET: &str = "mioproxy-v01-local";
+const CONTROLLER_SECRET_FILE: &str = "controller-secret";
 const DEFAULT_DELAY_URL: &str = "https://www.gstatic.com/generate_204";
+static CONTROLLER_SECRET: OnceLock<String> = OnceLock::new();
+
+pub(crate) fn initialize_secret(data_dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(data_dir).map_err(|e| format!("创建 Mihomo 数据目录失败：{e}"))?;
+    let path = data_dir.join(CONTROLLER_SECRET_FILE);
+    let secret = fs::read_to_string(&path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            let mut bytes = [0u8; 32];
+            getrandom::fill(&mut bytes).expect("系统随机源不可用");
+            let value = bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let _ = fs::write(&path, &value);
+            value
+        });
+    if let Some(current) = CONTROLLER_SECRET.get() {
+        if current != &secret {
+            return Err("MioProxy 已使用另一份 Mihomo Controller 令牌初始化".to_string());
+        }
+        return Ok(());
+    }
+    CONTROLLER_SECRET
+        .set(secret)
+        .map_err(|_| "初始化 Mihomo Controller 令牌失败".to_string())
+}
+
+pub(crate) fn secret() -> &'static str {
+    CONTROLLER_SECRET
+        .get()
+        .map(String::as_str)
+        .unwrap_or("")
+}
 
 pub struct CoreState {
     pub child: Mutex<Option<CommandChild>>,
@@ -88,7 +126,7 @@ rules:
   - MATCH,PROXY
 "#,
             controller = CONTROLLER,
-            secret = SECRET,
+            secret = secret(),
         );
         fs::write(&config, yaml).map_err(|e| e.to_string())?;
     }
@@ -103,7 +141,7 @@ pub(crate) async fn api_get(path: &str) -> Result<Value, String> {
         .build()
         .map_err(|e| e.to_string())?
         .get(url)
-        .bearer_auth(SECRET)
+        .bearer_auth(secret())
         .send()
         .await
         .map_err(|e| e.to_string())?
@@ -121,7 +159,7 @@ pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String>
         .build()
         .map_err(|e| e.to_string())?
         .put(url)
-        .bearer_auth(SECRET)
+        .bearer_auth(secret())
         .json(&payload)
         .send()
         .await
@@ -142,7 +180,7 @@ pub(crate) async fn api_delete(path: &str) -> Result<Value, String> {
         .build()
         .map_err(|e| e.to_string())?
         .delete(url)
-        .bearer_auth(SECRET)
+        .bearer_auth(secret())
         .send()
         .await
         .map_err(|e| e.to_string())?
@@ -172,6 +210,12 @@ pub(crate) fn encode_path_segment(value: &str) -> String {
 
 pub(crate) async fn is_running() -> bool {
     api_get("/version").await.is_ok()
+}
+
+pub(crate) fn owns_core(app: &AppHandle) -> bool {
+    app.try_state::<CoreState>()
+        .and_then(|state| state.child.lock().ok().map(|child| child.is_some()))
+        .unwrap_or(false)
 }
 
 pub(crate) fn mixed_port(app: &AppHandle) -> Result<u16, String> {

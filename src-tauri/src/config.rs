@@ -263,7 +263,7 @@ pub(crate) fn build_value_at(data_dir: &Path, profile_id: &str) -> Result<BuiltC
     );
     map.insert(
         value_key("secret"),
-        Value::String(mihomo::SECRET.to_string()),
+        Value::String(mihomo::secret().to_string()),
     );
     validate_config(&base)?;
     Ok(BuiltConfig {
@@ -406,6 +406,18 @@ fn write_override_value(app: &AppHandle, value: &Value) -> Result<OverrideSnapsh
     })
 }
 
+async fn ensure_override_editable(app: &AppHandle) -> Result<(), String> {
+    if crate::tun::is_active(app) {
+        return Err("请先关闭 TUN，再编辑 Local Override".to_string());
+    }
+    if let Some(tun) = crate::service::service_tun_status(app).await?
+        && tun.status != crate::tun::TunStatus::Disabled
+    {
+        return Err("请先关闭 Service 管理的 TUN，再编辑 Local Override".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn restore_override_content_at(data_dir: &Path, content: &str) -> Result<(), String> {
     let value = if content.trim().is_empty() {
         empty_mapping()
@@ -484,7 +496,8 @@ pub fn override_get(app: AppHandle) -> Result<OverrideSnapshot, String> {
 }
 
 #[tauri::command]
-pub fn override_set(app: AppHandle, content: String) -> Result<OverrideSnapshot, String> {
+pub async fn override_set(app: AppHandle, content: String) -> Result<OverrideSnapshot, String> {
+    ensure_override_editable(&app).await?;
     let value = if content.trim().is_empty() {
         empty_mapping()
     } else {
@@ -590,7 +603,8 @@ pub fn dns_get(app: AppHandle, profile_id: String) -> Result<DnsSettings, String
 }
 
 #[tauri::command]
-pub fn dns_set(app: AppHandle, settings: DnsSettings) -> Result<OverrideSnapshot, String> {
+pub async fn dns_set(app: AppHandle, settings: DnsSettings) -> Result<OverrideSnapshot, String> {
+    ensure_override_editable(&app).await?;
     let (mut value, _) = read_override_value(&app)?;
     let map = value
         .as_mapping_mut()

@@ -11,5 +11,6 @@ pub use controller::{
 };
 
 pub(crate) use controller::{
-    api_delete, api_get, api_put, encode_path_segment, is_running, mixed_port, CONTROLLER, SECRET,
+    api_delete, api_get, api_put, encode_path_segment, initialize_secret, is_running, mixed_port,
+    owns_core, secret, CONTROLLER,
 };

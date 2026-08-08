@@ -9,10 +9,16 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager, State};
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{config, mihomo, system_proxy};
 
 const STATE_FILE: &str = "tun-state.json";
+static TRANSITION_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
+
+pub(crate) async fn lock_transitions() -> tokio::sync::MutexGuard<'static, ()> {
+    TRANSITION_LOCK.lock().await
+}
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -278,7 +284,7 @@ async fn rollback_enable(
     let mut recovery_error = None;
     if let Err(error) = config::restore_override_content(app, previous_override) {
         recovery_error = Some(error);
-    } else if mihomo::is_running().await {
+    } else if mihomo::owns_core(app) && mihomo::is_running().await {
         if let Err(error) = config::apply_config(app.clone(), profile_id.to_string()).await {
             recovery_error = Some(error);
         }
@@ -308,6 +314,9 @@ async fn enable_tun(
     if matches!(current.status, TunStatus::Starting | TunStatus::Stopping) {
         return Err("TUN 正在切换，请稍候".to_string());
     }
+    if current.status == TunStatus::Error && active_runtime(state)?.is_some() {
+        return Err("TUN 仍有待恢复状态，请先执行停止/恢复".to_string());
+    }
     if profile_id.trim().is_empty() {
         return Err("请先选择已下载的 Profile".to_string());
     }
@@ -315,7 +324,7 @@ async fn enable_tun(
         set_error(state, "需要管理员权限才能启用 Windows TUN".to_string())?;
         return Err("需要管理员权限才能启用 Windows TUN".to_string());
     }
-    if !mihomo::is_running().await {
+    if !mihomo::is_running().await || !mihomo::owns_core(app) {
         set_error(state, "请先启动 Mihomo，再启用 TUN".to_string())?;
         return Err("请先启动 Mihomo，再启用 TUN".to_string());
     }
@@ -362,7 +371,7 @@ async fn enable_tun(
         )
         .await;
     }
-    if !mihomo::is_running().await || runtime_tun_enabled().await == Some(false) {
+    if !mihomo::is_running().await || !mihomo::owns_core(app) || runtime_tun_enabled().await != Some(true) {
         return rollback_enable(
             app,
             state,
@@ -383,17 +392,42 @@ async fn enable_tun(
         .await;
     }
 
+    let baseline = match capture_snapshot().await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return rollback_enable(
+                app,
+                state,
+                &profile_id,
+                &previous_override,
+                format!("TUN 网卡就绪后无法建立网络基线：{error}"),
+            )
+            .await;
+        }
+    };
+
     set_runtime(state, |current| {
         current.status = TunStatus::Running;
         current.message = None;
+        current.snapshot = Some(baseline);
     })?;
+    let running = runtime_snapshot(state)?;
+    if let Err(error) = write_persisted(app, &persisted_for(&running)?) {
+        return rollback_enable(
+            app,
+            state,
+            &profile_id,
+            &previous_override,
+            format!("保存 TUN 运行状态失败：{error}"),
+        )
+        .await;
+    }
     response(state)
 }
 
 async fn disable_tun(
     app: &AppHandle,
     state: &TunState,
-    profile_id: Option<String>,
 ) -> Result<TunStatusSnapshot, String> {
     let Some(active) = active_runtime(state)? else {
         set_runtime(state, |runtime| {
@@ -402,7 +436,7 @@ async fn disable_tun(
         })?;
         return response(state);
     };
-    let profile_id = profile_id.or(active.profile_id.clone()).unwrap_or_default();
+    let profile_id = active.profile_id.clone().unwrap_or_default();
     let previous_override = active
         .previous_override
         .clone()
@@ -415,7 +449,7 @@ async fn disable_tun(
         set_error(state, format!("写入 TUN 停止配置失败：{error}"))?;
         return Err(error);
     }
-    if mihomo::is_running().await {
+    if mihomo::owns_core(app) && mihomo::is_running().await {
         if profile_id.trim().is_empty() {
             let message = "停止 TUN 缺少当前 Profile，已保留禁用配置；请重启 Mihomo 完成清理";
             set_error(state, message.to_string())?;
@@ -425,8 +459,14 @@ async fn disable_tun(
             set_error(state, format!("Mihomo 停止 TUN 失败：{error}"))?;
             return Err(error);
         }
+    } else if let Err(error) = config::restore_profile_config(app, &active.profile_id.clone().unwrap_or_default()) {
+        set_error(state, format!("停止 TUN 后恢复稳定配置失败：{error}"))?;
+        return Err(error);
     }
-    let _ = clear_persisted(app);
+    if let Err(error) = clear_persisted(app) {
+        set_error(state, format!("清理 TUN 恢复状态失败：{error}"))?;
+        return Err(error);
+    }
     set_runtime(state, |runtime| *runtime = TunRuntime::default())?;
     response(state)
 }
@@ -449,6 +489,7 @@ pub async fn tun_set_enabled(
     enabled: bool,
     profile_id: Option<String>,
 ) -> Result<TunStatusSnapshot, String> {
+    let _transition = lock_transitions().await;
     let system_proxy_enabled = system_proxy::status(&app).await?.enabled;
     if let Some(snapshot) =
         crate::service::request_tun(&app, enabled, profile_id.clone(), system_proxy_enabled).await?
@@ -458,28 +499,36 @@ pub async fn tun_set_enabled(
     if enabled {
         enable_tun(&app, &state, profile_id.unwrap_or_default()).await
     } else {
-        disable_tun(&app, &state, profile_id).await
+        disable_tun(&app, &state).await
     }
 }
 
 pub async fn restore_for_lifecycle(app: &AppHandle, state: &TunState) -> Result<(), String> {
+    let _transition = lock_transitions().await;
     let runtime = runtime_snapshot(state)?;
     let persisted = read_persisted(app)?.or_else(|| persisted_for(&runtime).ok());
     let Some(persisted) = persisted else {
         return Ok(());
     };
     config::restore_override_content(app, &persisted.previous_override)?;
-    if mihomo::is_running().await {
+    if mihomo::owns_core(app) && mihomo::is_running().await {
         config::apply_config(app.clone(), persisted.profile_id.clone()).await?;
     } else {
         config::restore_profile_config(app, &persisted.profile_id)?;
     }
     clear_persisted(app)?;
-    set_runtime(state, |current| *current = TunRuntime::default())?;
+    set_runtime(state, |current| {
+        *current = TunRuntime {
+            status: TunStatus::Disabled,
+            message: Some("TUN 原始配置已恢复".to_string()),
+            ..TunRuntime::default()
+        };
+    })?;
     Ok(())
 }
 
 pub async fn on_mihomo_exit(app: &AppHandle) {
+    let _transition = lock_transitions().await;
     let Some(state) = app.try_state::<TunState>() else {
         return;
     };
@@ -497,20 +546,30 @@ pub async fn on_mihomo_exit(app: &AppHandle) {
     if result.is_ok() {
         let _ = clear_persisted(app);
     }
-    let message = match result {
-        Ok(()) => "Mihomo 异常退出，TUN 配置已回滚".to_string(),
-        Err(error) => format!("Mihomo 异常退出，TUN 配置回滚失败：{error}"),
-    };
-    let _ = set_runtime(&state, |current| {
-        current.status = TunStatus::Error;
-        current.message = Some(message);
-        current.profile_id = Some(persisted.profile_id);
-        current.previous_override = Some(persisted.previous_override);
-        current.snapshot = Some(persisted.snapshot);
-    });
+    match result {
+        Ok(()) => {
+            let _ = set_runtime(&state, |current| {
+                *current = TunRuntime {
+                    status: TunStatus::Disabled,
+                    message: Some("Mihomo 异常退出，TUN 配置已回滚".to_string()),
+                    ..TunRuntime::default()
+                };
+            });
+        }
+        Err(error) => {
+            let _ = set_runtime(&state, |current| {
+                current.status = TunStatus::Error;
+                current.message = Some(format!("Mihomo 异常退出，TUN 配置回滚失败：{error}"));
+                current.profile_id = Some(persisted.profile_id);
+                current.previous_override = Some(persisted.previous_override);
+                current.snapshot = Some(persisted.snapshot);
+            });
+        }
+    }
 }
 
 pub async fn recover_after_startup(app: AppHandle) {
+    let _transition = lock_transitions().await;
     let Some(state) = app.try_state::<TunState>() else {
         return;
     };
@@ -518,7 +577,7 @@ pub async fn recover_after_startup(app: AppHandle) {
         return;
     };
     let restore = config::restore_override_content(&app, &persisted.previous_override);
-    let apply = if restore.is_ok() && mihomo::is_running().await {
+    let apply = if restore.is_ok() && mihomo::owns_core(&app) && mihomo::is_running().await {
         config::apply_config(app.clone(), persisted.profile_id.clone())
             .await
             .map(|_| ())
@@ -527,37 +586,56 @@ pub async fn recover_after_startup(app: AppHandle) {
     } else {
         restore.map(|_| ())
     };
-    let message = match apply {
+    match apply {
         Ok(()) => {
             let _ = clear_persisted(&app);
-            "上次 TUN 会话异常结束，已恢复原始配置".to_string()
+            let _ = set_runtime(&state, |current| {
+                *current = TunRuntime {
+                    status: TunStatus::Disabled,
+                    message: Some("上次 TUN 会话异常结束，已恢复原始配置".to_string()),
+                    ..TunRuntime::default()
+                };
+            });
         }
-        Err(error) => format!("TUN 启动恢复失败：{error}"),
-    };
-    let _ = set_runtime(&state, |current| {
-        current.status = TunStatus::Error;
-        current.message = Some(message);
-        current.profile_id = Some(persisted.profile_id);
-        current.previous_override = Some(persisted.previous_override);
-        current.snapshot = Some(persisted.snapshot);
-    });
+        Err(error) => {
+            let _ = set_runtime(&state, |current| {
+                current.status = TunStatus::Error;
+                current.message = Some(format!("TUN 启动恢复失败：{error}"));
+                current.profile_id = Some(persisted.profile_id);
+                current.previous_override = Some(persisted.previous_override);
+                current.snapshot = Some(persisted.snapshot);
+            });
+        }
+    }
 }
 
 pub fn start_monitor(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut last_tick = Instant::now();
+        let mut was_active = false;
         loop {
             tokio::time::sleep(Duration::from_secs(12)).await;
             let Some(state) = app.try_state::<TunState>() else {
                 return;
             };
             let Ok(Some(runtime)) = active_runtime(&state) else {
+                was_active = false;
                 continue;
             };
             if !mihomo::is_running().await {
                 on_mihomo_exit(&app).await;
+                was_active = false;
                 continue;
             }
+            if !mihomo::owns_core(&app) {
+                was_active = false;
+                continue;
+            }
+            if !was_active {
+                last_tick = Instant::now();
+                was_active = true;
+            }
+            let _transition = lock_transitions().await;
             let wake_gap = last_tick.elapsed() > Duration::from_secs(30);
             last_tick = Instant::now();
             let Ok(current) = capture_snapshot().await else {

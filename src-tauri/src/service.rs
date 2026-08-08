@@ -90,12 +90,14 @@ mod windows_impl {
         time::Duration,
     };
 
+    use std::os::windows::io::AsRawHandle;
+
     use serde::Deserialize;
     use serde_json::json;
     use tokio::{
-        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-        net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions},
-        sync::watch,
+        io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+        net::windows::named_pipe::{ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions},
+        sync::{watch, Mutex as AsyncMutex},
     };
     use windows_service::{
         service::ServiceAccess,
@@ -121,6 +123,7 @@ mod windows_impl {
             },
             SystemInformation::GetTickCount64,
             Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
+            Pipes::GetNamedPipeServerProcessId,
         },
     };
 
@@ -247,6 +250,10 @@ mod windows_impl {
         matches!(error.raw_os_error(), Some(2 | 3))
     }
 
+    fn is_pipe_busy(error: &io::Error) -> bool {
+        error.raw_os_error() == Some(231)
+    }
+
     fn pipe_name() -> String {
         #[cfg(test)]
         if let Some(name) = std::env::var_os("MIOPROXY_TEST_PIPE_NAME") {
@@ -267,11 +274,61 @@ mod windows_impl {
         }
     }
 
+    fn service_process_id() -> Result<Option<u32>, String> {
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|error| format!("查询 MioProxy Service 失败：{error}"))?;
+        let service = manager
+            .open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+            .map_err(|error| format!("查询 MioProxy Service 失败：{error}"))?;
+        service
+            .query_status()
+            .map(|status| status.process_id)
+            .map_err(|error| format!("查询 MioProxy Service 进程失败：{error}"))
+    }
+
+    #[cfg(not(test))]
+    fn verify_service_pipe(client: &NamedPipeClient) -> Result<(), String> {
+        let mut server_pid = 0;
+        let ok = unsafe {
+            GetNamedPipeServerProcessId(client.as_raw_handle(), &mut server_pid)
+        };
+        if ok == 0 {
+            return Err("无法确认 MioProxy Service IPC 服务端身份".to_string());
+        }
+        let expected_pid = service_process_id()?
+            .ok_or_else(|| "MioProxy Service 当前没有运行进程".to_string())?;
+        if server_pid != expected_pid {
+            return Err("MioProxy Service IPC 服务端身份不匹配".to_string());
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn verify_service_pipe(_client: &NamedPipeClient) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn open_client() -> Result<NamedPipeClient, io::Error> {
+        for _ in 0..20 {
+            match ClientOptions::new().open(pipe_name()) {
+                Ok(client) => return Ok(client),
+                Err(error) if is_pipe_busy(&error) => {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "MioProxy Service IPC 忙，重试超时",
+        ))
+    }
+
     pub(crate) async fn try_request(
         app: &AppHandle,
         command: ServiceCommand,
     ) -> Result<Option<ServiceResponse>, String> {
-        let mut client = match ClientOptions::new().open(pipe_name()) {
+        let mut client = match open_client().await {
             Ok(client) => client,
             Err(error) if is_pipe_missing(&error) => {
                 if service_is_installed()? {
@@ -284,6 +341,7 @@ mod windows_impl {
             }
             Err(error) => return Err(format!("连接 MioProxy Service 失败：{error}")),
         };
+        verify_service_pipe(&client)?;
         let request = ServiceRequest {
             protocol_version: SERVICE_PROTOCOL_VERSION,
             client_version: SERVICE_VERSION.to_string(),
@@ -514,6 +572,7 @@ mod windows_impl {
         child: Mutex<Option<Child>>,
         job: JobGuard,
         tun: Mutex<ServiceTunState>,
+        tun_transition: AsyncMutex<()>,
     }
 
     impl ServiceRuntime {
@@ -526,6 +585,7 @@ mod windows_impl {
                 child: Mutex::new(None),
                 job: JobGuard::new()?,
                 tun: Mutex::new(ServiceTunState::default()),
+                tun_transition: AsyncMutex::const_new(()),
             })
         }
 
@@ -583,6 +643,15 @@ mod windows_impl {
                 fs::remove_file(path).map_err(|e| e.to_string())?;
             }
             Ok(())
+        }
+
+        fn has_tun_recovery(&self) -> bool {
+            self.service_tun_path().exists()
+                || self
+                    .tun
+                    .lock()
+                    .ok()
+                    .is_some_and(|tun| tun.previous_override.is_some())
         }
 
         fn tun_data(&self) -> Result<ServiceTunData, String> {
@@ -648,7 +717,7 @@ rules:
   - MATCH,PROXY
 "#,
                 controller = mihomo::CONTROLLER,
-                secret = mihomo::SECRET,
+                secret = mihomo::secret(),
             );
             write_atomic(&self.config_path(), yaml.as_bytes())
         }
@@ -776,6 +845,9 @@ rules:
             &self,
             profile_id: &str,
         ) -> Result<crate::config::ConfigApplyResult, String> {
+            if !self.owns_core()? || !mihomo::is_running().await {
+                return Err("Service 当前没有拥有运行中的 Mihomo，拒绝应用配置".to_string());
+            }
             let built = config::build_value_at(&self.data_dir, profile_id)?;
             let profile_name = built.profile.name.clone();
             let override_active = built.override_active;
@@ -811,6 +883,7 @@ rules:
             profile_id: String,
             system_proxy_enabled: bool,
         ) -> Result<ServiceTunData, String> {
+            let _transition = self.tun_transition.lock().await;
             if !is_admin() {
                 return Err("MioProxy Service 没有管理员权限".to_string());
             }
@@ -822,6 +895,23 @@ rules:
             }
             if !self.owns_core()? || !mihomo::is_running().await {
                 return Err("Service 尚未拥有运行中的 Mihomo".to_string());
+            }
+            let current_status = self
+                .tun
+                .lock()
+                .map_err(|_| "Service TUN 状态锁异常")?
+                .status;
+            if current_status == crate::tun::TunStatus::Running {
+                return self.tun_data();
+            }
+            if matches!(
+                current_status,
+                crate::tun::TunStatus::Starting | crate::tun::TunStatus::Stopping
+            ) {
+                return Err("Service TUN 正在切换，请稍候".to_string());
+            }
+            if current_status == crate::tun::TunStatus::Error && self.has_tun_recovery() {
+                return Err("Service TUN 仍有待恢复状态，请先执行停止/恢复".to_string());
             }
             let previous_override = config::override_content_at(&self.data_dir)?;
             let snapshot = crate::tun::capture_snapshot().await?;
@@ -862,7 +952,7 @@ rules:
                 .ok()
                 .and_then(|value| value.get("tun").cloned())
                 .and_then(|value| value.get("enable").and_then(Value::as_bool));
-            if tun_enabled == Some(false) {
+            if tun_enabled != Some(true) {
                 return self
                     .rollback_tun(
                         &profile_id,
@@ -878,12 +968,16 @@ rules:
                         &previous_override,
                         format!("TUN 网卡启动失败：{error}"),
                     )
-                    .await;
+                .await;
             }
+            let baseline = crate::tun::capture_snapshot().await.map_err(|error| {
+                format!("TUN 网卡就绪后无法建立网络基线：{error}")
+            })?;
             {
                 let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
                 tun.status = crate::tun::TunStatus::Running;
                 tun.message = None;
+                tun.snapshot = Some(baseline);
             }
             if let Err(error) = self.write_tun_persisted() {
                 return self
@@ -1335,6 +1429,7 @@ rules:
         mihomo_path: PathBuf,
         mut shutdown: watch::Receiver<bool>,
     ) -> Result<(), String> {
+        mihomo::initialize_secret(&data_dir)?;
         let expected_token = ensure_token(&data_dir)?;
         let runtime = Arc::new(ServiceRuntime::new(data_dir, mihomo_path)?);
         let _ = runtime.recover().await?;

@@ -12,6 +12,7 @@ import { RulesPage } from "./pages/RulesPage";
 import { DnsPage } from "./pages/DnsPage";
 import { OverridesPage } from "./pages/OverridesPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { TunPage } from "./pages/TunPage";
 import { useConnections } from "./hooks/useConnections";
 import { useTraffic } from "./hooks/useTraffic";
 
@@ -362,6 +363,7 @@ export default function App() {
         {page === "rules" && <RulesPage running={Boolean(status?.running)} />}
         {page === "dns" && <DnsPage profileId={selectedProfileId} />}
         {page === "overrides" && <OverridesPage profileId={selectedProfileId} />}
+        {page === "tun" && <TunPage profileId={selectedProfileId} coreRunning={Boolean(status?.running)} systemProxyEnabled={Boolean(proxyStatus?.enabled)} />}
         {page === "settings" && <SettingsPage status={status} coreState={coreState} proxyStatus={proxyStatus} proxyState={proxyState} startup={startup} busy={busy || settingsBusy} onToggleProxy={toggleSystemProxy} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} />}
       </main>
       <ToastHost toasts={toasts} onDismiss={dismissToast} />
