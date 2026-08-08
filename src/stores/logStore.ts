@@ -10,7 +10,7 @@ export type LogState = {
   paused: boolean;
 };
 
-const MAX_ENTRIES = 600;
+const MAX_ENTRIES = 3000;
 const listeners = new Set<() => void>();
 let state: LogState = { entries: [], paused: false };
 

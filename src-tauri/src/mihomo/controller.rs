@@ -1,4 +1,11 @@
-use std::{fs, sync::Mutex, time::Duration};
+use std::{
+    fs,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+    time::Duration,
+};
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -17,12 +24,14 @@ const DEFAULT_DELAY_URL: &str = "https://www.gstatic.com/generate_204";
 
 pub struct CoreState {
     pub child: Mutex<Option<CommandChild>>,
+    pub stop_requested: AtomicBool,
 }
 
 impl Default for CoreState {
     fn default() -> Self {
         Self {
             child: Mutex::new(None),
+            stop_requested: AtomicBool::new(false),
         }
     }
 }
@@ -229,6 +238,7 @@ pub async fn mihomo_start(
     let (mut rx, child) = command
         .spawn()
         .map_err(|e| format!("Mihomo 启动失败：{e}"))?;
+    state.stop_requested.store(false, Ordering::SeqCst);
     *state.child.lock().map_err(|_| "CoreState 锁异常")? = Some(child);
     traffic::start(&app);
     logs::start(&app);
@@ -243,7 +253,7 @@ pub async fn mihomo_start(
                 CommandEvent::Stderr(bytes) => {
                     let _ = emitter.emit("mihomo-log", String::from_utf8_lossy(&bytes).to_string());
                 }
-                CommandEvent::Terminated(_) => {
+                CommandEvent::Terminated(payload) => {
                     if let Ok(mut child) = emitter.state::<CoreState>().child.lock() {
                         *child = None;
                     }
@@ -251,6 +261,15 @@ pub async fn mihomo_start(
                     logs::stop(&emitter);
                     crate::system_proxy::restore_after_core_exit(&emitter).await;
                     crate::tray::update_current_node(&emitter).await;
+                    let stop_requested = emitter
+                        .state::<CoreState>()
+                        .stop_requested
+                        .swap(false, Ordering::SeqCst);
+                    if !stop_requested
+                        && (payload.code.is_some_and(|code| code != 0) || payload.signal.is_some())
+                    {
+                        let _ = emitter.emit("mihomo-crashed", ());
+                    }
                     let _ = emitter.emit("mihomo-stopped", ());
                 }
                 _ => {}
@@ -284,6 +303,7 @@ pub async fn mihomo_stop(
     app: AppHandle,
     state: State<'_, CoreState>,
 ) -> Result<CoreStatus, String> {
+    state.stop_requested.store(true, Ordering::SeqCst);
     traffic::stop(&app);
     logs::stop(&app);
     if let Some(child) = state.child.lock().map_err(|_| "CoreState 锁异常")?.take() {

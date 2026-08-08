@@ -1,6 +1,7 @@
 import { Eye, RefreshCw, Search, ShieldClose, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { ConnectionsResponse, MihomoConnection } from "../api/mihomo";
+import { ConfirmDialog } from "../components/Feedback";
 import { formatBytes } from "../utils/format";
 
 function processName(connection: MihomoConnection) {
@@ -56,6 +57,7 @@ export function ConnectionsPage({
   const [ruleFilter, setRuleFilter] = useState("all");
   const [selected, setSelected] = useState<MihomoConnection | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [confirmingAll, setConfirmingAll] = useState(false);
 
   const connections = state.data?.connections ?? [];
   const apps = useMemo(() => unique(connections.map(processName)), [connections]);
@@ -80,21 +82,23 @@ export function ConnectionsPage({
   }
 
   async function closeAll() {
-    if (!window.confirm("确认关闭全部活动连接吗？")) return;
     setBusyId("all");
     try {
       await onCloseAll();
       setSelected(null);
     } finally {
       setBusyId(null);
+      setConfirmingAll(false);
     }
   }
+
+  const rendered = visible.slice(0, 250);
 
   return (
     <section className="page-stack connections-page">
       <header className="page-header">
         <div><p className="eyebrow">CONNECTIONS / LIVE</p><h1>连接</h1><p>通过 Mihomo <code>/connections</code> 观察、筛选和关闭活动连接。</p></div>
-        <div className="header-actions"><button className="secondary-button" onClick={() => void onRefresh()} disabled={state.loading}><RefreshCw size={17} className={state.loading ? "spin" : ""} />刷新</button><button className="danger-button" onClick={() => void closeAll()} disabled={!connections.length || busyId !== null}><ShieldClose size={17} />关闭全部</button></div>
+        <div className="header-actions"><button className="secondary-button" onClick={() => void onRefresh()} disabled={state.loading}><RefreshCw size={17} className={state.loading ? "spin" : ""} />刷新</button><button className="danger-button" onClick={() => setConfirmingAll(true)} disabled={!connections.length || busyId !== null}><ShieldClose size={17} />关闭全部</button></div>
       </header>
 
       {state.error && <div className="error-banner">{state.error}</div>}
@@ -106,15 +110,16 @@ export function ConnectionsPage({
         <select value={ruleFilter} onChange={(event) => setRuleFilter(event.target.value)}><option value="all">所有规则</option>{rules.map((value) => <option key={value}>{value}</option>)}</select>
       </div>
 
-      <div className="connection-count"><span>{visible.length} visible / {connections.length} active</span><small>↓ {formatBytes(state.data?.downloadTotal)} · ↑ {formatBytes(state.data?.uploadTotal)}</small></div>
+      <div className="connection-count"><span>{rendered.length}{rendered.length < visible.length ? ` / ${visible.length}` : ""} visible / {connections.length} active</span><small>↓ {formatBytes(state.data?.downloadTotal)} · ↑ {formatBytes(state.data?.uploadTotal)}{visible.length > rendered.length ? " · 已限制渲染 250 行" : ""}</small></div>
 
       {visible.length === 0 ? <div className="empty-card"><NetworkIcon /><strong>{connections.length ? "没有匹配的连接" : "暂无活动连接"}</strong><p>{connections.length ? "调整搜索或筛选条件。" : "启动 Mihomo 并产生网络请求后，活动连接会实时出现在这里。"}</p></div> : (
-        <div className="connection-table-wrap"><table className="connection-table"><thead><tr><th>应用</th><th>目标</th><th>规则</th><th>节点</th><th>流量</th><th /></tr></thead><tbody>{visible.map((connection) => <tr key={connection.id}>
+        <div className="connection-table-wrap"><table className="connection-table"><thead><tr><th>应用</th><th>目标</th><th>规则</th><th>节点</th><th>流量</th><th /></tr></thead><tbody>{rendered.map((connection) => <tr key={connection.id}>
           <td><strong>{processName(connection)}</strong><small>{connection.metadata.network || "TCP"}</small></td><td><span className="target-cell">{connectionTarget(connection)}</span><small>{connection.metadata.sourceIp || "—"}</small></td><td><span className="rule-badge">{connection.rule || "DIRECT"}</span><small>{connection.rulePayload || "匹配规则"}</small></td><td><span className={connectionNode(connection) === "DIRECT" ? "node-cell direct" : "node-cell"}>{connectionNode(connection)}</span><small>{connection.chains.length > 1 ? `${connection.chains.length} hops` : "direct path"}</small></td><td><strong>{formatBytes(connection.download + connection.upload)}</strong><small>↓ {formatBytes(connection.download)} · ↑ {formatBytes(connection.upload)}</small></td><td><div className="row-actions"><button className="icon-button" onClick={() => setSelected(connection)} aria-label="查看详情"><Eye size={16} /></button><button className="icon-button danger" onClick={() => void closeConnection(connection)} disabled={busyId !== null} aria-label="关闭连接"><X size={16} /></button></div></td>
         </tr>)}</tbody></table></div>
       )}
 
       {selected && <ConnectionDetails connection={selected} onClose={() => setSelected(null)} />}
+      {confirmingAll && <ConfirmDialog title="关闭全部活动连接？" message={`当前有 ${connections.length} 个活动连接，关闭后应用会重新建立需要的网络请求。`} confirmLabel="关闭全部" danger onCancel={() => setConfirmingAll(false)} onConfirm={() => void closeAll()} />}
     </section>
   );
 }

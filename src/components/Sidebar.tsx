@@ -33,7 +33,7 @@ export function Sidebar({ page, onChange }: { page: Page; onChange: (page: Page)
 
       <div className="sidebar-foot">
         <Activity size={16} />
-        <span>V0.4 Live Core</span>
+        <span>V0.5 Signal Deck</span>
       </div>
     </aside>
   );

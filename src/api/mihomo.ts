@@ -8,6 +8,9 @@ export type CoreStatus = {
   mode: string;
 };
 
+export type CoreState = "stopped" | "starting" | "running" | "reloading" | "stopping" | "error";
+export type ProxyState = "disabled" | "enabling" | "enabled" | "disabling" | "error";
+
 export type SystemProxyStatus = {
   enabled: boolean;
   coreRunning: boolean;
@@ -92,6 +95,7 @@ export type Profile = {
   url: string;
   filePath: string | null;
   updatedAt: number | null;
+  nodeCount: number | null;
 };
 
 export const mihomoApi = {

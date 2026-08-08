@@ -14,3 +14,29 @@ export function formatBytes(value: number | null | undefined): string {
 export function formatRate(value: number | null | undefined): string {
   return `${formatBytes(value)}/s`;
 }
+
+export function formatDate(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "尚未更新";
+  return new Date(value * 1000).toLocaleString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function maskUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.hostname}/…`;
+  } catch {
+    return "已隐藏订阅地址";
+  }
+}
+
+export function latencyTone(delay: number | null | undefined): "fast" | "medium" | "slow" | "unknown" {
+  if (delay === null || delay === undefined || !Number.isFinite(delay)) return "unknown";
+  if (delay < 160) return "fast";
+  if (delay < 350) return "medium";
+  return "slow";
+}
