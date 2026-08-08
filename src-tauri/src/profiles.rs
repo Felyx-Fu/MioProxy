@@ -168,7 +168,15 @@ pub async fn profile_apply(app: AppHandle, id: String) -> Result<String, String>
 }
 
 #[tauri::command]
-pub fn profile_remove(app: AppHandle, id: String) -> Result<(), String> {
+pub async fn profile_remove(app: AppHandle, id: String) -> Result<(), String> {
+    if crate::tun::is_active(&app) {
+        return Err("请先关闭 TUN，再删除 Profile".to_string());
+    }
+    if let Some(tun) = crate::service::service_tun_status(&app).await? {
+        if tun.status != crate::tun::TunStatus::Disabled {
+            return Err("请先关闭 Service 管理的 TUN，再删除 Profile".to_string());
+        }
+    }
     let mut profiles = read_profiles(&app)?;
     let index = profiles
         .iter()
