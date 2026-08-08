@@ -34,11 +34,11 @@ pub fn run() {
         .manage(tun::TunState::default())
         .manage(tray::TrayState::default())
         .setup(|app| {
-            if let Err(error) = system_proxy::recover_stale_state(&app.handle()) {
+            if let Err(error) = system_proxy::recover_stale_state(app.handle()) {
                 eprintln!("恢复系统代理状态失败：{error}");
             }
-            startup::apply_start_minimized(&app.handle());
-            if let Err(error) = tray::setup(&app.handle()) {
+            startup::apply_start_minimized(app.handle());
+            if let Err(error) = tray::setup(app.handle()) {
                 return Err(Box::new(std::io::Error::other(error)));
             }
             tun::start_monitor(app.handle().clone());

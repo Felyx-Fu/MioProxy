@@ -14,20 +14,15 @@ use crate::{config, mihomo, system_proxy};
 
 const STATE_FILE: &str = "tun-state.json";
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum TunStatus {
+    #[default]
     Disabled,
     Starting,
     Running,
     Stopping,
     Error,
-}
-
-impl Default for TunStatus {
-    fn default() -> Self {
-        Self::Disabled
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

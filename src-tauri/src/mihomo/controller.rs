@@ -303,7 +303,7 @@ pub async fn mihomo_start(
         }
     });
 
-    Ok(status_for(&app, true)?)
+    status_for(&app, true)
 }
 
 #[tauri::command]
@@ -329,7 +329,7 @@ pub async fn mihomo_stop(
     }
     crate::system_proxy::restore_for_lifecycle(&app).await?;
     crate::tray::update_current_node(&app).await;
-    Ok(status_for(&app, false)?)
+    status_for(&app, false)
 }
 
 #[tauri::command]

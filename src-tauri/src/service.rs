@@ -846,8 +846,8 @@ rules:
             previous_override: &str,
             reason: String,
         ) -> Result<ServiceTunData, String> {
-            let recovery = config::restore_override_content_at(&self.data_dir, previous_override)
-                .and_then(|_| Ok(()));
+            let recovery =
+                config::restore_override_content_at(&self.data_dir, previous_override).map(|_| ());
             let recovery = if recovery.is_ok() && mihomo::is_running().await {
                 self.apply_profile(profile_id).await.map(|_| ())
             } else if recovery.is_ok() {
