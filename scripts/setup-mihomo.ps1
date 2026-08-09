@@ -13,7 +13,12 @@ Write-Host "[1/4] Querying latest stable Mihomo release..." -ForegroundColor Cya
 $githubHeaders = @{ "User-Agent" = "MioProxy-Setup" }
 $githubToken = if ($env:GH_TOKEN) { $env:GH_TOKEN } elseif ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN }
 if (-not $githubToken -and (Get-Command gh -ErrorAction SilentlyContinue)) {
-    $githubToken = (& gh auth token 2>$null | Select-Object -First 1)
+    try {
+        $githubToken = (& gh auth token 2>$null | Select-Object -First 1)
+    }
+    catch {
+        $githubToken = $null
+    }
 }
 if ($githubToken) {
     $githubHeaders["Authorization"] = "Bearer $($githubToken.Trim())"
