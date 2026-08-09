@@ -2,12 +2,12 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "MioProxy",
   "mainBinaryName": "mioproxy",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "identifier": "dev.MioProxy",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:5173",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && npm run service:build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -28,7 +28,13 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/64x64.png",
@@ -38,5 +44,16 @@
     ],
     "externalBin": ["binaries/mihomo"],
     "resources": ["binaries"]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRGNjA0RjI5Mjg4NzgwNkMKUldSc2dJY29LVTlnVDZDYmhmUjJKdjhBeUd3OFhWZm1ab0RhVTBodXozd1ZMRHFHenhlSHh3eTQK",
+      "endpoints": [
+        "https://github.com/Felyx-Fu/MioProxy/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

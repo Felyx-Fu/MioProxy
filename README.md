@@ -1,4 +1,4 @@
-# MioProxy V0.7
+# MioProxy V0.8
 
 一个从零搭建的 Windows 桌面代理客户端骨架：**Tauri 2 + React + TypeScript + Rust + Mihomo sidecar**。
 
@@ -30,6 +30,14 @@
 - TUN 运行前网络快照、异常退出恢复、睡眠/网络变化后重载
 - `MioProxyService` named-pipe IPC、协议/版本校验与 Mihomo 单实例保护
 - Windows Service 管理 Mihomo、TUN 与恢复状态
+
+## V0.8 当前实现
+
+- Tauri signed updater、SemVer 升级保护与 GitHub Releases endpoint
+- 原子更新 checkpoint，以及 System Proxy/TUN/Service 安全停机与恢复
+- GUI/Service 协议与版本握手，拒绝不兼容 Service 绕过 IPC
+- Mihomo Core 官方 Release 检查、SHA-256 校验、staging、健康检查与回滚
+- Release 构建同时打包 GUI、MioProxy Service 与 Mihomo Core
 
 Service 默认需要管理员权限安装；详细命令见 `src-tauri/binaries/README.md`。
 

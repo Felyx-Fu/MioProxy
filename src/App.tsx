@@ -1,6 +1,8 @@
 import { listen } from "@tauri-apps/api/event";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { Update, type DownloadEvent } from "@tauri-apps/plugin-updater";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { mihomoApi, type CoreState, type CoreStatus, type MihomoVersion, type Profile, type ProxiesResponse, type ProxyState, type StartupSettings, type SystemProxyStatus } from "./api/mihomo";
+import { mihomoApi, type CoreState, type CoreStatus, type CoreUpdateStatus, type MihomoVersion, type Profile, type ProxiesResponse, type ProxyState, type StartupSettings, type SystemProxyStatus, type UpdatePreferences, type UpdateStatus } from "./api/mihomo";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { ToastHost, type ToastMessage, type ToastTone } from "./components/Feedback";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
@@ -27,6 +29,7 @@ export default function App() {
   const [proxyStatus, setProxyStatus] = useState<SystemProxyStatus | null>(null);
   const [proxyState, setProxyState] = useState<ProxyState>("disabled");
   const [startup, setStartup] = useState<StartupSettings | null>(null);
+  const [updatePreferences, setUpdatePreferences] = useState<UpdatePreferences | null>(null);
   const [busy, setBusy] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [profileBusyId, setProfileBusyId] = useState<string | null>(null);
@@ -36,6 +39,16 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ currentVersion: "0.8.0", updating: false, checkpoint: null, recoveryError: null });
+  const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateDownloading, setUpdateDownloading] = useState(false);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
+  const [updateDownloaded, setUpdateDownloaded] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [coreUpdate, setCoreUpdate] = useState<CoreUpdateStatus | null>(null);
+  const [coreUpdateBusy, setCoreUpdateBusy] = useState(false);
   const toastId = useRef(0);
   const traffic = useTraffic();
   const connections = useConnections(Boolean(status?.running));
@@ -105,7 +118,114 @@ export default function App() {
     void refreshStatus();
     void refreshSystemProxy();
     void refreshStartup();
+    void mihomoApi.updatePreferencesStatus().then(setUpdatePreferences).catch((e) => setUpdateError(errorMessage(e)));
+    void mihomoApi.updateStatus().then(setUpdateStatus).catch((e) => setUpdateError(errorMessage(e)));
+    void mihomoApi.coreUpdateStatus().then(setCoreUpdate).catch(() => undefined);
   }, [refreshStatus, refreshStartup, refreshSystemProxy]);
+
+  const downloadUpdate = useCallback(async (update: Update, silent = false) => {
+    setUpdateDownloading(true);
+    setUpdateProgress(0);
+    setUpdateError(null);
+    try {
+      let contentLength: number | undefined;
+      let downloaded = 0;
+      const onEvent = (event: DownloadEvent) => {
+        if (event.event === "Started") {
+          contentLength = event.data.contentLength;
+          setUpdateProgress(0);
+        } else if (event.event === "Progress") {
+          downloaded += event.data.chunkLength;
+          setUpdateProgress(contentLength ? Math.min(100, Math.round(downloaded / contentLength * 100)) : null);
+        } else {
+          setUpdateProgress(100);
+        }
+      };
+      await update.download(onEvent);
+      setUpdateDownloaded(true);
+      if (!silent) pushToast("success", "更新包下载完成");
+    } catch (e) {
+      const message = errorMessage(e);
+      setUpdateError(message);
+      if (!silent) pushToast("error", `下载更新失败：${message}`);
+      throw e;
+    } finally {
+      setUpdateDownloading(false);
+    }
+  }, [pushToast]);
+
+  const checkForUpdate = useCallback(async (silent = false, autoDownload = false) => {
+    setUpdateChecking(true);
+    setUpdateError(null);
+    setUpdateDownloaded(false);
+    try {
+      const metadata = await mihomoApi.updateCheck();
+      const next = metadata ? new Update(metadata) : null;
+      setAvailableUpdate(next);
+      if (!next && !silent) pushToast("success", "当前已是最新版本");
+      if (next && !silent) pushToast("success", `发现 MioProxy ${next.version} 更新`);
+      if (next && autoDownload) void downloadUpdate(next, true).catch(() => undefined);
+    } catch (e) {
+      const message = errorMessage(e);
+      setUpdateError(message);
+      if (!silent) pushToast("error", `检查更新失败：${message}`);
+    } finally {
+      setUpdateChecking(false);
+    }
+  }, [downloadUpdate, pushToast]);
+
+  useEffect(() => {
+    if (!updatePreferences?.checkOnStartup) return;
+    const timer = window.setTimeout(() => void checkForUpdate(true, updatePreferences.autoDownload), 5000);
+    return () => window.clearTimeout(timer);
+  }, [checkForUpdate, updatePreferences?.autoDownload, updatePreferences?.checkOnStartup]);
+
+  async function installUpdate() {
+    if (!availableUpdate || updateInstalling || updateDownloading) return;
+    setUpdateInstalling(true);
+    setUpdateError(null);
+    try {
+      if (!updateDownloaded) await downloadUpdate(availableUpdate);
+      await mihomoApi.updatePrepare(availableUpdate.version);
+      await availableUpdate.install();
+      await relaunch();
+    } catch (e) {
+      const message = errorMessage(e);
+      await mihomoApi.updateMarkFailed(message).catch(() => undefined);
+      setUpdateError(message);
+      pushToast("error", `更新失败：${message}`);
+      setUpdateInstalling(false);
+    }
+  }
+
+  async function checkCoreUpdate() {
+    setCoreUpdateBusy(true);
+    try {
+      setCoreUpdate(await mihomoApi.coreUpdateCheck());
+    } catch (e) {
+      const message = errorMessage(e);
+      setCoreUpdate((current) => current ? { ...current, phase: "error", error: message } : { currentVersion: null, availableVersion: null, assetName: null, phase: "error", error: message });
+      pushToast("error", `检查 Mihomo Core 更新失败：${message}`);
+    } finally {
+      setCoreUpdateBusy(false);
+    }
+  }
+
+  async function installCoreUpdate() {
+    if (coreUpdateBusy) return;
+    setCoreUpdateBusy(true);
+    try {
+      setCoreUpdate(await mihomoApi.coreUpdateInstall());
+      await refreshStatus();
+      pushToast("success", "Mihomo Core 更新完成");
+    } catch (e) {
+      const message = errorMessage(e);
+      setCoreUpdate((current) => current ? { ...current, phase: "error", error: message } : current);
+      pushToast("error", `Mihomo Core 更新失败：${message}`);
+    } finally {
+      setCoreUpdateBusy(false);
+    }
+  }
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -351,6 +471,26 @@ export default function App() {
     }
   }
 
+  async function toggleUpdatePreference(field: keyof UpdatePreferences, enabled: boolean) {
+    if (!updatePreferences) return;
+    setSettingsBusy(true);
+    setError(null);
+    try {
+      const next = await mihomoApi.updatePreferencesSet(
+        field === "checkOnStartup" ? enabled : updatePreferences.checkOnStartup,
+        field === "autoDownload" ? enabled : updatePreferences.autoDownload,
+      );
+      setUpdatePreferences(next);
+      pushToast("success", field === "checkOnStartup" ? (enabled ? "已开启启动时检查更新" : "已关闭启动时检查更新") : (enabled ? "已开启自动下载更新" : "已关闭自动下载更新"));
+    } catch (e) {
+      const message = errorMessage(e);
+      setError(message);
+      pushToast("error", `更新设置保存失败：${message}`);
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <Sidebar page={page} onChange={setPage} />
@@ -364,7 +504,7 @@ export default function App() {
         {page === "dns" && <DnsPage profileId={selectedProfileId} />}
         {page === "overrides" && <OverridesPage profileId={selectedProfileId} />}
         {page === "tun" && <TunPage profileId={selectedProfileId} coreRunning={Boolean(status?.running)} systemProxyEnabled={Boolean(proxyStatus?.enabled)} systemProxyBusy={settingsBusy} onToggleSystemProxy={toggleSystemProxy} />}
-        {page === "settings" && <SettingsPage status={status} coreState={coreState} proxyStatus={proxyStatus} proxyState={proxyState} startup={startup} busy={busy || settingsBusy} onToggleProxy={toggleSystemProxy} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} />}
+        {page === "settings" && <SettingsPage status={status} coreState={coreState} proxyStatus={proxyStatus} proxyState={proxyState} startup={startup} updatePreferences={updatePreferences} busy={busy || settingsBusy} onToggleProxy={toggleSystemProxy} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} onToggleUpdatePreference={toggleUpdatePreference} appUpdate={{ ...updateStatus, checking: updateChecking, downloading: updateDownloading, installing: updateInstalling, downloaded: updateDownloaded, progress: updateProgress, availableVersion: availableUpdate?.version ?? null, releaseNotes: availableUpdate?.body ?? null, error: updateError }} onCheckForUpdate={() => void checkForUpdate()} onInstallUpdate={() => void installUpdate()} coreUpdate={coreUpdate} coreUpdateBusy={coreUpdateBusy} onCheckCoreUpdate={() => void checkCoreUpdate()} onInstallCoreUpdate={() => void installCoreUpdate()} />}
       </main>
       <ToastHost toasts={toasts} onDismiss={dismissToast} />
     </div>

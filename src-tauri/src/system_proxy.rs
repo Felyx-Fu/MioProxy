@@ -11,6 +11,7 @@ use crate::mihomo;
 
 const INTERNET_SETTINGS_PATH: &str =
     "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
+const UPDATE_SNAPSHOT_FILE: &str = "update-system-proxy-state.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,6 +135,14 @@ fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
         .join("system-proxy-state.json"))
 }
 
+fn update_state_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join(UPDATE_SNAPSHOT_FILE))
+}
+
 fn persist_snapshot(app: &AppHandle, snapshot: &ProxySnapshot) -> Result<(), String> {
     let path = state_path(app)?;
     if let Some(parent) = path.parent() {
@@ -157,6 +166,26 @@ fn read_persisted_snapshot(app: &AppHandle) -> Result<Option<ProxySnapshot>, Str
         .map_err(|e| format!("代理状态恢复文件损坏：{e}"))
 }
 
+fn read_update_snapshot(app: &AppHandle) -> Result<Option<ProxySnapshot>, String> {
+    let path = update_state_path(app)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&content)
+        .map(Some)
+        .map_err(|e| format!("更新代理恢复文件损坏：{e}"))
+}
+
+fn clear_update_snapshot(app: &AppHandle) -> Result<(), String> {
+    let path = update_state_path(app)?;
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn clear_persisted_snapshot(app: &AppHandle) -> Result<(), String> {
     let path = state_path(app)?;
     if path.exists() {
@@ -171,6 +200,68 @@ pub fn recover_stale_state(app: &AppHandle) -> Result<(), String> {
         clear_persisted_snapshot(app)?;
     }
     Ok(())
+}
+
+pub(crate) fn is_enabled_for_update() -> Result<bool, String> {
+    Ok(read_snapshot()?.proxy_enable == Some(1))
+}
+
+pub(crate) fn is_managed_for_update(app: &AppHandle) -> Result<bool, String> {
+    let state = app.state::<SystemProxyState>();
+    Ok(state
+        .snapshot
+        .lock()
+        .map_err(|_| "System Proxy 状态锁异常")?
+        .is_some()
+        || read_persisted_snapshot(app)?.is_some()
+        || read_update_snapshot(app)?.is_some())
+}
+
+pub(crate) fn disable_for_update(app: &AppHandle) -> Result<bool, String> {
+    let current = read_snapshot()?;
+    if current.proxy_enable != Some(1) {
+        return Ok(false);
+    }
+    let state = app.state::<SystemProxyState>();
+    let managed_snapshot = state
+        .snapshot
+        .lock()
+        .map_err(|_| "System Proxy 状态锁异常")?
+        .is_some()
+        || read_persisted_snapshot(app)?.is_some();
+    if !managed_snapshot {
+        let path = update_state_path(app)?;
+        let bytes = serde_json::to_vec_pretty(&current).map_err(|e| e.to_string())?;
+        crate::config::write_atomic(&path, &bytes)?;
+    }
+    let key = settings_key()?;
+    key.set_value("ProxyEnable", &0u32)
+        .map_err(|e| format!("关闭更新前系统代理失败：{e}"))?;
+    notify_settings_changed();
+    Ok(true)
+}
+
+pub(crate) fn restore_after_update_failure(app: &AppHandle) -> Result<(), String> {
+    if let Some(snapshot) = read_update_snapshot(app)? {
+        write_snapshot(&snapshot)?;
+        clear_update_snapshot(app)?;
+        return Ok(());
+    }
+    if let Some(snapshot) = read_persisted_snapshot(app)? {
+        write_snapshot(&snapshot)?;
+        clear_persisted_snapshot(app)?;
+        if let Some(state) = app.try_state::<SystemProxyState>() {
+            *state
+                .snapshot
+                .lock()
+                .map_err(|_| "System Proxy 状态锁异常")? = None;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn restore_after_update_success(app: &AppHandle) -> Result<(), String> {
+    restore_after_update_failure(app)
 }
 
 async fn restore_for_lifecycle_inner(app: &AppHandle) -> Result<(), String> {
@@ -205,6 +296,7 @@ pub async fn restore_after_core_exit(app: &AppHandle) {
 }
 
 pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxyStatus, String> {
+    crate::ensure_mutations_allowed(&app)?;
     let _transition = crate::tun::lock_transitions().await;
     if enabled {
         if let Some(service_tun) = crate::service::service_tun_status(&app).await? {

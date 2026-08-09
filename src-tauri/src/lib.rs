@@ -1,4 +1,5 @@
 mod config;
+mod core_update;
 mod mihomo;
 mod profiles;
 pub mod service;
@@ -6,6 +7,7 @@ mod startup;
 mod system_proxy;
 mod tray;
 mod tun;
+mod update;
 
 use mihomo::{
     mihomo_close_all_connections, mihomo_close_connection, mihomo_connections, mihomo_proxies,
@@ -20,12 +22,25 @@ use tauri::Manager;
 #[derive(Default)]
 pub struct AppLifecycle {
     pub exiting: AtomicBool,
+    pub updating: AtomicBool,
+}
+
+pub(crate) fn ensure_mutations_allowed(app: &tauri::AppHandle) -> Result<(), String> {
+    if app
+        .try_state::<AppLifecycle>()
+        .is_some_and(|lifecycle| lifecycle.updating.load(Ordering::SeqCst))
+    {
+        return Err("MioProxy 正在准备更新，暂时禁止切换代理、TUN 或内核状态".to_string());
+    }
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -40,6 +55,7 @@ pub fn run() {
         .manage(tun::TunState::default())
         .manage(tray::TrayState::default())
         .setup(|app| {
+            update::register_app_handle(app.handle());
             let data_dir = app.path().app_data_dir().map_err(|error| {
                 Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error>
             })?;
@@ -49,6 +65,11 @@ pub fn run() {
             if let Err(error) = system_proxy::recover_stale_state(app.handle()) {
                 eprintln!("恢复系统代理状态失败：{error}");
             }
+            match update::recover_checkpoint(app.handle()) {
+                Ok(Some(message)) => eprintln!("更新恢复提示：{message}"),
+                Ok(None) => {}
+                Err(error) => eprintln!("读取更新恢复检查点失败：{error}"),
+            }
             startup::apply_start_minimized(app.handle());
             if let Err(error) = tray::setup(app.handle()) {
                 return Err(Box::new(std::io::Error::other(error)));
@@ -56,7 +77,8 @@ pub fn run() {
             tun::start_monitor(app.handle().clone());
             let recovery_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                tun::recover_after_startup(recovery_app).await;
+                tun::recover_after_startup(recovery_app.clone()).await;
+                update::recover_after_startup(recovery_app).await;
             });
             Ok(())
         })
@@ -106,6 +128,15 @@ pub fn run() {
             tun::tun_status,
             tun::tun_set_enabled,
             service::service_status_command,
+            update::update_status,
+            update::update_check,
+            update::update_prepare,
+            update::update_mark_failed,
+            update::update_preferences_status,
+            update::update_preferences_set,
+            core_update::mihomo_core_update_status,
+            core_update::mihomo_core_update_check,
+            core_update::mihomo_core_update_install,
         ])
         .build(tauri::generate_context!())
         .expect("error while building MioProxy")
@@ -113,6 +144,9 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
                 let lifecycle = app.state::<AppLifecycle>();
                 if lifecycle.exiting.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+                if lifecycle.updating.load(Ordering::SeqCst) {
                     return;
                 }
                 let errors = tauri::async_runtime::block_on(async {

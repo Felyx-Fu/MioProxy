@@ -16,6 +16,8 @@ pub enum ServiceCommand {
     Start,
     Stop,
     Reload,
+    CoreCheck,
+    CoreInstall,
     ApplyProfile {
         #[serde(rename = "profileId")]
         profile_id: String,
@@ -54,6 +56,7 @@ pub struct ServiceResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ServiceStatusData {
     pub core: crate::mihomo::CoreStatus,
+    pub core_update: crate::core_update::CoreUpdateStatus,
     pub running: bool,
     pub owns_core: bool,
     pub ownership_conflict: bool,
@@ -70,6 +73,8 @@ pub struct ServiceConnectionStatus {
     pub reachable: bool,
     pub protocol_version: u32,
     pub service_version: Option<String>,
+    pub version_mismatch: bool,
+    pub error: Option<String>,
     pub admin: bool,
     pub owns_core: bool,
     pub core_running: bool,
@@ -110,7 +115,7 @@ mod windows_impl {
 
     static REQUEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
     use windows_service::{
-        service::ServiceAccess,
+        service::{ServiceAccess, ServiceExitCode, ServiceState},
         service_manager::{ServiceManager, ServiceManagerAccess},
     };
     use windows_sys::Win32::{
@@ -491,11 +496,32 @@ mod windows_impl {
     }
 
     pub(crate) async fn service_status(app: AppHandle) -> Result<ServiceConnectionStatus, String> {
-        let Some(response) = try_request(&app, ServiceCommand::Status).await? else {
+        let response = match try_request(&app, ServiceCommand::Status).await {
+            Ok(response) => response,
+            Err(error) if error.contains("版本不匹配") => {
+                return Ok(ServiceConnectionStatus {
+                    reachable: false,
+                    protocol_version: SERVICE_PROTOCOL_VERSION,
+                    service_version: None,
+                    version_mismatch: true,
+                    error: Some(error),
+                    admin: false,
+                    owns_core: false,
+                    core_running: false,
+                    ownership_conflict: false,
+                    tun_status: None,
+                    tun_message: None,
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(response) = response else {
             return Ok(ServiceConnectionStatus {
                 reachable: false,
                 protocol_version: SERVICE_PROTOCOL_VERSION,
                 service_version: None,
+                version_mismatch: false,
+                error: None,
                 admin: false,
                 owns_core: false,
                 core_running: false,
@@ -509,6 +535,8 @@ mod windows_impl {
             reachable: true,
             protocol_version: SERVICE_PROTOCOL_VERSION,
             service_version: Some(SERVICE_VERSION.to_string()),
+            version_mismatch: false,
+            error: None,
             admin: status.admin,
             owns_core: status.owns_core,
             core_running: status.core.running,
@@ -545,6 +573,16 @@ mod windows_impl {
         app: &AppHandle,
         command: ServiceCommand,
     ) -> Result<Option<crate::mihomo::CoreStatus>, String> {
+        let Some(response) = try_request(app, command).await? else {
+            return Ok(None);
+        };
+        data(response).map(Some)
+    }
+
+    pub(crate) async fn request_core_update(
+        app: &AppHandle,
+        command: ServiceCommand,
+    ) -> Result<Option<crate::core_update::CoreUpdateStatus>, String> {
         let Some(response) = try_request(app, command).await? else {
             return Ok(None);
         };
@@ -628,6 +666,167 @@ mod windows_impl {
         ))
     }
 
+    fn stop_installed_service() -> Result<(), String> {
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|error| format!("打开 MioProxy Service Manager 失败：{error}"))?;
+        let service = manager
+            .open_service(
+                SERVICE_NAME,
+                ServiceAccess::STOP | ServiceAccess::QUERY_STATUS,
+            )
+            .map_err(|error| format!("打开 MioProxy Service 失败：{error}"))?;
+        let status = service
+            .query_status()
+            .map_err(|error| format!("查询 MioProxy Service 状态失败：{error}"))?;
+        if status.current_state != ServiceState::Stopped {
+            match service.stop() {
+                Ok(_) => {}
+                Err(windows_service::Error::Winapi(error))
+                    if error.raw_os_error() == Some(1062) => {}
+                Err(error) => return Err(format!("停止 MioProxy Service 失败：{error}")),
+            }
+        }
+        let stopped = (0..100).any(|_| {
+            let is_stopped = service
+                .query_status()
+                .map(|next| next.current_state == ServiceState::Stopped)
+                .unwrap_or(false);
+            if !is_stopped {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            is_stopped
+        });
+        if !stopped {
+            return Err("MioProxy Service 未能在 10 秒内停止，拒绝进入安装阶段".to_string());
+        }
+        let final_status = service
+            .query_status()
+            .map_err(|error| format!("查询 MioProxy Service 停止结果失败：{error}"))?;
+        if final_status.exit_code != ServiceExitCode::NO_ERROR {
+            return Err("MioProxy Service 停止时未完成 TUN/网络恢复，拒绝进入安装阶段".to_string());
+        }
+        Ok(())
+    }
+
+    fn start_installed_service() -> Result<(), String> {
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|error| format!("打开 MioProxy Service Manager 失败：{error}"))?;
+        let service = manager
+            .open_service(
+                SERVICE_NAME,
+                ServiceAccess::START | ServiceAccess::QUERY_STATUS,
+            )
+            .map_err(|error| format!("打开 MioProxy Service 失败：{error}"))?;
+        let status = service
+            .query_status()
+            .map_err(|error| format!("查询 MioProxy Service 状态失败：{error}"))?;
+        if status.current_state == ServiceState::Stopped {
+            match service.start::<&str>(&[]) {
+                Ok(()) => {}
+                Err(windows_service::Error::Winapi(error))
+                    if error.raw_os_error() == Some(1056) => {}
+                Err(error) => return Err(format!("重新启动 MioProxy Service 失败：{error}")),
+            }
+        }
+        let running = (0..100).any(|_| {
+            let is_running = service
+                .query_status()
+                .map(|next| next.current_state == ServiceState::Running)
+                .unwrap_or(false);
+            if !is_running {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            is_running
+        });
+        if !running {
+            return Err("MioProxy Service 未能在 10 秒内恢复 Running".to_string());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn verify_stopped_for_update() -> Result<(), String> {
+        if !service_is_installed()? {
+            return Ok(());
+        }
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|error| format!("打开 MioProxy Service Manager 失败：{error}"))?;
+        let service = manager
+            .open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+            .map_err(|error| format!("打开 MioProxy Service 失败：{error}"))?;
+        let status = service
+            .query_status()
+            .map_err(|error| format!("查询 MioProxy Service 状态失败：{error}"))?;
+        if status.current_state != ServiceState::Stopped {
+            return Err("MioProxy Service 仍在运行，拒绝启动更新安装器".to_string());
+        }
+        if status.exit_code != ServiceExitCode::NO_ERROR {
+            return Err("MioProxy Service 上次停止未完成网络清理，拒绝启动更新安装器".to_string());
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn prepare_for_update(app: &AppHandle) -> Result<(), String> {
+        let installed = service_is_installed()?;
+        let Some(response) = try_request(app, ServiceCommand::Status).await? else {
+            if installed {
+                return Err("MioProxy Service 已安装但 IPC 不可用，拒绝更新".to_string());
+            }
+            return Ok(());
+        };
+        let status: ServiceStatusData = data(response)?;
+        if status.tun_status != "disabled" {
+            let Some(response) = try_request(
+                app,
+                ServiceCommand::TunSetEnabled {
+                    enabled: false,
+                    profile_id: None,
+                    system_proxy_enabled: false,
+                },
+            )
+            .await?
+            else {
+                return Err("MioProxy Service TUN 清理后 IPC 丢失，拒绝更新".to_string());
+            };
+            let tun: ServiceTunData = data(response)?;
+            if tun.status != "disabled" {
+                return Err(format!(
+                    "MioProxy Service TUN 未恢复为 disabled（当前 {}），拒绝更新",
+                    tun.status
+                ));
+            }
+        }
+        if status.owns_core || status.core.running {
+            let Some(response) = try_request(app, ServiceCommand::Stop).await? else {
+                return Err("停止受管 Mihomo 后 IPC 丢失，拒绝更新".to_string());
+            };
+            let core: crate::mihomo::CoreStatus = data(response)?;
+            if core.running || mihomo::is_running().await {
+                return Err("受管 Mihomo 未完全停止，拒绝更新".to_string());
+            }
+        }
+        if installed {
+            stop_installed_service()?;
+        }
+        verify_stopped_for_update()
+    }
+
+    pub(crate) async fn resume_after_update_failure(
+        app: &AppHandle,
+        should_restart: bool,
+    ) -> Result<(), String> {
+        if !should_restart || !service_is_installed()? {
+            return Ok(());
+        }
+        start_installed_service()?;
+        for _ in 0..100 {
+            if try_request(app, ServiceCommand::Status).await?.is_some() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Err("MioProxy Service 已启动但 IPC 未在 10 秒内恢复".to_string())
+    }
+
     #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct ServiceTunData {
@@ -692,11 +891,14 @@ mod windows_impl {
         job: JobGuard,
         tun: Mutex<ServiceTunState>,
         tun_transition: AsyncMutex<()>,
+        core_update: Mutex<crate::core_update::CoreUpdateStatus>,
+        core_update_transition: AsyncMutex<()>,
     }
 
     impl ServiceRuntime {
         fn new(data_dir: PathBuf, mihomo_path: PathBuf) -> Result<Self, String> {
             fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+            crate::core_update::recover_orphaned_backup(&mihomo_path)?;
             let _ = ensure_token(&data_dir)?;
             Ok(Self {
                 data_dir,
@@ -705,6 +907,8 @@ mod windows_impl {
                 job: JobGuard::new()?,
                 tun: Mutex::new(ServiceTunState::default()),
                 tun_transition: AsyncMutex::const_new(()),
+                core_update: Mutex::new(crate::core_update::CoreUpdateStatus::default()),
+                core_update_transition: AsyncMutex::const_new(()),
             })
         }
 
@@ -890,6 +1094,292 @@ rules:
                 config_path: self.config_path().display().to_string(),
                 mixed_port,
                 mode,
+            })
+        }
+
+        fn core_update_status(&self) -> Result<crate::core_update::CoreUpdateStatus, String> {
+            self.core_update
+                .lock()
+                .map(|status| status.clone())
+                .map_err(|_| "Service Core 更新状态锁异常".to_string())
+        }
+
+        fn set_core_update_status(
+            &self,
+            status: crate::core_update::CoreUpdateStatus,
+        ) -> Result<crate::core_update::CoreUpdateStatus, String> {
+            let mut current = self
+                .core_update
+                .lock()
+                .map_err(|_| "Service Core 更新状态锁异常")?;
+            *current = status.clone();
+            Ok(status)
+        }
+
+        async fn running_core_version() -> Option<String> {
+            mihomo::api_get("/version").await.ok().and_then(|value| {
+                value
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+        }
+
+        async fn core_check(&self) -> Result<crate::core_update::CoreUpdateStatus, String> {
+            let current = Self::running_core_version().await;
+            self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                current_version: current.clone(),
+                available_version: None,
+                asset_name: None,
+                phase: crate::core_update::CoreUpdatePhase::Checking,
+                error: None,
+            })?;
+            let result = crate::core_update::latest_release(current.as_deref()).await;
+            match result {
+                Ok(Some(release)) => {
+                    self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                        current_version: current,
+                        available_version: Some(release.version.to_string()),
+                        asset_name: Some(release.asset_name),
+                        phase: crate::core_update::CoreUpdatePhase::Available,
+                        error: None,
+                    })
+                }
+                Ok(None) => self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                    current_version: current,
+                    available_version: None,
+                    asset_name: None,
+                    phase: crate::core_update::CoreUpdatePhase::Idle,
+                    error: None,
+                }),
+                Err(error) => self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                    current_version: current,
+                    available_version: None,
+                    asset_name: None,
+                    phase: crate::core_update::CoreUpdatePhase::Error,
+                    error: Some(error),
+                }),
+            }
+        }
+
+        async fn core_install(&self) -> Result<crate::core_update::CoreUpdateStatus, String> {
+            let _update = self.core_update_transition.lock().await;
+            let result = self.core_install_inner().await;
+            if let Err(error) = &result {
+                let mut status = self.core_update_status().unwrap_or_default();
+                status.current_version = Self::running_core_version()
+                    .await
+                    .or(status.current_version);
+                status.phase = crate::core_update::CoreUpdatePhase::Error;
+                status.error = Some(error.clone());
+                let _ = self.set_core_update_status(status);
+            }
+            result
+        }
+
+        async fn core_install_inner(&self) -> Result<crate::core_update::CoreUpdateStatus, String> {
+            let current = Self::running_core_version().await;
+            self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                current_version: current.clone(),
+                available_version: None,
+                asset_name: None,
+                phase: crate::core_update::CoreUpdatePhase::Checking,
+                error: None,
+            })?;
+            let release = match crate::core_update::latest_release(current.as_deref()).await {
+                Ok(Some(release)) => release,
+                Ok(None) => {
+                    return self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                        current_version: current,
+                        ..crate::core_update::CoreUpdateStatus::default()
+                    })
+                }
+                Err(error) => {
+                    let _ = self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                        current_version: current,
+                        phase: crate::core_update::CoreUpdatePhase::Error,
+                        error: Some(error.clone()),
+                        ..crate::core_update::CoreUpdateStatus::default()
+                    });
+                    return Err(error);
+                }
+            };
+            self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                current_version: current.clone(),
+                available_version: Some(release.version.to_string()),
+                asset_name: Some(release.asset_name.clone()),
+                phase: crate::core_update::CoreUpdatePhase::Downloading,
+                error: None,
+            })?;
+            let staging_dir = self.data_dir.join("updates").join("core");
+            let staged = match crate::core_update::download_to_staging(&release, &staging_dir).await
+            {
+                Ok(path) => path,
+                Err(error) => {
+                    let _ = self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                        current_version: current,
+                        available_version: Some(release.version.to_string()),
+                        asset_name: Some(release.asset_name),
+                        phase: crate::core_update::CoreUpdatePhase::Error,
+                        error: Some(error.clone()),
+                    });
+                    return Err(error);
+                }
+            };
+            self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                current_version: current.clone(),
+                available_version: Some(release.version.to_string()),
+                asset_name: Some(release.asset_name.clone()),
+                phase: crate::core_update::CoreUpdatePhase::Staging,
+                error: None,
+            })?;
+            self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                current_version: current.clone(),
+                available_version: Some(release.version.to_string()),
+                asset_name: Some(release.asset_name.clone()),
+                phase: crate::core_update::CoreUpdatePhase::Verifying,
+                error: None,
+            })?;
+            self.default_config()?;
+            if let Err(error) =
+                crate::core_update::validate_config(&staged, &self.data_dir, &self.config_path())
+            {
+                let _ = self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                    current_version: current,
+                    available_version: Some(release.version.to_string()),
+                    asset_name: Some(release.asset_name),
+                    phase: crate::core_update::CoreUpdatePhase::Error,
+                    error: Some(error.clone()),
+                });
+                return Err(error);
+            }
+
+            let tun_before = self.tun_data()?;
+            let tun_was_running = tun_before.status == "running";
+            let tun_profile_id = tun_before.profile_id.clone();
+            self.refresh_child()?;
+            let was_running = self.owns_core()?;
+            if !was_running
+                && (!external_mihomo_pids(None).is_empty() || mihomo::is_running().await)
+            {
+                return Err("检测到非 Service 管理的 Mihomo，拒绝执行 Core 更新".to_string());
+            }
+            if self.has_tun_recovery() {
+                self.disable_tun().await?;
+            }
+            if was_running {
+                self.stop().await?;
+            }
+            if mihomo::is_running().await || !external_mihomo_pids(None).is_empty() {
+                return Err("Mihomo 未完全停止或检测到外部实例，拒绝替换 Core".to_string());
+            }
+
+            self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                current_version: current.clone(),
+                available_version: Some(release.version.to_string()),
+                asset_name: Some(release.asset_name.clone()),
+                phase: crate::core_update::CoreUpdatePhase::Installing,
+                error: None,
+            })?;
+            let backup = match crate::core_update::replace_core(&self.mihomo_path, &staged) {
+                Ok(backup) => backup,
+                Err(error) => {
+                    let _ = self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                        current_version: current,
+                        available_version: Some(release.version.to_string()),
+                        asset_name: Some(release.asset_name),
+                        phase: crate::core_update::CoreUpdatePhase::Error,
+                        error: Some(error.clone()),
+                    });
+                    return Err(error);
+                }
+            };
+            self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                current_version: current.clone(),
+                available_version: Some(release.version.to_string()),
+                asset_name: Some(release.asset_name.clone()),
+                phase: crate::core_update::CoreUpdatePhase::Restarting,
+                error: None,
+            })?;
+
+            let health = async {
+                self.start().await?;
+                let running = Self::running_core_version().await;
+                let Some(running) = running else {
+                    return Err("新 Mihomo Core 未返回 /version，健康检查失败".to_string());
+                };
+                let running_version = crate::update::parse_version(&running)?;
+                if running_version != release.version {
+                    return Err(format!(
+                        "新 Mihomo Core 版本不匹配：期望 {}，实际 {}",
+                        release.version, running
+                    ));
+                }
+                if tun_was_running {
+                    let profile_id = tun_profile_id
+                        .clone()
+                        .ok_or_else(|| "Core 更新后缺少 TUN Profile，拒绝恢复 TUN".to_string())?;
+                    let tun = self.tun_set(true, Some(profile_id), false).await?;
+                    if tun.status != "running" {
+                        return Err(format!(
+                            "新 Mihomo Core 健康但 TUN 未恢复 Running（当前 {}）",
+                            tun.status
+                        ));
+                    }
+                }
+                Ok::<(), String>(())
+            }
+            .await;
+            if let Err(error) = health {
+                let _ = self.stop().await;
+                let rollback = crate::core_update::rollback_core(&backup);
+                let restart = if was_running {
+                    match self.start().await {
+                        Ok(_) if tun_was_running => {
+                            let profile_id = tun_profile_id.clone().ok_or_else(|| {
+                                "回滚后缺少 TUN Profile，未恢复旧 TUN".to_string()
+                            })?;
+                            self.tun_set(true, Some(profile_id), false)
+                                .await
+                                .map(|_| ())
+                                .map_err(|restore_error| {
+                                    format!("恢复旧 TUN 失败：{restore_error}")
+                                })
+                        }
+                        Ok(_) => Ok(()),
+                        Err(restart_error) => {
+                            Err(format!("恢复旧 Mihomo Core 失败：{restart_error}"))
+                        }
+                    }
+                } else {
+                    Ok(())
+                };
+                let combined = match (rollback, restart) {
+                    (Ok(()), Ok(())) => format!("Core 健康检查失败，已回滚：{error}"),
+                    (rollback, restart) => format!(
+                        "Core 健康检查失败：{error}；回滚：{}；恢复旧 Core：{}",
+                        rollback.err().unwrap_or_else(|| "成功".to_string()),
+                        restart.err().unwrap_or_else(|| "成功".to_string())
+                    ),
+                };
+                let _ = self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                    current_version: current,
+                    available_version: Some(release.version.to_string()),
+                    asset_name: Some(release.asset_name),
+                    phase: crate::core_update::CoreUpdatePhase::Error,
+                    error: Some(combined.clone()),
+                });
+                return Err(combined);
+            }
+            crate::core_update::finalize_core(&backup)?;
+            let _ = fs::remove_file(staged);
+            let final_version = Self::running_core_version().await;
+            self.set_core_update_status(crate::core_update::CoreUpdateStatus {
+                current_version: final_version,
+                available_version: None,
+                asset_name: None,
+                phase: crate::core_update::CoreUpdatePhase::Completed,
+                error: None,
             })
         }
 
@@ -1352,6 +1842,7 @@ rules:
             let tun = self.tun_data()?;
             Ok(ServiceStatusData {
                 core,
+                core_update: self.core_update_status()?,
                 running,
                 owns_core,
                 ownership_conflict: running && !owns_core
@@ -1378,6 +1869,13 @@ rules:
                 )
                 .map_err(|e| e.to_string())?),
                 ServiceCommand::Reload => self.reload().await,
+                ServiceCommand::CoreCheck => Ok(
+                    serde_json::to_value(self.core_check().await?).map_err(|e| e.to_string())?
+                ),
+                ServiceCommand::CoreInstall => {
+                    Ok(serde_json::to_value(self.core_install().await?)
+                        .map_err(|e| e.to_string())?)
+                }
                 ServiceCommand::ApplyProfile { profile_id } => {
                     let _transition = self.tun_transition.lock().await;
                     if self.tun_data()?.status != "disabled" {
@@ -1947,6 +2445,37 @@ rules:
                 .error
                 .as_deref()
                 .is_some_and(|error| error.contains("协议版本不匹配")));
+
+            let mut version_client = None;
+            for _ in 0..50 {
+                if let Ok(next) = ClientOptions::new().open(&test_pipe) {
+                    version_client = Some(next);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let mut version_client =
+                version_client.expect("Service did not accept a version mismatch client");
+            let version_request = ServiceRequest {
+                protocol_version: SERVICE_PROTOCOL_VERSION,
+                client_version: "0.7.0".to_string(),
+                token: token.trim().to_string(),
+                command: ServiceCommand::Status,
+            };
+            version_client
+                .write_all((serde_json::to_string(&version_request).unwrap() + "\n").as_bytes())
+                .await
+                .unwrap();
+            version_client.flush().await.unwrap();
+            let mut version_reader = BufReader::new(version_client);
+            let mut version_line = String::new();
+            version_reader.read_line(&mut version_line).await.unwrap();
+            let version_response: ServiceResponse = serde_json::from_str(&version_line).unwrap();
+            assert!(!version_response.ok);
+            assert!(version_response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("GUI 与 Service 版本不匹配")));
             let _ = sender.send(true);
             daemon.await.unwrap().unwrap();
             std::env::remove_var("MIOPROXY_TEST_PIPE_NAME");
@@ -1962,8 +2491,9 @@ pub use windows_impl::{
 
 #[cfg(windows)]
 pub(crate) use windows_impl::{
-    request_apply_profile, request_core, request_reload, request_service_status, request_tun,
-    restore_for_lifecycle, service_tun_status,
+    prepare_for_update, request_apply_profile, request_core, request_core_update, request_reload,
+    request_service_status, request_tun, restore_for_lifecycle, resume_after_update_failure,
+    service_tun_status, verify_stopped_for_update,
 };
 
 #[cfg(not(windows))]
@@ -1986,6 +2516,14 @@ pub(crate) async fn request_core(
     _app: &AppHandle,
     _command: ServiceCommand,
 ) -> Result<Option<crate::mihomo::CoreStatus>, String> {
+    Ok(None)
+}
+
+#[cfg(not(windows))]
+pub(crate) async fn request_core_update(
+    _app: &AppHandle,
+    _command: ServiceCommand,
+) -> Result<Option<crate::core_update::CoreUpdateStatus>, String> {
     Ok(None)
 }
 
@@ -2015,12 +2553,32 @@ pub(crate) async fn restore_for_lifecycle(_app: &AppHandle) -> Result<(), String
 }
 
 #[cfg(not(windows))]
+pub(crate) async fn prepare_for_update(_app: &AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub(crate) async fn resume_after_update_failure(
+    _app: &AppHandle,
+    _should_restart: bool,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub(crate) fn verify_stopped_for_update() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
 #[tauri::command]
 pub async fn service_status_command(_app: AppHandle) -> Result<ServiceConnectionStatus, String> {
     Ok(ServiceConnectionStatus {
         reachable: false,
         protocol_version: SERVICE_PROTOCOL_VERSION,
         service_version: None,
+        version_mismatch: false,
+        error: None,
         admin: false,
         owns_core: false,
         core_running: false,

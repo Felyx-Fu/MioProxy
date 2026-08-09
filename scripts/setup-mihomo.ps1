@@ -28,6 +28,23 @@ if (-not $asset) { throw "No Windows amd64 Mihomo zip asset found in release $($
 
 Write-Host "[2/4] Downloading $($asset.name)..." -ForegroundColor Cyan
 Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipFile -UseBasicParsing
+$expectedDigest = $asset.digest
+if (-not $expectedDigest -or $expectedDigest -notmatch '^sha256:[0-9a-fA-F]{64}$') {
+    throw "Release asset $($asset.name) did not provide a valid SHA-256 digest."
+}
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+$zipStream = [System.IO.File]::OpenRead($zipFile)
+try {
+    $actualDigest = ([BitConverter]::ToString($sha256.ComputeHash($zipStream)) -replace '-', '').ToLowerInvariant()
+}
+finally {
+    $zipStream.Dispose()
+    $sha256.Dispose()
+}
+if ($actualDigest -ne $expectedDigest.Substring(7).ToLowerInvariant()) {
+    throw "SHA-256 verification failed for $($asset.name)."
+}
+Write-Host "SHA-256 verified." -ForegroundColor Green
 
 Write-Host "[3/4] Extracting..." -ForegroundColor Cyan
 Expand-Archive -Path $zipFile -DestinationPath $tempDir -Force

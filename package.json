@@ -1,7 +1,7 @@
 {
   "name": "mioproxy",
   "private": true,
-  "version": "0.7.0",
+  "version": "0.8.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,10 +10,12 @@
     "tauri": "tauri",
     "mihomo:setup": "powershell -ExecutionPolicy Bypass -File ./scripts/setup-mihomo.ps1",
     "service:build": "powershell -ExecutionPolicy Bypass -File ./scripts/build-mioproxy-service.ps1",
-    "tauri:build": "npm run service:build && tauri build"
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-process": "^2",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

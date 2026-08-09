@@ -2,6 +2,9 @@ node_modules/
 dist/
 .vscode/
 .codex/
+.tauri/
+*.key
+*.key.pub
 .DS_Store
 src-tauri/target/
 src-tauri/binaries/*.exe

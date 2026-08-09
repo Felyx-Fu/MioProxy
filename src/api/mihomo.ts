@@ -23,6 +23,11 @@ export type StartupSettings = {
   startMinimized: boolean;
 };
 
+export type UpdatePreferences = {
+  checkOnStartup: boolean;
+  autoDownload: boolean;
+};
+
 export type MihomoVersion = {
   meta?: boolean;
   version?: string;
@@ -182,12 +187,51 @@ export type ServiceConnectionStatus = {
   reachable: boolean;
   protocolVersion: number;
   serviceVersion: string | null;
+  versionMismatch: boolean;
+  error: string | null;
   admin: boolean;
   ownsCore: boolean;
   coreRunning: boolean;
   ownershipConflict: boolean;
   tunStatus: TunStatus | null;
   tunMessage: string | null;
+};
+
+export type UpdatePhase = "preparing" | "installing" | "restarting" | "completed" | "failed";
+
+export type UpdateCheckpoint = {
+  previousVersion: string;
+  targetVersion: string;
+  systemProxyWasEnabled: boolean;
+  tunWasEnabled: boolean;
+  updateStartedAt: string;
+  phase: UpdatePhase;
+};
+
+export type UpdateStatus = {
+  currentVersion: string;
+  updating: boolean;
+  checkpoint: UpdateCheckpoint | null;
+  recoveryError: string | null;
+};
+
+export type UpdateMetadata = {
+  rid: number;
+  currentVersion: string;
+  version: string;
+  date?: string;
+  body?: string;
+  rawJson: Record<string, unknown>;
+};
+
+export type CoreUpdatePhase = "idle" | "checking" | "available" | "downloading" | "verifying" | "staging" | "installing" | "restarting" | "completed" | "error";
+
+export type CoreUpdateStatus = {
+  currentVersion: string | null;
+  availableVersion: string | null;
+  assetName: string | null;
+  phase: CoreUpdatePhase;
+  error: string | null;
 };
 export const mihomoApi = {
   start: () => invoke<CoreStatus>("mihomo_start"),
@@ -222,4 +266,13 @@ export const mihomoApi = {
   tunStatus: () => invoke<TunStatusSnapshot>("tun_status"),
   tunSetEnabled: (enabled: boolean, profileId?: string | null) => invoke<TunStatusSnapshot>("tun_set_enabled", { enabled, profileId }),
   serviceStatus: () => invoke<ServiceConnectionStatus>("service_status_command"),
+  updateStatus: () => invoke<UpdateStatus>("update_status"),
+  updateCheck: () => invoke<UpdateMetadata | null>("update_check"),
+  updatePrepare: (targetVersion: string) => invoke<UpdateStatus>("update_prepare", { targetVersion }),
+  updateMarkFailed: (error: string) => invoke<UpdateStatus>("update_mark_failed", { error }),
+  updatePreferencesStatus: () => invoke<UpdatePreferences>("update_preferences_status"),
+  updatePreferencesSet: (checkOnStartup: boolean, autoDownload: boolean) => invoke<UpdatePreferences>("update_preferences_set", { checkOnStartup, autoDownload }),
+  coreUpdateStatus: () => invoke<CoreUpdateStatus>("mihomo_core_update_status"),
+  coreUpdateCheck: () => invoke<CoreUpdateStatus>("mihomo_core_update_check"),
+  coreUpdateInstall: () => invoke<CoreUpdateStatus>("mihomo_core_update_install"),
 };

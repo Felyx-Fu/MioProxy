@@ -1,5 +1,16 @@
-import { FolderCog, LockKeyhole, Power, Rocket, ShieldCheck } from "lucide-react";
-import type { CoreState, CoreStatus, ProxyState, StartupSettings, SystemProxyStatus } from "../api/mihomo";
+import { Download, FolderCog, LockKeyhole, Power, Rocket, ShieldCheck } from "lucide-react";
+import type { CoreState, CoreStatus, CoreUpdateStatus, ProxyState, StartupSettings, SystemProxyStatus, UpdatePreferences, UpdateStatus } from "../api/mihomo";
+
+type AppUpdateState = UpdateStatus & {
+  checking: boolean;
+  installing: boolean;
+  downloading: boolean;
+  downloaded: boolean;
+  progress: number | null;
+  availableVersion: string | null;
+  releaseNotes: string | null;
+  error: string | null;
+};
 
 type SettingsPageProps = {
   status: CoreStatus | null;
@@ -7,10 +18,19 @@ type SettingsPageProps = {
   proxyStatus: SystemProxyStatus | null;
   proxyState: ProxyState;
   startup: StartupSettings | null;
+  updatePreferences: UpdatePreferences | null;
   busy: boolean;
   onToggleProxy: () => void;
   onToggleStartup: (enabled: boolean) => void;
   onToggleMinimized: (enabled: boolean) => void;
+  onToggleUpdatePreference: (field: keyof UpdatePreferences, enabled: boolean) => void;
+  appUpdate: AppUpdateState;
+  onCheckForUpdate: () => void;
+  onInstallUpdate: () => void;
+  coreUpdate: CoreUpdateStatus | null;
+  coreUpdateBusy: boolean;
+  onCheckCoreUpdate: () => void;
+  onInstallCoreUpdate: () => void;
 };
 
 export function SettingsPage({
@@ -19,10 +39,19 @@ export function SettingsPage({
   proxyStatus,
   proxyState,
   startup,
+  updatePreferences,
   busy,
   onToggleProxy,
   onToggleStartup,
   onToggleMinimized,
+  onToggleUpdatePreference,
+  appUpdate,
+  onCheckForUpdate,
+  onInstallUpdate,
+  coreUpdate,
+  coreUpdateBusy,
+  onCheckCoreUpdate,
+  onInstallCoreUpdate,
 }: SettingsPageProps) {
   return (
     <section className="page-stack">
@@ -40,6 +69,34 @@ export function SettingsPage({
           <div className="setting-copy"><span>系统代理</span><strong>{proxyStatus?.enabled ? `已开启 · 127.0.0.1:${proxyStatus.mixedPort}` : "已关闭 · 保留 Windows 原始设置"}</strong><small>{status?.running ? "由 MioProxy 接管，内核退出时自动恢复" : "启动 Mihomo 后才能开启"}</small></div>
           <button className="setting-toggle" type="button" onClick={onToggleProxy} disabled={coreState !== "running" || busy} aria-pressed={proxyStatus?.enabled ?? false}>
             {proxyState === "enabling" || proxyState === "disabling" ? "切换中…" : proxyStatus?.enabled ? "关闭" : "开启"}
+          </button>
+        </article>
+        <article className="setting-row">
+          <Download size={20} />
+          <div className="setting-copy"><span>应用更新</span><strong>{appUpdate.availableVersion ? `MioProxy ${appUpdate.availableVersion} 可用` : `当前版本 ${appUpdate.currentVersion}`}</strong><small>{appUpdate.error ?? appUpdate.releaseNotes ?? (appUpdate.progress !== null ? `下载进度 ${appUpdate.progress}%` : "使用签名验证的官方更新包")}</small></div>
+          <button className="setting-toggle" type="button" onClick={appUpdate.availableVersion ? onInstallUpdate : onCheckForUpdate} disabled={busy || appUpdate.checking || appUpdate.downloading || appUpdate.installing}>
+            {appUpdate.downloading ? `${appUpdate.progress ?? 0}%` : appUpdate.installing ? "安装中…" : appUpdate.checking ? "检查中…" : appUpdate.availableVersion ? (appUpdate.downloaded ? "安装更新" : "下载并安装") : "检查更新"}
+          </button>
+        </article>
+        <article className="setting-row">
+          <Download size={20} />
+          <div className="setting-copy"><span>启动时检查更新</span><strong>{updatePreferences?.checkOnStartup ? "已开启" : "已关闭"}</strong><small>后台延迟检查，不阻塞 MioProxy 正常启动</small></div>
+          <button className="setting-toggle" type="button" onClick={() => onToggleUpdatePreference("checkOnStartup", !(updatePreferences?.checkOnStartup ?? false))} disabled={busy || !updatePreferences} aria-pressed={updatePreferences?.checkOnStartup ?? false}>
+            {updatePreferences?.checkOnStartup ? "关闭" : "开启"}
+          </button>
+        </article>
+        <article className="setting-row">
+          <Download size={20} />
+          <div className="setting-copy"><span>自动下载更新</span><strong>{updatePreferences?.autoDownload ? "已开启" : "已关闭"}</strong><small>只下载并校验更新包，不会自动安装或重启</small></div>
+          <button className="setting-toggle" type="button" onClick={() => onToggleUpdatePreference("autoDownload", !(updatePreferences?.autoDownload ?? false))} disabled={busy || !updatePreferences} aria-pressed={updatePreferences?.autoDownload ?? false}>
+            {updatePreferences?.autoDownload ? "关闭" : "开启"}
+          </button>
+        </article>
+        <article className="setting-row">
+          <ShieldCheck size={20} />
+          <div className="setting-copy"><span>Mihomo Core 更新</span><strong>{coreUpdate?.availableVersion ? `Mihomo ${coreUpdate.availableVersion} 可用` : coreUpdate?.currentVersion ? `当前版本 ${coreUpdate.currentVersion}` : "由 MioProxy Service 管理"}</strong><small>{coreUpdate?.error ?? (coreUpdate?.phase === "completed" ? "Core 已完成健康检查" : coreUpdate?.assetName ?? "仅使用官方 Release，并保留失败回滚")}</small></div>
+          <button className="setting-toggle" type="button" onClick={coreUpdate?.availableVersion ? onInstallCoreUpdate : onCheckCoreUpdate} disabled={busy || coreUpdateBusy}>
+            {coreUpdateBusy ? "处理中…" : coreUpdate?.availableVersion ? "下载并安装" : "检查更新"}
           </button>
         </article>
         <article className="setting-row">

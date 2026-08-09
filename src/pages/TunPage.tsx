@@ -40,7 +40,9 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled, systemProx
       const [nextSnapshot, nextService] = await Promise.all([mihomoApi.tunStatus(), mihomoApi.serviceStatus()]);
       setSnapshot(nextSnapshot);
       setService(nextService);
-      if (clearError) {
+      if (nextService.versionMismatch) {
+        setError(nextService.error ?? "MioProxy GUI 与 Service 版本不匹配，已阻止接管 Mihomo");
+      } else if (clearError) {
         setError(null);
       }
     } catch (value) {
@@ -108,7 +110,7 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled, systemProx
       <div className={`tun-status-card panel ${status}`}>
         <div className={`tun-status-dot ${status}`} />
         <div className="tun-status-copy"><span>TRANSPARENT ROUTE</span><strong>{STATUS_LABELS[status]}</strong><small>{STATUS_COPY[status]}</small></div>
-        <div className="tun-status-meta"><span>管理员权限 <b>{snapshot?.admin ? "已满足" : service?.admin ? "由 Service 提供" : "需要提升"}</b></span><span>内核 <b>{coreRunning ? "Running" : "Disabled"}</b></span><span>所有权 <b>{service?.reachable ? service.ownsCore ? "MioProxy Service" : service.ownershipConflict ? "冲突" : "Service 在线" : "GUI fallback"}</b></span><span>系统代理 <b>{systemProxyEnabled ? "冲突" : "关闭"}</b></span></div>
+        <div className="tun-status-meta"><span>管理员权限 <b>{snapshot?.admin ? "已满足" : service?.admin ? "由 Service 提供" : "需要提升"}</b></span><span>内核 <b>{coreRunning ? "Running" : "Disabled"}</b></span><span>所有权 <b>{service?.versionMismatch ? "版本不匹配" : service?.reachable ? service.ownsCore ? "MioProxy Service" : service.ownershipConflict ? "冲突" : "Service 在线" : "GUI fallback"}</b></span><span>系统代理 <b>{systemProxyEnabled ? "冲突" : "关闭"}</b></span></div>
       </div>
 
       {(!coreRunning || !profileId || systemProxyEnabled) && <div className="tun-prerequisite panel"><AlertTriangle size={17} /><div className="tun-prerequisite-copy"><strong>启用前置条件</strong><span>{!coreRunning ? "请先启动 Mihomo。" : !profileId ? "请先添加并下载一个 Profile。" : "请先关闭系统代理，避免 auto-route 和 Windows Proxy 同时接管。"}</span>{systemProxyEnabled && <button className="secondary-button tun-prerequisite-action" type="button" onClick={() => void onToggleSystemProxy()} disabled={systemProxyBusy}>{systemProxyBusy ? "关闭中…" : "关闭系统代理"}</button>}</div></div>}

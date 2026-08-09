@@ -15,7 +15,7 @@ use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
@@ -332,7 +332,7 @@ pub(crate) async fn is_running() -> bool {
     api_get("/version").await.is_ok()
 }
 
-pub(crate) fn owns_core(app: &AppHandle) -> bool {
+pub(crate) fn owns_core<R: Runtime>(app: &AppHandle<R>) -> bool {
     app.try_state::<CoreState>()
         .and_then(|state| state.child.lock().ok().map(|child| child.is_some()))
         .unwrap_or(false)
@@ -376,6 +376,7 @@ pub async fn mihomo_start(
     app: AppHandle,
     state: State<'_, CoreState>,
 ) -> Result<CoreStatus, String> {
+    crate::ensure_mutations_allowed(&app)?;
     let _lifecycle = CORE_LIFECYCLE_LOCK.lock().await;
     if let Some(status) =
         crate::service::request_core(&app, crate::service::ServiceCommand::Start).await?
@@ -385,14 +386,24 @@ pub async fn mihomo_start(
         crate::tray::update_current_node(&app).await;
         return Ok(status);
     }
+    start_gui_owned(&app, state.inner()).await
+}
+
+pub(crate) async fn start_owned_for_lifecycle(app: &AppHandle) -> Result<CoreStatus, String> {
+    let _lifecycle = CORE_LIFECYCLE_LOCK.lock().await;
+    let state = app.state::<CoreState>();
+    start_gui_owned(app, state.inner()).await
+}
+
+async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatus, String> {
     if is_running().await {
-        traffic::start(&app);
-        logs::start(&app);
-        crate::tray::update_current_node(&app).await;
-        if let Ok(proxy_status) = crate::system_proxy::status(&app).await {
-            crate::tray::update_proxy_label(&app, proxy_status.enabled, proxy_status.core_running);
+        traffic::start(app);
+        logs::start(app);
+        crate::tray::update_current_node(app).await;
+        if let Ok(proxy_status) = crate::system_proxy::status(app).await {
+            crate::tray::update_proxy_label(app, proxy_status.enabled, proxy_status.core_running);
         }
-        return status_for(&app, true);
+        return status_for(app, true);
     }
 
     // A terminated sidecar can stop answering before its event handler has
@@ -408,14 +419,14 @@ pub async fn mihomo_start(
         return Err("Mihomo 正在执行退出恢复，请稍后重试".to_string());
     }
 
-    if migrate_legacy_controller_session(&app).await? {
-        traffic::start(&app);
-        logs::start(&app);
-        crate::tray::update_current_node(&app).await;
-        return status_for(&app, true);
+    if migrate_legacy_controller_session(app).await? {
+        traffic::start(app);
+        logs::start(app);
+        crate::tray::update_current_node(app).await;
+        return status_for(app, true);
     }
 
-    let config = ensure_default_config(&app)?;
+    let config = ensure_default_config(app)?;
     let dir = config.parent().ok_or("无法确定配置目录")?.to_path_buf();
     let command = app
         .shell()
@@ -433,8 +444,8 @@ pub async fn mihomo_start(
         .map_err(|e| format!("Mihomo 启动失败：{e}"))?;
     state.stop_requested.store(false, Ordering::SeqCst);
     *state.child.lock().map_err(|_| "CoreState 锁异常")? = Some(child);
-    traffic::start(&app);
-    logs::start(&app);
+    traffic::start(app);
+    logs::start(app);
 
     let emitter = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -492,7 +503,7 @@ pub async fn mihomo_start(
         }
     });
 
-    status_for(&app, true)
+    status_for(app, true)
 }
 
 #[tauri::command]
@@ -500,6 +511,7 @@ pub async fn mihomo_stop(
     app: AppHandle,
     state: State<'_, CoreState>,
 ) -> Result<CoreStatus, String> {
+    crate::ensure_mutations_allowed(&app)?;
     if !owns_core(&app) {
         if let Some(status) =
             crate::service::request_core(&app, crate::service::ServiceCommand::Stop).await?
@@ -521,6 +533,30 @@ pub async fn mihomo_stop(
     crate::system_proxy::restore_for_lifecycle(&app).await?;
     crate::tray::update_current_node(&app).await;
     status_for(&app, false)
+}
+
+pub(crate) async fn stop_owned_for_update(app: &AppHandle) -> Result<(), String> {
+    let _lifecycle = CORE_LIFECYCLE_LOCK.lock().await;
+    if !owns_core(app) {
+        return Ok(());
+    }
+    traffic::stop(app);
+    logs::stop(app);
+    crate::tun::restore_for_lifecycle(app, &app.state::<crate::tun::TunState>()).await?;
+    let state = app.state::<CoreState>();
+    state.stop_requested.store(true, Ordering::SeqCst);
+    if let Some(child) = state.child.lock().map_err(|_| "CoreState 锁异常")?.take() {
+        child
+            .kill()
+            .map_err(|error| format!("停止 GUI 管理的 Mihomo 失败：{error}"))?;
+    }
+    for _ in 0..50 {
+        if !is_running().await && !owns_core(app) {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err("GUI 管理的 Mihomo 未能在 5 秒内停止，拒绝更新".to_string())
 }
 
 #[tauri::command]

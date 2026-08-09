@@ -17,7 +17,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{config, mihomo, system_proxy};
@@ -350,10 +350,17 @@ fn active_runtime(state: &TunState) -> Result<Option<TunRuntime>, String> {
     Ok(requires_recovery(&runtime).then_some(runtime))
 }
 
-pub(crate) fn is_active(app: &AppHandle) -> bool {
+pub(crate) fn is_active<R: Runtime>(app: &AppHandle<R>) -> bool {
     app.try_state::<TunState>()
         .and_then(|state| active_runtime(&state).ok().flatten())
         .is_some()
+}
+
+pub(crate) fn active_profile_id<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
+    app.try_state::<TunState>()
+        .and_then(|state| runtime_snapshot(&state).ok())
+        .filter(requires_recovery)
+        .and_then(|runtime| runtime.profile_id)
 }
 
 fn persisted_for(runtime: &TunRuntime) -> Result<PersistedTunState, String> {
@@ -644,6 +651,7 @@ pub async fn tun_set_enabled(
     enabled: bool,
     profile_id: Option<String>,
 ) -> Result<TunStatusSnapshot, String> {
+    crate::ensure_mutations_allowed(&app)?;
     let _transition = lock_transitions().await;
     let system_proxy_enabled = system_proxy::status(&app).await?.enabled;
     if active_runtime(&state)?.is_some() {
@@ -662,6 +670,22 @@ pub async fn tun_set_enabled(
     } else {
         disable_tun(&app, &state).await
     }
+}
+
+pub(crate) async fn set_enabled_for_lifecycle(
+    app: &AppHandle,
+    profile_id: String,
+) -> Result<TunStatusSnapshot, String> {
+    let state = app.state::<TunState>();
+    let _transition = lock_transitions().await;
+    let system_proxy_enabled = system_proxy::status(app).await?.enabled;
+    if active_runtime(&state)?.is_some() {
+        return response(&state);
+    }
+    if system_proxy_enabled {
+        return Err("更新后检测到 System Proxy 仍开启，拒绝恢复 GUI TUN".to_string());
+    }
+    enable_tun(app, &state, profile_id).await
 }
 
 pub async fn restore_for_lifecycle(app: &AppHandle, state: &TunState) -> Result<(), String> {

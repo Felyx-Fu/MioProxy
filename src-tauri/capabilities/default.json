@@ -3,5 +3,5 @@
   "identifier": "main-capability",
   "description": "Capabilities for the main MioProxy window",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "process:default", "updater:default"]
 }
