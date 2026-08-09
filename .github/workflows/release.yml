@@ -42,6 +42,8 @@ jobs:
           }
 
       - name: Prepare official Mihomo sidecar
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run mihomo:setup
 
       - name: Validate source
