@@ -65,7 +65,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: MioProxy ${{ github.ref_name }}
           releaseBody: Signed Windows x86_64 release for MioProxy.
-          uploadUpdaterJson: true
+          includeUpdaterJson: true
           updaterJsonPreferNsis: true
           releaseDraft: false
           prerelease: false
