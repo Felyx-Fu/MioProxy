@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export type CoreState = "stopped" | "starting" | "ready" | "error";
+
 export type CoreStatus = {
+  state: CoreState;
   running: boolean;
   controller: string;
   configPath: string;
@@ -8,8 +11,6 @@ export type CoreStatus = {
   mode: string;
   recoveryMessage?: string | null;
 };
-
-export type CoreState = "stopped" | "starting" | "recovering" | "running" | "reloading" | "stopping" | "error";
 export type ProxyState = "disabled" | "enabling" | "enabled" | "disabling" | "error";
 export type ProxyPathState = "unknown" | "healthy" | "degraded" | "unavailable";
 
@@ -21,8 +22,8 @@ export type SystemProxyStatus = {
   proxyServer: string | null;
   managed: boolean;
   desiredEnabled: boolean;
-  actualState: "disabled" | "mioproxyEndpoint" | "externalEndpoint" | "unknown";
-  owner: "mioproxy" | "external" | "none" | "unknown";
+  actualState: "disabled" | "mioproxyEndpoint" | "externalEndpoint";
+  owner: "mioproxy" | "external" | "none";
   externalDetected: boolean;
   windowsState: "disabled" | "mioproxy" | "external";
   stateConsistent: boolean;

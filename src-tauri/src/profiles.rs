@@ -14,6 +14,13 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
 use tauri::{AppHandle, Manager};
+use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard};
+
+static PROFILE_REGISTRY_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
+
+pub(crate) async fn lock_registry() -> AsyncMutexGuard<'static, ()> {
+    PROFILE_REGISTRY_LOCK.lock().await
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -131,6 +138,33 @@ fn remove_profile_file(data_dir: &Path, raw_path: &str) -> Result<(), String> {
         return Err("Profile 文件必须位于应用数据目录的 profiles 文件夹内".to_string());
     }
     fs::remove_file(path).map_err(|e| e.to_string())
+}
+
+fn same_profile_revision(current: &Profile, expected: &Profile) -> bool {
+    current.id == expected.id
+        && current.url == expected.url
+        && current.file_path == expected.file_path
+        && current.updated_at == expected.updated_at
+}
+
+fn commit_download_metadata(
+    profiles: &mut [Profile],
+    expected: &Profile,
+    path: &Path,
+    updated_at: u64,
+    node_count: Option<u32>,
+) -> Result<(Profile, Option<String>), String> {
+    let current = profiles
+        .iter_mut()
+        .find(|profile| profile.id == expected.id)
+        .ok_or_else(|| "Profile 已在下载期间删除，已取消更新".to_string())?;
+    if !same_profile_revision(current, expected) {
+        return Err("Profile 已在下载期间被其他操作更新，请重试".to_string());
+    }
+    let previous_path = current.file_path.replace(path.display().to_string());
+    current.updated_at = Some(updated_at);
+    current.node_count = node_count;
+    Ok((current.clone(), previous_path))
 }
 
 fn value_key(value: &str) -> Value {
@@ -402,10 +436,7 @@ fn uri_subscription_to_yaml(source: &str) -> Result<String, String> {
     set_string(&mut dns, "enhanced-mode", "redir-host");
     dns.insert(
         value_key("nameserver"),
-        Value::Sequence(vec![
-            Value::String("1.1.1.1".to_string()),
-            Value::String("8.8.8.8".to_string()),
-        ]),
+        Value::Sequence(vec![Value::String("system".to_string())]),
     );
 
     let mut root = Mapping::new();
@@ -423,7 +454,13 @@ fn uri_subscription_to_yaml(source: &str) -> Result<String, String> {
     );
     root.insert(
         value_key("rules"),
-        Value::Sequence(vec![Value::String("MATCH,PROXY".to_string())]),
+        Value::Sequence(vec![
+            Value::String("GEOSITE,private,DIRECT".to_string()),
+            Value::String("GEOIP,private,DIRECT,no-resolve".to_string()),
+            Value::String("GEOSITE,CN,DIRECT".to_string()),
+            Value::String("GEOIP,CN,DIRECT".to_string()),
+            Value::String("MATCH,PROXY".to_string()),
+        ]),
     );
     root.insert(value_key("dns"), Value::Mapping(dns));
     serde_yaml::to_string(&Value::Mapping(root)).map_err(|e| format!("生成订阅 YAML 失败：{e}"))
@@ -472,7 +509,7 @@ pub fn profile_list(app: AppHandle) -> Result<Vec<Profile>, String> {
 }
 
 #[tauri::command]
-pub fn profile_add(app: AppHandle, name: String, url: String) -> Result<Profile, String> {
+pub async fn profile_add(app: AppHandle, name: String, url: String) -> Result<Profile, String> {
     crate::ensure_mutations_allowed(&app)?;
     let url = validate_subscription_url(&url)?;
     let name = name.trim();
@@ -480,6 +517,7 @@ pub fn profile_add(app: AppHandle, name: String, url: String) -> Result<Profile,
         return Err("Profile 名称不能为空".to_string());
     }
 
+    let _registry = lock_registry().await;
     let mut profiles = read_profiles(&app)?;
     if profiles.iter().any(|profile| profile.url == url) {
         return Err("这个订阅 URL 已经添加".to_string());
@@ -502,21 +540,13 @@ pub fn profile_add(app: AppHandle, name: String, url: String) -> Result<Profile,
 #[tauri::command]
 pub async fn profile_download(app: AppHandle, id: String) -> Result<Profile, String> {
     crate::ensure_mutations_allowed(&app)?;
-    let _transition = crate::tun::lock_transitions().await;
-    if crate::tun::is_active(&app) {
-        return Err("请先关闭 TUN，再更新 Profile".to_string());
-    }
-    if let Some(tun) = crate::service::service_tun_status(&app).await? {
-        if tun.status != crate::tun::TunStatus::Disabled {
-            return Err("请先关闭 Service 管理的 TUN，再更新 Profile".to_string());
-        }
-    }
-    let mut profiles = read_profiles(&app)?;
-    let profile = profiles
-        .iter()
-        .find(|profile| profile.id == id)
-        .cloned()
-        .ok_or_else(|| "找不到这个 Profile".to_string())?;
+    let profile = {
+        let _registry = lock_registry().await;
+        read_profiles(&app)?
+            .into_iter()
+            .find(|profile| profile.id == id)
+            .ok_or_else(|| "找不到这个 Profile".to_string())?
+    };
 
     let client = Client::builder()
         .timeout(Duration::from_secs(20))
@@ -540,24 +570,38 @@ pub async fn profile_download(app: AppHandle, id: String) -> Result<Profile, Str
     let body = normalize_subscription_body(&body)?;
     crate::config::validate_profile_yaml(&body)?;
 
-    let path = staged_profile_path(&data_dir(&app)?, &profile.id)?;
+    let _registry = lock_registry().await;
+    let data_dir = data_dir(&app)?;
+    let mut profiles = read_profiles(&app)?;
+    let path = staged_profile_path(&data_dir, &profile.id)?;
     write_atomic(&path, body.as_bytes())?;
 
     let updated_at = timestamp();
-    let updated = {
-        let updated = profiles
-            .iter_mut()
-            .find(|candidate| candidate.id == id)
-            .ok_or_else(|| "找不到这个 Profile".to_string())?;
-        updated.file_path = Some(path.display().to_string());
-        updated.updated_at = Some(updated_at);
-        updated.node_count = count_nodes(&body);
-        updated.clone()
+    let (updated, previous_path) = match commit_download_metadata(
+        &mut profiles,
+        &profile,
+        &path,
+        updated_at,
+        count_nodes(&body),
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            if let Err(cleanup_error) = remove_profile_file(&data_dir, &path.display().to_string())
+            {
+                eprintln!("清理未提交 Profile 文件失败：{cleanup_error}");
+            }
+            return Err(error);
+        }
     };
-    write_profiles(&app, &profiles)?;
-    if let Some(previous_path) = profile.file_path {
+    if let Err(error) = write_profiles(&app, &profiles) {
+        if let Err(cleanup_error) = remove_profile_file(&data_dir, &path.display().to_string()) {
+            eprintln!("清理未提交 Profile 文件失败：{cleanup_error}");
+        }
+        return Err(error);
+    }
+    if let Some(previous_path) = previous_path {
         if previous_path != path.display().to_string() {
-            if let Err(error) = remove_profile_file(&data_dir(&app)?, &previous_path) {
+            if let Err(error) = remove_profile_file(&data_dir, &previous_path) {
                 eprintln!("清理旧 Profile 文件失败：{error}");
             }
         }
@@ -575,15 +619,8 @@ pub async fn profile_apply(app: AppHandle, id: String) -> Result<String, String>
 #[tauri::command]
 pub async fn profile_remove(app: AppHandle, id: String) -> Result<(), String> {
     crate::ensure_mutations_allowed(&app)?;
-    let _transition = crate::tun::lock_transitions().await;
-    if crate::tun::is_active(&app) {
-        return Err("请先关闭 TUN，再删除 Profile".to_string());
-    }
-    if let Some(tun) = crate::service::service_tun_status(&app).await? {
-        if tun.status != crate::tun::TunStatus::Disabled {
-            return Err("请先关闭 Service 管理的 TUN，再删除 Profile".to_string());
-        }
-    }
+    let _registry = lock_registry().await;
+    let data_dir = data_dir(&app)?;
     let mut profiles = read_profiles(&app)?;
     let index = profiles
         .iter()
@@ -591,9 +628,21 @@ pub async fn profile_remove(app: AppHandle, id: String) -> Result<(), String> {
         .ok_or_else(|| "找不到这个 Profile".to_string())?;
     let previous_path = profiles[index].file_path.clone();
     profiles.remove(index);
-    write_profiles(&app, &profiles)?;
+    let active_was_removed =
+        crate::config::active_profile_id_at(&data_dir)?.as_deref() == Some(&id);
+    crate::config::clear_active_profile_if_matches_at(&data_dir, &id)?;
+    if let Err(error) = write_profiles(&app, &profiles) {
+        if active_was_removed {
+            if let Err(rollback_error) = crate::config::set_active_profile_id_at(&data_dir, &id) {
+                return Err(format!(
+                    "删除 Profile 失败：{error}；恢复活动来源指针失败：{rollback_error}"
+                ));
+            }
+        }
+        return Err(error);
+    }
     if let Some(path) = previous_path {
-        if let Err(error) = remove_profile_file(&data_dir(&app)?, &path) {
+        if let Err(error) = remove_profile_file(&data_dir, &path) {
             eprintln!("清理已删除 Profile 文件失败：{error}");
         }
     }
@@ -604,7 +653,8 @@ pub async fn profile_remove(app: AppHandle, id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        generate_profile_id, normalize_subscription_body, remove_profile_file, staged_profile_path,
+        commit_download_metadata, generate_profile_id, normalize_subscription_body,
+        remove_profile_file, staged_profile_path, Profile,
     };
     use base64::{engine::general_purpose, Engine as _};
     use serde_yaml::Value;
@@ -641,7 +691,16 @@ mod tests {
             value["proxy-groups"][0]["proxies"][3].as_str(),
             Some("DIRECT")
         );
-        assert_eq!(value["rules"][0].as_str(), Some("MATCH,PROXY"));
+        assert_eq!(value["dns"]["nameserver"][0].as_str(), Some("system"));
+        assert_eq!(value["dns"]["nameserver"].as_sequence().unwrap().len(), 1);
+        assert_eq!(value["rules"][0].as_str(), Some("GEOSITE,private,DIRECT"));
+        assert_eq!(
+            value["rules"][1].as_str(),
+            Some("GEOIP,private,DIRECT,no-resolve")
+        );
+        assert_eq!(value["rules"][2].as_str(), Some("GEOSITE,CN,DIRECT"));
+        assert_eq!(value["rules"][3].as_str(), Some("GEOIP,CN,DIRECT"));
+        assert_eq!(value["rules"][4].as_str(), Some("MATCH,PROXY"));
     }
 
     #[test]
@@ -724,6 +783,77 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.starts_with("profile-"));
         assert_eq!(first.len(), "profile-".len() + 32);
+    }
+
+    #[test]
+    fn download_commit_rejects_removed_or_stale_profile_revisions() {
+        let expected = Profile {
+            id: "profile-1".to_string(),
+            name: "Primary".to_string(),
+            url: "https://example.invalid/profile".to_string(),
+            file_path: Some("old.yaml".to_string()),
+            updated_at: Some(1),
+            node_count: Some(1),
+        };
+        let mut removed = Vec::new();
+        assert!(commit_download_metadata(
+            &mut removed,
+            &expected,
+            std::path::Path::new("next.yaml"),
+            2,
+            Some(2),
+        )
+        .is_err());
+
+        let mut stale = vec![Profile {
+            file_path: Some("newer.yaml".to_string()),
+            updated_at: Some(2),
+            ..expected.clone()
+        }];
+        assert!(commit_download_metadata(
+            &mut stale,
+            &expected,
+            std::path::Path::new("late.yaml"),
+            3,
+            Some(3),
+        )
+        .is_err());
+        assert_eq!(stale[0].file_path.as_deref(), Some("newer.yaml"));
+    }
+
+    #[test]
+    fn download_commit_updates_only_the_expected_registry_entry() {
+        let expected = Profile {
+            id: "profile-1".to_string(),
+            name: "Primary".to_string(),
+            url: "https://example.invalid/profile".to_string(),
+            file_path: Some("old.yaml".to_string()),
+            updated_at: Some(1),
+            node_count: Some(1),
+        };
+        let other = Profile {
+            id: "profile-2".to_string(),
+            name: "Other".to_string(),
+            url: "https://example.invalid/other".to_string(),
+            file_path: None,
+            updated_at: None,
+            node_count: None,
+        };
+        let mut profiles = vec![expected.clone(), other.clone()];
+        let (updated, previous_path) = commit_download_metadata(
+            &mut profiles,
+            &expected,
+            std::path::Path::new("next.yaml"),
+            2,
+            Some(4),
+        )
+        .unwrap();
+
+        assert_eq!(previous_path.as_deref(), Some("old.yaml"));
+        assert_eq!(updated.file_path.as_deref(), Some("next.yaml"));
+        assert_eq!(updated.node_count, Some(4));
+        assert_eq!(profiles[1].id, other.id);
+        assert_eq!(profiles[1].file_path, other.file_path);
     }
 
     #[test]

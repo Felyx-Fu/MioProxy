@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Mutex};
+use std::{io, path::PathBuf, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -21,6 +21,8 @@ pub struct ProxySnapshot {
     proxy_override: Option<String>,
     auto_config_url: Option<String>,
     auto_detect: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    managed_listener_pid: Option<u32>,
 }
 
 #[derive(Default)]
@@ -51,7 +53,6 @@ pub enum ProxyActualState {
     Disabled,
     MioProxyEndpoint,
     ExternalEndpoint,
-    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -60,7 +61,6 @@ pub enum ProxyOwner {
     MioProxy,
     External,
     None,
-    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -90,19 +90,23 @@ fn read_snapshot() -> Result<ProxySnapshot, String> {
         proxy_override: key.get_value("ProxyOverride").ok(),
         auto_config_url: key.get_value("AutoConfigURL").ok(),
         auto_detect: key.get_value("AutoDetect").ok(),
+        managed_listener_pid: None,
     })
 }
 
-fn delete_value(key: &RegKey, name: &str) {
-    let _ = key.delete_value(name);
+fn delete_value(key: &RegKey, name: &str) -> Result<(), String> {
+    match key.delete_value(name) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("删除 Windows 代理设置 {name} 失败：{error}")),
+    }
 }
 
 fn write_optional_string(key: &RegKey, name: &str, value: &Option<String>) -> Result<(), String> {
     if let Some(value) = value {
         key.set_value(name, value).map_err(|e| e.to_string())
     } else {
-        delete_value(key, name);
-        Ok(())
+        delete_value(key, name)
     }
 }
 
@@ -112,7 +116,7 @@ fn write_snapshot(snapshot: &ProxySnapshot) -> Result<(), String> {
         key.set_value("ProxyEnable", &value)
             .map_err(|e| e.to_string())?;
     } else {
-        delete_value(&key, "ProxyEnable");
+        delete_value(&key, "ProxyEnable")?;
     }
     write_optional_string(&key, "ProxyServer", &snapshot.proxy_server)?;
     write_optional_string(&key, "ProxyOverride", &snapshot.proxy_override)?;
@@ -121,9 +125,9 @@ fn write_snapshot(snapshot: &ProxySnapshot) -> Result<(), String> {
         key.set_value("AutoDetect", &value)
             .map_err(|e| e.to_string())?;
     } else {
-        delete_value(&key, "AutoDetect");
+        delete_value(&key, "AutoDetect")?;
     }
-    notify_settings_changed();
+    notify_settings_changed()?;
     Ok(())
 }
 
@@ -140,27 +144,40 @@ fn write_mioproxy_settings(mixed_port: u16, original: &ProxySnapshot) -> Result<
         .unwrap_or("<local>");
     key.set_value("ProxyOverride", &override_value)
         .map_err(|e| e.to_string())?;
-    delete_value(&key, "AutoConfigURL");
-    delete_value(&key, "AutoDetect");
-    notify_settings_changed();
+    delete_value(&key, "AutoConfigURL")?;
+    delete_value(&key, "AutoDetect")?;
+    notify_settings_changed()?;
     Ok(())
 }
 
-fn notify_settings_changed() {
+fn notify_settings_changed() -> Result<(), String> {
     unsafe {
-        let _ = InternetSetOptionW(
+        if InternetSetOptionW(
             std::ptr::null_mut(),
             INTERNET_OPTION_SETTINGS_CHANGED,
             std::ptr::null_mut(),
             0,
-        );
-        let _ = InternetSetOptionW(
+        ) == 0
+        {
+            return Err(format!(
+                "通知 Windows 代理设置变更失败：{}",
+                io::Error::last_os_error()
+            ));
+        }
+        if InternetSetOptionW(
             std::ptr::null_mut(),
             INTERNET_OPTION_REFRESH,
             std::ptr::null_mut(),
             0,
-        );
+        ) == 0
+        {
+            return Err(format!(
+                "刷新 Windows 代理设置失败：{}",
+                io::Error::last_os_error()
+            ));
+        }
     }
+    Ok(())
 }
 
 fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -181,6 +198,12 @@ fn update_state_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn persist_snapshot(app: &AppHandle, snapshot: &ProxySnapshot) -> Result<(), String> {
     let path = state_path(app)?;
+    let bytes = serde_json::to_vec_pretty(snapshot).map_err(|e| e.to_string())?;
+    crate::config::write_atomic(&path, &bytes)
+}
+
+fn persist_update_snapshot(app: &AppHandle, snapshot: &ProxySnapshot) -> Result<(), String> {
+    let path = update_state_path(app)?;
     let bytes = serde_json::to_vec_pretty(snapshot).map_err(|e| e.to_string())?;
     crate::config::write_atomic(&path, &bytes)
 }
@@ -217,49 +240,130 @@ fn clear_persisted_snapshot(app: &AppHandle) -> Result<(), String> {
     crate::config::remove_file(&path, "删除代理状态恢复文件")
 }
 
-fn is_mioproxy_proxy(snapshot: &ProxySnapshot, mixed_port: u16) -> bool {
-    let endpoint = format!("127.0.0.1:{mixed_port}");
-    snapshot.proxy_enable == Some(1) && snapshot.proxy_server.as_deref() == Some(endpoint.as_str())
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxyExpectation {
+    Enabled,
+    UpdateDisabled,
 }
 
-fn should_restore_lifecycle_snapshot(current: &ProxySnapshot, mixed_port: u16) -> bool {
-    is_mioproxy_proxy(current, mixed_port)
+fn has_external_auto_config(snapshot: &ProxySnapshot) -> bool {
+    snapshot
+        .auto_config_url
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || snapshot.auto_detect.is_some_and(|value| value != 0)
+}
+
+fn endpoint_matches(snapshot: &ProxySnapshot, mixed_port: u16) -> bool {
+    let endpoint = format!("127.0.0.1:{mixed_port}");
+    snapshot.proxy_server.as_deref() == Some(endpoint.as_str())
+}
+
+fn is_mioproxy_proxy(snapshot: &ProxySnapshot, mixed_port: u16) -> bool {
+    snapshot.proxy_enable == Some(1)
+        && endpoint_matches(snapshot, mixed_port)
+        && !has_external_auto_config(snapshot)
+}
+
+fn listener_pids(mixed_port: u16) -> Result<Vec<Option<u32>>, String> {
+    Ok(
+        crate::config::windows_tcp_listener_diagnostics(mixed_port, None)?
+            .into_iter()
+            .filter(|listener| listener.state == "listen")
+            .map(|listener| listener.owning_pid)
+            .collect(),
+    )
+}
+
+fn listeners_belong_to(listener_pids: &[Option<u32>], managed_pid: u32) -> bool {
+    !listener_pids.is_empty()
+        && listener_pids
+            .iter()
+            .all(|listener_pid| *listener_pid == Some(managed_pid))
+}
+
+fn current_still_mioproxy_owned(
+    current: &ProxySnapshot,
+    mixed_port: u16,
+    managed_listener_pid: Option<u32>,
+    listener_pids: &[Option<u32>],
+    expectation: ProxyExpectation,
+) -> bool {
+    if !matches_mioproxy_registry_shape(current, mixed_port, expectation) {
+        return false;
+    }
+    if listener_pids.is_empty() {
+        // The managed Core can exit before lifecycle cleanup runs. An unbound,
+        // unchanged MioProxy endpoint is still safe to restore.
+        return true;
+    }
+    managed_listener_pid.is_some_and(|expected| listeners_belong_to(listener_pids, expected))
+}
+
+fn matches_mioproxy_registry_shape(
+    current: &ProxySnapshot,
+    mixed_port: u16,
+    expectation: ProxyExpectation,
+) -> bool {
+    if has_external_auto_config(current) || !endpoint_matches(current, mixed_port) {
+        return false;
+    }
+    let expected_enable = match expectation {
+        ProxyExpectation::Enabled => Some(1),
+        ProxyExpectation::UpdateDisabled => Some(0),
+    };
+    current.proxy_enable == expected_enable
+}
+
+fn should_restore_lifecycle_snapshot(
+    current: &ProxySnapshot,
+    mixed_port: u16,
+    managed_listener_pid: Option<u32>,
+    listener_pids: &[Option<u32>],
+) -> bool {
+    current_still_mioproxy_owned(
+        current,
+        mixed_port,
+        managed_listener_pid,
+        listener_pids,
+        ProxyExpectation::Enabled,
+    )
 }
 
 fn windows_state(snapshot: &ProxySnapshot, mixed_port: u16) -> ProxyWindowsState {
-    if snapshot.proxy_enable != Some(1) {
-        ProxyWindowsState::Disabled
-    } else if is_mioproxy_proxy(snapshot, mixed_port) {
+    if is_mioproxy_proxy(snapshot, mixed_port) {
         ProxyWindowsState::MioProxy
-    } else {
+    } else if snapshot.proxy_enable == Some(1) || has_external_auto_config(snapshot) {
         ProxyWindowsState::External
+    } else {
+        ProxyWindowsState::Disabled
     }
 }
 
 fn actual_state(snapshot: &ProxySnapshot, mixed_port: u16) -> ProxyActualState {
-    if snapshot.proxy_enable != Some(1) {
-        return ProxyActualState::Disabled;
-    }
     if is_mioproxy_proxy(snapshot, mixed_port) {
         return ProxyActualState::MioProxyEndpoint;
     }
-    if snapshot
-        .proxy_server
-        .as_deref()
-        .is_some_and(|endpoint| !endpoint.trim().is_empty())
-    {
+    if snapshot.proxy_enable == Some(1) || has_external_auto_config(snapshot) {
         ProxyActualState::ExternalEndpoint
     } else {
-        ProxyActualState::Unknown
+        ProxyActualState::Disabled
     }
 }
 
-fn owner(actual: ProxyActualState, has_mioproxy_snapshot: bool) -> ProxyOwner {
+fn owner(
+    actual: ProxyActualState,
+    has_mioproxy_snapshot: bool,
+    current_still_owned: bool,
+) -> ProxyOwner {
     match actual {
         ProxyActualState::Disabled => ProxyOwner::None,
         ProxyActualState::ExternalEndpoint => ProxyOwner::External,
-        ProxyActualState::MioProxyEndpoint if has_mioproxy_snapshot => ProxyOwner::MioProxy,
-        ProxyActualState::MioProxyEndpoint | ProxyActualState::Unknown => ProxyOwner::Unknown,
+        ProxyActualState::MioProxyEndpoint if has_mioproxy_snapshot && current_still_owned => {
+            ProxyOwner::MioProxy
+        }
+        ProxyActualState::MioProxyEndpoint if has_mioproxy_snapshot => ProxyOwner::External,
+        ProxyActualState::MioProxyEndpoint => ProxyOwner::External,
     }
 }
 
@@ -267,21 +371,109 @@ fn is_mioproxy_owned(owner: ProxyOwner) -> bool {
     owner == ProxyOwner::MioProxy
 }
 
-fn managed_snapshot_present(app: &AppHandle) -> Result<bool, String> {
+fn managed_core_ready(managed: bool, running: bool) -> bool {
+    managed && running
+}
+
+async fn managed_core_and_listener(
+    app: &AppHandle,
+    mixed_port: u16,
+    listener_pids: &[Option<u32>],
+) -> Result<(bool, bool, Option<u32>), String> {
+    let gui_pid = if let Some(state) = app.try_state::<mihomo::CoreState>() {
+        state
+            .child
+            .lock()
+            .map_err(|_| "CoreState 锁异常")?
+            .as_ref()
+            .map(|child| child.pid())
+    } else {
+        None
+    };
+    let service_status = crate::service::request_service_status(app).await?;
+    let service_pid = service_status
+        .as_ref()
+        .is_some_and(|status| status.owns_core)
+        .then(|| crate::service::persisted_managed_core_pid(app))
+        .flatten();
+    let ready_candidate = gui_pid
+        .or(service_pid)
+        .or_else(|| crate::service::persisted_managed_core_pid(app));
+    let listener_pid = if let Some(candidate) = ready_candidate {
+        let ready = listeners_belong_to(listener_pids, candidate)
+            && mihomo::core_ready_for_pid(mixed_port, candidate).await?;
+        ready.then_some(candidate)
+    } else {
+        None
+    };
+    Ok((listener_pid.is_some(), listener_pid.is_some(), listener_pid))
+}
+
+async fn restore_listener_pid(
+    app: &AppHandle,
+    snapshot: &ProxySnapshot,
+    mixed_port: u16,
+    listener_pids: &[Option<u32>],
+) -> Result<Option<u32>, String> {
+    if listener_pids.is_empty()
+        || snapshot.managed_listener_pid.is_some_and(|expected| {
+            listener_pids
+                .iter()
+                .all(|listener_pid| *listener_pid == Some(expected))
+        })
+    {
+        return Ok(snapshot.managed_listener_pid);
+    }
+    Ok(managed_core_and_listener(app, mixed_port, listener_pids)
+        .await?
+        .2)
+}
+
+fn managed_snapshot(app: &AppHandle) -> Result<Option<ProxySnapshot>, String> {
     let in_memory = if let Some(state) = app.try_state::<SystemProxyState>() {
         state
             .snapshot
             .lock()
             .map_err(|_| "System Proxy 状态锁异常")?
-            .is_some()
+            .clone()
     } else {
-        false
+        None
     };
-    Ok(in_memory || read_persisted_snapshot(app)?.is_some())
+    if in_memory.is_some() {
+        Ok(in_memory)
+    } else {
+        read_persisted_snapshot(app)
+    }
+}
+
+fn managed_snapshot_present(app: &AppHandle) -> Result<bool, String> {
+    Ok(managed_snapshot(app)?.is_some())
+}
+
+fn store_managed_snapshot(app: &AppHandle, snapshot: ProxySnapshot) -> Result<(), String> {
+    persist_snapshot(app, &snapshot)?;
+    if let Some(state) = app.try_state::<SystemProxyState>() {
+        *state
+            .snapshot
+            .lock()
+            .map_err(|_| "System Proxy 状态锁异常")? = Some(snapshot);
+    }
+    Ok(())
+}
+
+fn forget_managed_snapshot(app: &AppHandle) -> Result<(), String> {
+    clear_persisted_snapshot(app)?;
+    if let Some(state) = app.try_state::<SystemProxyState>() {
+        *state
+            .snapshot
+            .lock()
+            .map_err(|_| "System Proxy 状态锁异常")? = None;
+    }
+    Ok(())
 }
 
 pub async fn recover_stale_state(app: &AppHandle) -> Result<(), String> {
-    let Some(snapshot) = read_persisted_snapshot(app)? else {
+    let Some(mut snapshot) = read_persisted_snapshot(app)? else {
         return Ok(());
     };
     let current = read_snapshot()?;
@@ -294,23 +486,23 @@ pub async fn recover_stale_state(app: &AppHandle) -> Result<(), String> {
         }
     };
 
-    if !is_mioproxy_proxy(&current, mixed_port) {
-        eprintln!("检测到非 MioProxy 当前代理状态，保留 System Proxy 期望状态但不恢复");
+    let listeners = listener_pids(mixed_port)?;
+    let expected_pid = restore_listener_pid(app, &snapshot, mixed_port, &listeners).await?;
+    if !should_restore_lifecycle_snapshot(&current, mixed_port, expected_pid, &listeners) {
+        eprintln!("检测到外部 System Proxy 接管，丢弃过期 MioProxy 恢复快照");
         crate::diagnostics::record_event(
             app,
             "info",
             "system-proxy",
-            "Retained desired System Proxy state because Windows state is externally owned",
+            "Discarded stale System Proxy snapshot because Windows state is externally owned",
         );
+        forget_managed_snapshot(app)?;
         return Ok(());
     }
 
     if mihomo::is_running().await {
-        let state = app.state::<SystemProxyState>();
-        *state
-            .snapshot
-            .lock()
-            .map_err(|_| "System Proxy 状态锁异常")? = Some(snapshot);
+        snapshot.managed_listener_pid = expected_pid;
+        store_managed_snapshot(app, snapshot)?;
         eprintln!("Mihomo 仍在运行，保留当前 System Proxy 并延后恢复快照");
         crate::diagnostics::record_event(
             app,
@@ -322,26 +514,53 @@ pub async fn recover_stale_state(app: &AppHandle) -> Result<(), String> {
     }
 
     write_snapshot(&snapshot)?;
-    clear_persisted_snapshot(app)?;
+    forget_managed_snapshot(app)?;
     Ok(())
 }
 
 pub(crate) fn is_enabled_for_update(app: &AppHandle) -> Result<bool, String> {
     let current = read_snapshot()?;
     let mixed_port = mihomo::mixed_port(app)?;
+    let snapshot = managed_snapshot(app)?;
+    let listeners = listener_pids(mixed_port)?;
     Ok(can_disable_for_update(
         &current,
         mixed_port,
-        managed_snapshot_present(app)?,
+        snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.managed_listener_pid),
+        &listeners,
     ))
 }
 
-fn can_disable_for_update(current: &ProxySnapshot, mixed_port: u16, managed: bool) -> bool {
-    managed && is_mioproxy_proxy(current, mixed_port)
+fn can_disable_for_update(
+    current: &ProxySnapshot,
+    mixed_port: u16,
+    managed_listener_pid: Option<u32>,
+    listener_pids: &[Option<u32>],
+) -> bool {
+    current_still_mioproxy_owned(
+        current,
+        mixed_port,
+        managed_listener_pid,
+        listener_pids,
+        ProxyExpectation::Enabled,
+    )
 }
 
-fn can_restore_after_update(current: &ProxySnapshot) -> bool {
-    current.proxy_enable != Some(1)
+fn can_restore_after_update(
+    current: &ProxySnapshot,
+    mixed_port: u16,
+    managed_listener_pid: Option<u32>,
+    listener_pids: &[Option<u32>],
+) -> bool {
+    current_still_mioproxy_owned(
+        current,
+        mixed_port,
+        managed_listener_pid,
+        listener_pids,
+        ProxyExpectation::UpdateDisabled,
+    )
 }
 
 pub(crate) fn is_managed_for_update(app: &AppHandle) -> Result<bool, String> {
@@ -358,21 +577,71 @@ pub(crate) fn is_managed_for_update(app: &AppHandle) -> Result<bool, String> {
 pub(crate) fn disable_for_update(app: &AppHandle) -> Result<bool, String> {
     let current = read_snapshot()?;
     let mixed_port = mihomo::mixed_port(app)?;
-    if !can_disable_for_update(&current, mixed_port, managed_snapshot_present(app)?) {
+    let managed = managed_snapshot(app)?;
+    let managed_listener_pid = managed
+        .as_ref()
+        .and_then(|snapshot| snapshot.managed_listener_pid);
+    let listeners = listener_pids(mixed_port)?;
+    if !can_disable_for_update(&current, mixed_port, managed_listener_pid, &listeners) {
         return Ok(false);
     }
+    let mut update_snapshot = current.clone();
+    update_snapshot.managed_listener_pid = managed_listener_pid;
+    persist_update_snapshot(app, &update_snapshot)?;
     let key = settings_key()?;
-    key.set_value("ProxyEnable", &0u32)
-        .map_err(|e| format!("关闭更新前系统代理失败：{e}"))?;
-    notify_settings_changed();
+    let disabled = key
+        .set_value("ProxyEnable", &0u32)
+        .map_err(|e| format!("关闭更新前系统代理失败：{e}"))
+        .and_then(|()| notify_settings_changed())
+        .and_then(|()| {
+            let verified = read_snapshot()?;
+            if can_restore_after_update(&verified, mixed_port, managed_listener_pid, &listeners) {
+                Ok(())
+            } else {
+                Err(
+                    "关闭更新前系统代理失败：Windows read-back 与 MioProxy 所有权不一致"
+                        .to_string(),
+                )
+            }
+        });
+    if let Err(error) = disabled {
+        let restore_error = write_snapshot(&current).err();
+        let clear_error = clear_update_snapshot(app).err();
+        let mut details = error;
+        if let Some(restore_error) = restore_error {
+            details.push_str(&format!("；恢复更新前代理失败：{restore_error}"));
+        }
+        if let Some(clear_error) = clear_error {
+            details.push_str(&format!("；清理更新代理快照失败：{clear_error}"));
+        }
+        return Err(details);
+    }
     Ok(true)
 }
 
 pub(crate) fn restore_after_update_failure(app: &AppHandle) -> Result<(), String> {
     if let Some(snapshot) = read_update_snapshot(app)? {
         let current = read_snapshot()?;
-        if can_restore_after_update(&current) {
+        let mixed_port = mihomo::mixed_port(app)?;
+        let listeners = listener_pids(mixed_port)?;
+        if can_restore_after_update(
+            &current,
+            mixed_port,
+            snapshot.managed_listener_pid,
+            &listeners,
+        ) {
             write_snapshot(&snapshot)?;
+            clear_update_snapshot(app)?;
+            return Ok(());
+        }
+        if matches_mioproxy_registry_shape(&current, mixed_port, ProxyExpectation::UpdateDisabled) {
+            crate::diagnostics::record_event(
+                app,
+                "info",
+                "system-proxy",
+                "Deferred update System Proxy restore until the restarted managed Core is authenticated",
+            );
+            return Ok(());
         } else {
             crate::diagnostics::record_event(
                 app,
@@ -380,18 +649,45 @@ pub(crate) fn restore_after_update_failure(app: &AppHandle) -> Result<(), String
                 "system-proxy",
                 "Skipped update System Proxy restore because another client owns the current endpoint",
             );
+            clear_update_snapshot(app)?;
+            forget_managed_snapshot(app)?;
+            return Err(
+                "检测到外部 System Proxy 接管，已跳过更新后的 MioProxy 代理恢复".to_string(),
+            );
         }
-        clear_update_snapshot(app)?;
-        return Ok(());
     }
     if let Some(snapshot) = read_persisted_snapshot(app)? {
-        write_snapshot(&snapshot)?;
-        clear_persisted_snapshot(app)?;
-        if let Some(state) = app.try_state::<SystemProxyState>() {
-            *state
-                .snapshot
-                .lock()
-                .map_err(|_| "System Proxy 状态锁异常")? = None;
+        let current = read_snapshot()?;
+        let mixed_port = mihomo::mixed_port(app)?;
+        let listeners = listener_pids(mixed_port)?;
+        if can_restore_after_update(
+            &current,
+            mixed_port,
+            snapshot.managed_listener_pid,
+            &listeners,
+        ) {
+            write_snapshot(&snapshot)?;
+            forget_managed_snapshot(app)?;
+        } else if matches_mioproxy_registry_shape(
+            &current,
+            mixed_port,
+            ProxyExpectation::UpdateDisabled,
+        ) {
+            crate::diagnostics::record_event(
+                app,
+                "info",
+                "system-proxy",
+                "Deferred legacy update System Proxy restore until the restarted managed Core is authenticated",
+            );
+        } else {
+            crate::diagnostics::record_event(
+                app,
+                "info",
+                "system-proxy",
+                "Skipped legacy update System Proxy restore because another client owns the current endpoint",
+            );
+            forget_managed_snapshot(app)?;
+            return Err("检测到外部 System Proxy 接管，已跳过更新后的旧版代理恢复".to_string());
         }
     }
     Ok(())
@@ -402,17 +698,13 @@ pub(crate) fn restore_after_update_success(app: &AppHandle) -> Result<(), String
 }
 
 async fn restore_for_lifecycle_inner(app: &AppHandle) -> Result<(), String> {
-    let state = app.state::<SystemProxyState>();
-    let snapshot = state
-        .snapshot
-        .lock()
-        .map_err(|_| "System Proxy 状态锁异常")?
-        .clone()
-        .or(read_persisted_snapshot(app)?);
+    let snapshot = managed_snapshot(app)?;
     if let Some(snapshot) = snapshot {
         let current = read_snapshot()?;
         let mixed_port = mihomo::mixed_port(app)?;
-        if should_restore_lifecycle_snapshot(&current, mixed_port) {
+        let listeners = listener_pids(mixed_port)?;
+        let expected_pid = restore_listener_pid(app, &snapshot, mixed_port, &listeners).await?;
+        if should_restore_lifecycle_snapshot(&current, mixed_port, expected_pid, &listeners) {
             write_snapshot(&snapshot)?;
             crate::diagnostics::record_event(
                 app,
@@ -428,11 +720,7 @@ async fn restore_for_lifecycle_inner(app: &AppHandle) -> Result<(), String> {
                 "Skipped System Proxy restore because ownership moved to another client",
             );
         }
-        clear_persisted_snapshot(app)?;
-        *state
-            .snapshot
-            .lock()
-            .map_err(|_| "System Proxy 状态锁异常")? = None;
+        forget_managed_snapshot(app)?;
     }
     if let Ok(next) = status(app).await {
         crate::tray::update_proxy_label(app, next.enabled, next.core_running);
@@ -453,43 +741,58 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
     crate::ensure_mutations_allowed(&app)?;
     let _transition = crate::tun::lock_transitions().await;
     if enabled {
-        if let Some(service_status) = crate::service::request_service_status(&app).await? {
-            if service_status.tun_status != "disabled" {
-                return Err("MioProxy Service 正在管理 TUN，不能同时开启系统代理".to_string());
-            }
-            if !service_status.owns_core || !service_status.core.running {
-                return Err("当前 Mihomo 未由 MioProxy Service 管理，拒绝开启系统代理".to_string());
-            }
-        } else {
-            if crate::tun::is_active(&app) {
-                return Err("TUN 已开启，不能同时开启系统代理".to_string());
-            }
-            if !mihomo::owns_core(&app) || !mihomo::is_running().await {
-                return Err("当前 Mihomo 未由 MioProxy 管理，拒绝开启系统代理".to_string());
-            }
-        }
-
-        let state = app.state::<SystemProxyState>();
         let current = read_snapshot()?;
         let mixed_port = mihomo::mixed_port(&app)?;
-        let endpoint = format!("127.0.0.1:{mixed_port}");
-        let owned_by_mioproxy = current.proxy_enable == Some(1)
-            && current.proxy_server.as_deref() == Some(endpoint.as_str())
-            && (state
-                .snapshot
-                .lock()
-                .map_err(|_| "System Proxy 状态锁异常")?
-                .is_some()
-                || read_persisted_snapshot(&app)?.is_some());
-        if owned_by_mioproxy {
-            return status(&app).await;
+        let listeners = listener_pids(mixed_port)?;
+        let (managed, core_running, managed_listener_pid) =
+            managed_core_and_listener(&app, mixed_port, &listeners).await?;
+        if !managed_core_ready(managed, core_running) {
+            return Err(
+                "当前 Mihomo 未达到 MioProxy managed Core Ready，拒绝开启系统代理".to_string(),
+            );
+        }
+        let managed_listener_pid = managed_listener_pid
+            .ok_or_else(|| "无法确认 MioProxy mixed-port 监听 PID，拒绝开启系统代理".to_string())?;
+        let existing = managed_snapshot(&app)?;
+        if let Some(mut snapshot) = existing.clone() {
+            if current_still_mioproxy_owned(
+                &current,
+                mixed_port,
+                Some(managed_listener_pid),
+                &listeners,
+                ProxyExpectation::Enabled,
+            ) {
+                if snapshot.managed_listener_pid != Some(managed_listener_pid) {
+                    snapshot.managed_listener_pid = Some(managed_listener_pid);
+                    store_managed_snapshot(&app, snapshot)?;
+                }
+                clear_update_snapshot(&app)?;
+                return status(&app).await;
+            }
         }
 
-        let snapshot = current;
+        let recovering_disabled = existing.is_some()
+            && current_still_mioproxy_owned(
+                &current,
+                mixed_port,
+                Some(managed_listener_pid),
+                &listeners,
+                ProxyExpectation::UpdateDisabled,
+            );
+        let mut snapshot = if recovering_disabled {
+            existing.ok_or_else(|| "System Proxy 恢复快照意外缺失".to_string())?
+        } else {
+            current.clone()
+        };
+        snapshot.managed_listener_pid = Some(managed_listener_pid);
         persist_snapshot(&app, &snapshot)?;
         if let Err(error) = write_mioproxy_settings(mixed_port, &snapshot) {
-            let restore_error = write_snapshot(&snapshot).err();
-            let clear_error = clear_persisted_snapshot(&app).err();
+            let restore_error = write_snapshot(&current).err();
+            let clear_error = if recovering_disabled {
+                None
+            } else {
+                forget_managed_snapshot(&app).err()
+            };
             let mut details = format!("开启系统代理失败：{error}");
             if let Some(restore_error) = restore_error {
                 details.push_str(&format!("；恢复 Windows 原始代理也失败：{restore_error}"));
@@ -499,11 +802,29 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
             }
             return Err(details);
         }
-        let verified = read_snapshot()?;
-        if !is_mioproxy_proxy(&verified, mixed_port) {
-            let restore_error = write_snapshot(&snapshot).err();
-            let clear_error = clear_persisted_snapshot(&app).err();
-            let mut details = "开启系统代理失败：Windows 未确认 MioProxy endpoint".to_string();
+        let verification = (|| {
+            let verified = read_snapshot()?;
+            let verified_listeners = listener_pids(mixed_port)?;
+            current_still_mioproxy_owned(
+                &verified,
+                mixed_port,
+                Some(managed_listener_pid),
+                &verified_listeners,
+                ProxyExpectation::Enabled,
+            )
+            .then_some(())
+            .ok_or_else(|| {
+                "Windows read-back、PAC/WPAD 或监听 PID 与 MioProxy 所有权不一致".to_string()
+            })
+        })();
+        if let Err(verification_error) = verification {
+            let restore_error = write_snapshot(&current).err();
+            let clear_error = if recovering_disabled {
+                None
+            } else {
+                forget_managed_snapshot(&app).err()
+            };
+            let mut details = format!("开启系统代理失败：{verification_error}");
             if let Some(error) = restore_error {
                 details.push_str(&format!("；恢复 Windows 原始代理也失败：{error}"));
             }
@@ -512,10 +833,8 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
             }
             return Err(details);
         }
-        *state
-            .snapshot
-            .lock()
-            .map_err(|_| "System Proxy 状态锁异常")? = Some(snapshot);
+        store_managed_snapshot(&app, snapshot)?;
+        clear_update_snapshot(&app)?;
         crate::diagnostics::record_event(&app, "info", "system-proxy", "System Proxy enabled");
     } else {
         restore_for_lifecycle_inner(&app).await?;
@@ -531,19 +850,19 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
 pub async fn status(app: &AppHandle) -> Result<SystemProxyStatus, String> {
     let snapshot = read_snapshot()?;
     let mixed_port = mihomo::mixed_port(app)?;
-    let (managed, core_running) =
-        if let Some(service_status) = crate::service::request_service_status(app).await? {
-            (
-                service_status.owns_core,
-                service_status.owns_core && service_status.core.running,
-            )
-        } else {
-            let managed = mihomo::owns_core(app);
-            (managed, managed && mihomo::is_running().await)
-        };
+    let listeners = listener_pids(mixed_port)?;
+    let (managed, core_running, managed_listener_pid) =
+        managed_core_and_listener(app, mixed_port, &listeners).await?;
     let desired_enabled = managed_snapshot_present(app)?;
     let actual_state = actual_state(&snapshot, mixed_port);
-    let owner = owner(actual_state, desired_enabled);
+    let current_still_owned = current_still_mioproxy_owned(
+        &snapshot,
+        mixed_port,
+        managed_listener_pid,
+        &listeners,
+        ProxyExpectation::Enabled,
+    );
+    let owner = owner(actual_state, desired_enabled, current_still_owned);
     let windows_state = windows_state(&snapshot, mixed_port);
     let enabled = is_mioproxy_owned(owner);
     Ok(SystemProxyStatus {
@@ -578,8 +897,8 @@ pub async fn system_proxy_set_enabled(
 mod tests {
     use super::{
         actual_state, can_disable_for_update, can_restore_after_update, is_mioproxy_owned,
-        is_mioproxy_proxy, owner, should_restore_lifecycle_snapshot, windows_state,
-        ProxyActualState, ProxyOwner, ProxySnapshot, ProxyWindowsState,
+        is_mioproxy_proxy, managed_core_ready, owner, should_restore_lifecycle_snapshot,
+        windows_state, ProxyActualState, ProxyOwner, ProxySnapshot, ProxyWindowsState,
     };
 
     fn snapshot(proxy_enable: Option<u32>, proxy_server: Option<&str>) -> ProxySnapshot {
@@ -589,6 +908,23 @@ mod tests {
             proxy_override: None,
             auto_config_url: None,
             auto_detect: None,
+            managed_listener_pid: None,
+        }
+    }
+
+    fn snapshot_with_auto_config(
+        proxy_enable: Option<u32>,
+        proxy_server: Option<&str>,
+        auto_config_url: Option<&str>,
+        auto_detect: Option<u32>,
+    ) -> ProxySnapshot {
+        ProxySnapshot {
+            proxy_enable,
+            proxy_server: proxy_server.map(str::to_string),
+            proxy_override: None,
+            auto_config_url: auto_config_url.map(str::to_string),
+            auto_detect,
+            managed_listener_pid: None,
         }
     }
 
@@ -612,11 +948,27 @@ mod tests {
     fn lifecycle_restore_preserves_an_external_takeover() {
         assert!(should_restore_lifecycle_snapshot(
             &snapshot(Some(1), Some("127.0.0.1:7891")),
-            7891
+            7891,
+            Some(42),
+            &[Some(42)],
         ));
         assert!(!should_restore_lifecycle_snapshot(
             &snapshot(Some(1), Some("127.0.0.1:7890")),
-            7891
+            7891,
+            Some(42),
+            &[Some(42)],
+        ));
+        assert!(!should_restore_lifecycle_snapshot(
+            &snapshot(Some(1), Some("127.0.0.1:7891")),
+            7891,
+            Some(42),
+            &[Some(43)],
+        ));
+        assert!(should_restore_lifecycle_snapshot(
+            &snapshot(Some(1), Some("127.0.0.1:7891")),
+            7891,
+            Some(42),
+            &[],
         ));
     }
 
@@ -643,40 +995,93 @@ mod tests {
             ProxyActualState::MioProxyEndpoint
         );
         assert_eq!(
-            owner(ProxyActualState::MioProxyEndpoint, true),
+            owner(ProxyActualState::MioProxyEndpoint, true, true),
             ProxyOwner::MioProxy
         );
         assert_eq!(
-            owner(ProxyActualState::ExternalEndpoint, false),
+            owner(ProxyActualState::ExternalEndpoint, false, false),
             ProxyOwner::External
         );
-        assert_eq!(owner(ProxyActualState::Disabled, false), ProxyOwner::None);
+        assert_eq!(
+            owner(ProxyActualState::MioProxyEndpoint, true, false),
+            ProxyOwner::External
+        );
+        assert_eq!(
+            owner(ProxyActualState::Disabled, false, false),
+            ProxyOwner::None
+        );
     }
 
     #[test]
     fn external_proxy_never_presents_as_mioproxy_enabled() {
         let actual = actual_state(&snapshot(Some(1), Some("127.0.0.1:7890")), 7893);
-        let owner = owner(actual, true);
+        let owner = owner(actual, true, false);
         assert_eq!(actual, ProxyActualState::ExternalEndpoint);
         assert_eq!(owner, ProxyOwner::External);
         assert!(!is_mioproxy_owned(owner));
     }
 
     #[test]
+    fn system_proxy_requires_only_a_ready_managed_core() {
+        assert!(managed_core_ready(true, true));
+        assert!(!managed_core_ready(false, true));
+        assert!(!managed_core_ready(true, false));
+    }
+
+    #[test]
     fn update_never_disables_an_external_proxy() {
         let external = snapshot(Some(1), Some("127.0.0.1:7890"));
-        assert!(!can_disable_for_update(&external, 7893, false));
-        assert!(!can_disable_for_update(&external, 7893, true));
+        assert!(!can_disable_for_update(&external, 7893, None, &[]));
+        assert!(!can_disable_for_update(
+            &external,
+            7893,
+            Some(42),
+            &[Some(42)]
+        ));
         let owned = snapshot(Some(1), Some("127.0.0.1:7893"));
-        assert!(can_disable_for_update(&owned, 7893, true));
+        assert!(can_disable_for_update(&owned, 7893, Some(42), &[Some(42)]));
+        assert!(!can_disable_for_update(&owned, 7893, Some(42), &[Some(43)]));
     }
 
     #[test]
     fn update_restore_preserves_an_external_takeover() {
-        assert!(can_restore_after_update(&snapshot(Some(0), None)));
-        assert!(!can_restore_after_update(&snapshot(
-            Some(1),
-            Some("127.0.0.1:7890")
-        )));
+        assert!(can_restore_after_update(
+            &snapshot(Some(0), Some("127.0.0.1:7890")),
+            7890,
+            Some(42),
+            &[Some(42)]
+        ));
+        assert!(!can_restore_after_update(
+            &snapshot(Some(1), Some("127.0.0.1:7890")),
+            7890,
+            Some(42),
+            &[Some(42)]
+        ));
+    }
+
+    #[test]
+    fn pac_and_wpad_are_external_occupants() {
+        for external in [
+            snapshot_with_auto_config(Some(0), None, Some("https://example.test/proxy.pac"), None),
+            snapshot_with_auto_config(Some(0), None, None, Some(1)),
+            snapshot_with_auto_config(
+                Some(1),
+                Some("127.0.0.1:7890"),
+                Some("https://example.test/proxy.pac"),
+                None,
+            ),
+        ] {
+            assert_eq!(
+                actual_state(&external, 7890),
+                ProxyActualState::ExternalEndpoint
+            );
+            assert_eq!(windows_state(&external, 7890), ProxyWindowsState::External);
+            assert!(!should_restore_lifecycle_snapshot(
+                &external,
+                7890,
+                Some(42),
+                &[Some(42)]
+            ));
+        }
     }
 }

@@ -30,6 +30,8 @@ use tauri::{AppHandle, Manager};
 use crate::{mihomo, outbound, profiles};
 
 const OVERRIDE_FILE: &str = "local-override.yaml";
+const RUNTIME_OVERRIDE_FILE: &str = "runtime-override.yaml";
+const ACTIVE_BASE_FILE: &str = "active-profile-base.yaml";
 const CANDIDATE_FILE: &str = "config.candidate.yaml";
 const RUNTIME_LISTENER_FILE: &str = "runtime-listener-state.json";
 const ACTIVE_PROFILE_FILE: &str = "active-profile.json";
@@ -95,6 +97,7 @@ pub struct DnsSettings {
 
 pub(crate) struct BuiltConfig {
     pub profile: profiles::Profile,
+    pub base_value: Value,
     pub value: Value,
     pub override_active: bool,
 }
@@ -125,6 +128,14 @@ pub(crate) fn candidate_path_at(data_dir: &Path) -> std::path::PathBuf {
 
 fn override_path_at(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join(OVERRIDE_FILE)
+}
+
+fn runtime_override_path_at(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join(RUNTIME_OVERRIDE_FILE)
+}
+
+fn active_base_path_at(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join(ACTIVE_BASE_FILE)
 }
 
 fn timestamp() -> u64 {
@@ -310,16 +321,30 @@ fn read_override_value_at(data_dir: &Path) -> Result<(Value, String), String> {
     Ok((value, content))
 }
 
+fn read_runtime_override_value_at(data_dir: &Path) -> Result<Value, String> {
+    let path = runtime_override_path_at(data_dir);
+    let Some(content) = read_text_file_at(&path, "读取 Runtime Override")? else {
+        return Ok(empty_mapping());
+    };
+    if content.trim().is_empty() {
+        return Ok(empty_mapping());
+    }
+    let value = serde_yaml::from_str::<Value>(&content)
+        .map_err(|e| format!("Runtime Override YAML 无效：{e}"))?;
+    let Some(map) = value.as_mapping() else {
+        return Err("Runtime Override 根节点必须是 YAML 对象".to_string());
+    };
+    if map
+        .keys()
+        .any(|key| !matches!(key.as_str(), Some("tun") | Some("dns")))
+    {
+        return Err("Runtime Override 只能包含 MioProxy 管理的 tun 或 dns 字段".to_string());
+    }
+    Ok(value)
+}
+
 fn read_override_value(app: &AppHandle) -> Result<(Value, String), String> {
     read_override_value_at(&app_data_dir(app)?)
-}
-
-pub(crate) fn override_content_at(data_dir: &Path) -> Result<String, String> {
-    read_override_value_at(data_dir).map(|(_, content)| content)
-}
-
-pub(crate) fn override_content(app: &AppHandle) -> Result<String, String> {
-    read_override_value(app).map(|(_, content)| content)
 }
 
 fn merge_values(base: &mut Value, overlay: Value) {
@@ -497,15 +522,22 @@ fn port_is_available(port: u16) -> Result<bool, String> {
         && can_bind("::", port))
 }
 
-fn select_available_port(preferred: u16) -> Result<u16, String> {
-    if port_is_available(preferred)? {
-        return Ok(preferred);
-    }
-    for offset in 1..=100 {
+fn scan_available_port<F>(preferred: u16, mut available: F) -> Result<Option<u16>, String>
+where
+    F: FnMut(u16) -> Result<bool, String>,
+{
+    for offset in 0..=100 {
         let candidate = preferred.saturating_add(offset);
-        if candidate != 0 && port_is_available(candidate)? {
-            return Ok(candidate);
+        if candidate != 0 && available(candidate)? {
+            return Ok(Some(candidate));
         }
+    }
+    Ok(None)
+}
+
+fn select_available_port(preferred: u16) -> Result<u16, String> {
+    if let Some(port) = scan_available_port(preferred, port_is_available)? {
+        return Ok(port);
     }
     TcpListener::bind(("127.0.0.1", 0))
         .and_then(|listener| listener.local_addr())
@@ -602,39 +634,6 @@ pub(crate) fn active_profile_id_at(data_dir: &Path) -> Result<Option<String>, St
     Ok(Some(state.profile_id))
 }
 
-fn infer_single_downloaded_profile_id_at(data_dir: &Path) -> Result<Option<String>, String> {
-    let path = data_dir.join("profiles.json");
-    let Some(content) = read_text_file_at(&path, "读取 Profile 数据")? else {
-        return Ok(None);
-    };
-    let profiles = serde_json::from_str::<Vec<profiles::Profile>>(&content)
-        .map_err(|error| format!("Profile 数据损坏：{error}"))?;
-    let mut candidates = profiles.into_iter().filter(|profile| {
-        profile
-            .file_path
-            .as_deref()
-            .is_some_and(|path| Path::new(path).is_file())
-    });
-    let Some(profile) = candidates.next() else {
-        return Ok(None);
-    };
-    if candidates.next().is_some() {
-        return Ok(None);
-    }
-    Ok(Some(profile.id))
-}
-
-pub(crate) fn active_or_inferred_profile_id_at(data_dir: &Path) -> Result<Option<String>, String> {
-    if let Some(profile_id) = active_profile_id_at(data_dir)? {
-        return Ok(Some(profile_id));
-    }
-    let Some(profile_id) = infer_single_downloaded_profile_id_at(data_dir)? else {
-        return Ok(None);
-    };
-    set_active_profile_id_at(data_dir, &profile_id)?;
-    Ok(Some(profile_id))
-}
-
 pub(crate) fn set_active_profile_id_at(data_dir: &Path, profile_id: &str) -> Result<(), String> {
     let value = serde_json::to_vec(&ActiveProfileState {
         profile_id: profile_id.to_string(),
@@ -643,12 +642,129 @@ pub(crate) fn set_active_profile_id_at(data_dir: &Path, profile_id: &str) -> Res
     write_atomic(&data_dir.join(ACTIVE_PROFILE_FILE), &value)
 }
 
-pub(crate) fn restore_active_profile_config_at(data_dir: &Path) -> Result<bool, String> {
-    let Some(profile_id) = active_or_inferred_profile_id_at(data_dir)? else {
+pub(crate) fn clear_active_profile_if_matches_at(
+    data_dir: &Path,
+    profile_id: &str,
+) -> Result<(), String> {
+    if active_profile_id_at(data_dir)?.as_deref() == Some(profile_id) {
+        remove_file(
+            &data_dir.join(ACTIVE_PROFILE_FILE),
+            "清理已删除 Profile 的活动来源指针",
+        )?;
+    }
+    Ok(())
+}
+
+fn read_active_base_at(data_dir: &Path) -> Result<Option<Value>, String> {
+    let path = active_base_path_at(data_dir);
+    let Some(content) = read_text_file_at(&path, "读取活动 Profile 基线")? else {
+        return Ok(None);
+    };
+    let value = serde_yaml::from_str::<Value>(&content)
+        .map_err(|error| format!("活动 Profile 基线损坏：{error}"))?;
+    if !value.is_mapping() {
+        return Err("活动 Profile 基线根节点必须是 YAML 对象".to_string());
+    }
+    Ok(Some(value))
+}
+
+fn read_active_base_or_migrate_at(data_dir: &Path) -> Result<Option<Value>, String> {
+    if let Some(value) = read_active_base_at(data_dir)? {
+        return Ok(Some(value));
+    }
+    let Some(content) = read_text_file_at(&config_path_at(data_dir), "读取旧 Runtime 配置")?
+    else {
+        return Ok(None);
+    };
+    let value = serde_yaml::from_str::<Value>(&content)
+        .map_err(|error| format!("旧 Runtime 配置损坏：{error}"))?;
+    validate_config(&value)?;
+    write_active_base_at(data_dir, &value)?;
+    Ok(Some(value))
+}
+
+fn write_active_base_at(data_dir: &Path, value: &Value) -> Result<(), String> {
+    let yaml = serde_yaml::to_string(value)
+        .map_err(|error| format!("生成活动 Profile 基线失败：{error}"))?;
+    write_atomic(&active_base_path_at(data_dir), yaml.as_bytes())
+}
+
+fn restore_optional_file(path: &Path, content: Option<&str>, label: &str) -> Result<(), String> {
+    match content {
+        Some(content) => write_atomic(path, content.as_bytes()),
+        None => remove_file(path, label),
+    }
+}
+
+pub(crate) fn commit_runtime_state_at(
+    data_dir: &Path,
+    profile_id: &str,
+    base_value: &Value,
+    runtime_yaml: &str,
+) -> Result<(), String> {
+    let stable_path = config_path_at(data_dir);
+    let base_path = active_base_path_at(data_dir);
+    let active_path = data_dir.join(ACTIVE_PROFILE_FILE);
+    let previous_stable = read_text_file_at(&stable_path, "读取旧 Runtime 配置")?;
+    let previous_base = read_text_file_at(&base_path, "读取旧活动 Profile 基线")?;
+    let previous_active = read_text_file_at(&active_path, "读取旧活动 Profile 状态")?;
+
+    let commit = write_active_base_at(data_dir, base_value)
+        .and_then(|_| write_atomic(&stable_path, runtime_yaml.as_bytes()))
+        .and_then(|_| set_active_profile_id_at(data_dir, profile_id));
+    if let Err(error) = commit {
+        let mut rollback_errors = Vec::new();
+        if let Err(rollback) = restore_optional_file(
+            &base_path,
+            previous_base.as_deref(),
+            "回滚活动 Profile 基线",
+        ) {
+            rollback_errors.push(rollback);
+        }
+        if let Err(rollback) = restore_optional_file(
+            &stable_path,
+            previous_stable.as_deref(),
+            "回滚 Runtime 配置",
+        ) {
+            rollback_errors.push(rollback);
+        }
+        if let Err(rollback) = restore_optional_file(
+            &active_path,
+            previous_active.as_deref(),
+            "回滚活动 Profile 状态",
+        ) {
+            rollback_errors.push(rollback);
+        }
+        return Err(if rollback_errors.is_empty() {
+            error
+        } else {
+            format!("{error}；回滚持久状态失败：{}", rollback_errors.join("；"))
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn restore_active_runtime_config_at(data_dir: &Path) -> Result<bool, String> {
+    let Some(mut value) = read_active_base_or_migrate_at(data_dir)? else {
         return Ok(false);
     };
-    restore_profile_config_at(data_dir, &profile_id)?;
+    apply_runtime_layers(data_dir, &mut value)?;
+    let yaml = serde_yaml::to_string(&value)
+        .map_err(|error| format!("生成活动 Runtime 配置失败：{error}"))?;
+    write_atomic(&config_path_at(data_dir), yaml.as_bytes())?;
     Ok(true)
+}
+
+pub(crate) fn active_runtime_value_at(data_dir: &Path) -> Result<Option<Value>, String> {
+    let Some(mut value) = read_active_base_or_migrate_at(data_dir)? else {
+        return Ok(None);
+    };
+    apply_runtime_layers(data_dir, &mut value)?;
+    Ok(Some(value))
+}
+
+pub(crate) fn restore_active_profile_config_at(data_dir: &Path) -> Result<bool, String> {
+    restore_active_runtime_config_at(data_dir)
 }
 
 pub(crate) fn clear_actual_runtime_mixed_port_at(data_dir: &Path) -> Result<(), String> {
@@ -784,9 +900,37 @@ pub(crate) fn build_value_at(data_dir: &Path, profile_id: &str) -> Result<BuiltC
         serde_yaml::from_str::<Value>(&source).map_err(|e| format!("Profile YAML 无效：{e}"))?;
     let (override_value, override_content) = read_override_value_at(data_dir)?;
     merge_values(&mut base, override_value);
+    validate_config(&base)?;
+    let base_value = base.clone();
+    apply_runtime_layers(data_dir, &mut base)?;
+    Ok(BuiltConfig {
+        profile,
+        base_value,
+        value: base,
+        override_active: !override_content.trim().is_empty(),
+    })
+}
+
+fn apply_runtime_layers(data_dir: &Path, base: &mut Value) -> Result<(), String> {
+    let runtime_override = read_runtime_override_value_at(data_dir)?;
+    let tun_enabled = runtime_override
+        .as_mapping()
+        .and_then(|map| mapping_value(map, "tun"))
+        .and_then(Value::as_mapping)
+        .and_then(|tun| mapping_value(tun, "enable"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    merge_values(base, runtime_override);
     let map = base
         .as_mapping_mut()
         .ok_or_else(|| "Profile YAML 根节点必须是 YAML 对象".to_string())?;
+    let existing_tun = map.remove(value_key("tun")).unwrap_or_else(empty_mapping);
+    let mut tun = existing_tun;
+    let tun_map = tun
+        .as_mapping_mut()
+        .ok_or_else(|| "最终配置的 tun 必须是 YAML 对象".to_string())?;
+    tun_map.insert(value_key("enable"), Value::Bool(tun_enabled));
+    map.insert(value_key("tun"), tun);
     map.insert(
         value_key("external-controller"),
         Value::String(mihomo::CONTROLLER.to_string()),
@@ -799,12 +943,8 @@ pub(crate) fn build_value_at(data_dir: &Path, profile_id: &str) -> Result<BuiltC
         map.insert(value_key("mixed-port"), Value::Number(port.into()));
     }
     apply_auto_outbound_compatibility(map);
-    validate_config(&base)?;
-    Ok(BuiltConfig {
-        profile,
-        value: base,
-        override_active: !override_content.trim().is_empty(),
-    })
+    validate_config(base)?;
+    Ok(())
 }
 
 fn apply_auto_outbound_compatibility(map: &mut Mapping) -> outbound::OutboundCompatibility {
@@ -835,12 +975,18 @@ fn apply_auto_outbound_compatibility_with(
         return;
     };
     if mapping_value(dns, "proxy-server-nameserver").is_none() {
+        let resolvers = ["default-nameserver", "nameserver"]
+            .into_iter()
+            .find_map(|key| {
+                mapping_value(dns, key)
+                    .and_then(Value::as_sequence)
+                    .filter(|values| !values.is_empty())
+                    .cloned()
+            })
+            .unwrap_or_else(|| vec![Value::String("system".to_string())]);
         dns.insert(
             value_key("proxy-server-nameserver"),
-            Value::Sequence(vec![
-                Value::String("tls://223.5.5.5".to_string()),
-                Value::String("https://dns.alidns.com/dns-query".to_string()),
-            ]),
+            Value::Sequence(resolvers),
         );
     }
 }
@@ -879,26 +1025,14 @@ fn is_network_path(_path: &Path) -> bool {
     false
 }
 
-pub(crate) fn configured_tun_enabled_at(data_dir: &Path, profile_id: &str) -> Result<bool, String> {
-    let built = build_value_at(data_dir, profile_id)?;
-    Ok(built
-        .value
+pub(crate) fn tun_enabled_in_value(value: &Value) -> bool {
+    value
         .as_mapping()
         .and_then(|map| mapping_value(map, "tun"))
         .and_then(Value::as_mapping)
         .and_then(|tun| mapping_value(tun, "enable"))
         .and_then(Value::as_bool)
-        .unwrap_or(false))
-}
-
-pub(crate) fn restore_profile_config_at(data_dir: &Path, profile_id: &str) -> Result<(), String> {
-    let built = build_value_at(data_dir, profile_id)?;
-    let yaml = serde_yaml::to_string(&built.value).map_err(|e| format!("生成恢复配置失败：{e}"))?;
-    write_atomic(&config_path_at(data_dir), yaml.as_bytes())
-}
-
-pub(crate) fn restore_profile_config(app: &AppHandle, profile_id: &str) -> Result<(), String> {
-    restore_profile_config_at(&app_data_dir(app)?, profile_id)
+        .unwrap_or(false)
 }
 
 fn build_value(
@@ -1028,16 +1162,7 @@ async fn ensure_override_editable(
     app: &AppHandle,
 ) -> Result<tokio::sync::MutexGuard<'static, ()>, String> {
     crate::ensure_mutations_allowed(app)?;
-    let transition = crate::tun::lock_transitions().await;
-    if crate::tun::is_active(app) {
-        return Err("请先关闭 TUN，再编辑 Local Override".to_string());
-    }
-    if let Some(tun) = crate::service::service_tun_status(app).await? {
-        if tun.status != crate::tun::TunStatus::Disabled {
-            return Err("请先关闭 Service 管理的 TUN，再编辑 Local Override".to_string());
-        }
-    }
-    Ok(transition)
+    Ok(crate::tun::lock_transitions().await)
 }
 
 pub(crate) fn restore_override_content_at(data_dir: &Path, content: &str) -> Result<(), String> {
@@ -1060,45 +1185,53 @@ pub(crate) fn restore_override_content(app: &AppHandle, content: &str) -> Result
 }
 
 pub(crate) fn set_tun_enabled_at(data_dir: &Path, enabled: bool) -> Result<(), String> {
-    let (mut value, _) = read_override_value_at(data_dir)?;
+    let mut value = read_runtime_override_value_at(data_dir)?;
     let map = value
         .as_mapping_mut()
-        .ok_or_else(|| "本地 Override 根节点必须是 YAML 对象".to_string())?;
+        .ok_or_else(|| "Runtime Override 根节点必须是 YAML 对象".to_string())?;
+    if !enabled {
+        map.remove(value_key("tun"));
+        map.remove(value_key("dns"));
+        if map.is_empty() {
+            return remove_file(
+                &runtime_override_path_at(data_dir),
+                "清理 TUN Runtime Override",
+            );
+        }
+        let content = serde_yaml::to_string(&value)
+            .map_err(|e| format!("生成 Runtime Override YAML 失败：{e}"))?;
+        return write_atomic(&runtime_override_path_at(data_dir), content.as_bytes());
+    }
     let existing_tun = map.remove(value_key("tun")).unwrap_or_else(empty_mapping);
     let mut tun = existing_tun;
     let tun_map = tun
         .as_mapping_mut()
-        .ok_or_else(|| "Local Override 的 tun 必须是 YAML 对象".to_string())?;
+        .ok_or_else(|| "Runtime Override 的 tun 必须是 YAML 对象".to_string())?;
     tun_map.insert(value_key("enable"), Value::Bool(enabled));
-    if enabled {
-        let existing_dns = map.remove(value_key("dns")).unwrap_or_else(empty_mapping);
-        let mut dns = existing_dns;
-        let dns_map = dns
-            .as_mapping_mut()
-            .ok_or_else(|| "Local Override 的 dns 必须是 YAML 对象".to_string())?;
-        dns_map.insert(value_key("enable"), Value::Bool(true));
-        map.insert(value_key("dns"), dns);
-        tun_map.insert(value_key("stack"), Value::String("mixed".to_string()));
-        tun_map.insert(value_key("device"), Value::String("MioProxy".to_string()));
-        tun_map.insert(value_key("auto-route"), Value::Bool(true));
-        tun_map.insert(value_key("auto-detect-interface"), Value::Bool(true));
-        tun_map.insert(value_key("strict-route"), Value::Bool(true));
-        tun_map.insert(
-            value_key("dns-hijack"),
-            Value::Sequence(vec![
-                Value::String("any:53".to_string()),
-                Value::String("tcp://any:53".to_string()),
-            ]),
-        );
-    }
+    let existing_dns = map.remove(value_key("dns")).unwrap_or_else(empty_mapping);
+    let mut dns = existing_dns;
+    let dns_map = dns
+        .as_mapping_mut()
+        .ok_or_else(|| "Runtime Override 的 dns 必须是 YAML 对象".to_string())?;
+    dns_map.insert(value_key("enable"), Value::Bool(true));
+    map.insert(value_key("dns"), dns);
+    tun_map.insert(value_key("stack"), Value::String("mixed".to_string()));
+    tun_map.insert(value_key("device"), Value::String("MioProxy".to_string()));
+    tun_map.insert(value_key("auto-route"), Value::Bool(true));
+    tun_map.insert(value_key("auto-detect-interface"), Value::Bool(true));
+    tun_map.insert(value_key("strict-route"), Value::Bool(true));
+    tun_map.insert(
+        value_key("dns-hijack"),
+        Value::Sequence(vec![
+            Value::String("any:53".to_string()),
+            Value::String("tcp://any:53".to_string()),
+        ]),
+    );
     map.insert(value_key("tun"), tun);
-    let content = if value.as_mapping().is_some_and(Mapping::is_empty) {
-        String::new()
-    } else {
-        serde_yaml::to_string(&value).map_err(|e| format!("生成 Override YAML 失败：{e}"))?
-    };
+    let content = serde_yaml::to_string(&value)
+        .map_err(|e| format!("生成 Runtime Override YAML 失败：{e}"))?;
     validate_config(&value)?;
-    write_atomic(&override_path_at(data_dir), content.as_bytes())
+    write_atomic(&runtime_override_path_at(data_dir), content.as_bytes())
 }
 
 pub(crate) fn set_tun_enabled(app: &AppHandle, enabled: bool) -> Result<(), String> {
@@ -1137,7 +1270,8 @@ pub async fn override_set(app: AppHandle, content: String) -> Result<OverrideSna
 }
 
 #[tauri::command]
-pub fn config_preview(app: AppHandle, profile_id: String) -> Result<ConfigPreview, String> {
+pub async fn config_preview(app: AppHandle, profile_id: String) -> Result<ConfigPreview, String> {
+    let _registry = crate::profiles::lock_registry().await;
     let (profile, value, override_active) = build_value(&app, &profile_id)?;
     let yaml = serde_yaml::to_string(&value).map_err(|e| format!("生成最终配置失败：{e}"))?;
     Ok(ConfigPreview {
@@ -1152,50 +1286,107 @@ pub(crate) async fn apply_config(
     app: AppHandle,
     profile_id: String,
 ) -> Result<ConfigApplyResult, String> {
-    let (profile, value, override_active) = build_value(&app, &profile_id)?;
-    let yaml = serde_yaml::to_string(&value).map_err(|e| format!("生成最终配置失败：{e}"))?;
+    let data_dir = app_data_dir(&app)?;
+    let built = build_value_at(&data_dir, &profile_id)?;
+    let profile_name = built.profile.name.clone();
+    let override_active = built.override_active;
+    let expected_tun = tun_enabled_in_value(&built.value);
+    let yaml = serde_yaml::to_string(&built.value).map_err(|e| format!("生成最终配置失败：{e}"))?;
     let stable = config_path(&app)?;
     let candidate = candidate_path(&app)?;
+    let previous_stable = read_text_file_at(&stable, "读取当前 Runtime 配置")?
+        .ok_or_else(|| "当前 Runtime 配置不存在，拒绝无回滚点应用 Profile".to_string())?;
     write_atomic(&candidate, yaml.as_bytes())?;
-    if !mihomo::is_running().await {
-        let _ = fs::remove_file(&candidate);
-        return Err("Mihomo 未运行，应用配置前请先启动内核以完成 Controller 校验".to_string());
+    if let Err(error) = mihomo::ensure_managed_core(&app).await {
+        let _ = remove_file(&candidate, "清理候选配置");
+        return Err(format!("Core 尚未 Ready，无法应用 Profile：{error}"));
     }
-    match mihomo::api_put(
+    if let Err(error) = mihomo::api_put(
         "/configs?force=true",
         json!({ "path": candidate.display().to_string() }),
     )
     .await
     {
-        Ok(_) => {}
-        Err(error) => {
-            let _ = fs::remove_file(&candidate);
-            return Err(format!("Mihomo 配置校验失败，已保留当前配置：{error}"));
-        }
-    };
-    write_atomic(&stable, yaml.as_bytes())?;
-    set_active_profile_id_at(&app_data_dir(&app)?, &profile_id)?;
-    let _ = fs::remove_file(&candidate);
+        let _ = remove_file(&candidate, "清理候选配置");
+        return Err(format!("Mihomo 配置校验失败，已保留当前配置：{error}"));
+    }
+    let finish = async {
+        verify_controller_runtime(Some(expected_tun)).await?;
+        commit_runtime_state_at(&data_dir, &profile_id, &built.base_value, &yaml)
+    }
+    .await;
+    if let Err(error) = finish {
+        let stable_restore = write_atomic(&stable, previous_stable.as_bytes());
+        let controller_restore = if stable_restore.is_ok() {
+            mihomo::api_put(
+                "/configs?force=true",
+                json!({ "path": stable.display().to_string() }),
+            )
+            .await
+            .map(|_| ())
+        } else {
+            Err("旧 Runtime 配置文件恢复失败".to_string())
+        };
+        let _ = remove_file(&candidate, "清理候选配置");
+        return Err(match (stable_restore, controller_restore) {
+            (Ok(()), Ok(())) => format!("应用 Profile 事务失败，已回滚：{error}"),
+            (stable_result, controller_result) => format!(
+                "应用 Profile 事务失败：{error}；Runtime 回滚：{}；Controller 回滚：{}",
+                stable_result.err().unwrap_or_else(|| "成功".to_string()),
+                controller_result
+                    .err()
+                    .unwrap_or_else(|| "成功".to_string())
+            ),
+        });
+    }
+    let _ = remove_file(&candidate, "清理候选配置");
     Ok(ConfigApplyResult {
         profile_id,
-        profile_name: profile.name,
+        profile_name,
         path: stable.display().to_string(),
         controller_validated: true,
         override_active,
     })
 }
 
+pub(crate) async fn verify_controller_runtime(expected_tun: Option<bool>) -> Result<(), String> {
+    let configs = mihomo::api_get("/configs")
+        .await
+        .map_err(|error| format!("Controller 配置回读失败：{error}"))?;
+    let proxies = mihomo::api_get("/proxies")
+        .await
+        .map_err(|error| format!("Controller 代理组回读失败：{error}"))?;
+    if !proxies.is_object() {
+        return Err("Controller /proxies 返回格式无效".to_string());
+    }
+    if let Some(expected) = expected_tun {
+        let actual = configs
+            .get("tun")
+            .and_then(|tun| tun.as_object())
+            .and_then(|tun| tun.get("enable"))
+            .and_then(|enabled| enabled.as_bool())
+            .unwrap_or(false);
+        if actual != expected {
+            return Err(format!(
+                "Controller TUN 回读不一致：期望 {expected}，实际 {actual}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub async fn apply_profile(app: AppHandle, profile_id: String) -> Result<String, String> {
     crate::ensure_mutations_allowed(&app)?;
     let _transition = crate::tun::lock_transitions().await;
-    if crate::tun::is_active(&app) {
-        return Err("请先关闭 TUN，再切换 Profile".to_string());
-    }
+    crate::tun::ensure_profile_apply_allowed(&app)?;
+    let _registry = crate::profiles::lock_registry().await;
     let result =
         if let Some(result) = crate::service::request_apply_profile(&app, &profile_id).await? {
             result
         } else {
-            apply_config(app, profile_id).await?
+            let result = apply_config(app.clone(), profile_id.clone()).await?;
+            crate::tun::rebind_active_profile(&app, &profile_id)?;
+            result
         };
     Ok(format!(
         "{} · {} · {}",
@@ -1213,17 +1404,19 @@ pub async fn apply_profile(app: AppHandle, profile_id: String) -> Result<String,
 pub async fn config_apply(app: AppHandle, profile_id: String) -> Result<ConfigApplyResult, String> {
     crate::ensure_mutations_allowed(&app)?;
     let _transition = crate::tun::lock_transitions().await;
-    if crate::tun::is_active(&app) {
-        return Err("请先关闭 TUN，再应用配置".to_string());
-    }
+    crate::tun::ensure_profile_apply_allowed(&app)?;
+    let _registry = crate::profiles::lock_registry().await;
     if let Some(result) = crate::service::request_apply_profile(&app, &profile_id).await? {
         return Ok(result);
     }
-    apply_config(app, profile_id).await
+    let result = apply_config(app.clone(), profile_id.clone()).await?;
+    crate::tun::rebind_active_profile(&app, &profile_id)?;
+    Ok(result)
 }
 
 #[tauri::command]
-pub fn dns_get(app: AppHandle, profile_id: String) -> Result<DnsSettings, String> {
+pub async fn dns_get(app: AppHandle, profile_id: String) -> Result<DnsSettings, String> {
+    let _registry = crate::profiles::lock_registry().await;
     let (_, value, _) = build_value(&app, &profile_id)?;
     let dns = value.as_mapping().and_then(|map| mapping_value(map, "dns"));
     Ok(settings_from_value(dns.unwrap_or(&Value::Null)))
@@ -1248,15 +1441,16 @@ mod tests {
     use std::{
         fs,
         net::TcpListener,
+        sync::{Mutex, MutexGuard, OnceLock},
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::{
-        active_or_inferred_profile_id_at, active_profile_id_at, actual_runtime_mixed_port_at,
-        apply_auto_outbound_compatibility_with, clear_actual_runtime_mixed_port_at,
-        commit_actual_runtime_mixed_port_at, listener_owner, merge_values, port_is_available,
-        prepare_runtime_resources_at, restore_override_content_at, restore_profile_config_at,
-        runtime_mixed_port_at, select_available_port, set_active_profile_id_at, set_tun_enabled_at,
+        active_profile_id_at, actual_runtime_mixed_port_at, apply_auto_outbound_compatibility_with,
+        build_value_at, clear_actual_runtime_mixed_port_at, commit_actual_runtime_mixed_port_at,
+        commit_runtime_state_at, listener_owner, merge_values, port_is_available,
+        prepare_runtime_resources_at, restore_active_runtime_config_at, runtime_mixed_port_at,
+        scan_available_port, select_available_port, set_active_profile_id_at, set_tun_enabled_at,
         validate_config, ListenerOwner,
     };
     #[cfg(windows)]
@@ -1266,6 +1460,11 @@ mod tests {
         outbound::{Confidence, InterfaceKind, OutboundCompatibility, OutboundInterface},
     };
     use serde_yaml::{Mapping, Value};
+
+    fn network_test_guard() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     fn foreign_compatibility(alias: &str) -> OutboundCompatibility {
         OutboundCompatibility {
@@ -1290,17 +1489,29 @@ mod tests {
     }
 
     #[test]
-    fn injects_owned_interface_and_encrypted_node_dns_for_foreign_tun() {
+    fn injects_owned_interface_and_system_node_dns_for_foreign_tun() {
         let mut map = Mapping::new();
         apply_auto_outbound_compatibility_with(&mut map, &foreign_compatibility("Ethernet"));
         assert_eq!(map["interface-name"].as_str(), Some("Ethernet"));
         assert_eq!(
             map["dns"]["proxy-server-nameserver"][0].as_str(),
-            Some("tls://223.5.5.5")
+            Some("system")
         );
+    }
+
+    #[test]
+    fn derives_node_dns_from_user_resolvers() {
+        let mut map = serde_yaml::from_str::<Value>(
+            "dns:\n  default-nameserver: [192.0.2.53]\n  nameserver: [system]\n",
+        )
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .clone();
+        apply_auto_outbound_compatibility_with(&mut map, &foreign_compatibility("Ethernet"));
         assert_eq!(
-            map["dns"]["proxy-server-nameserver"][1].as_str(),
-            Some("https://dns.alidns.com/dns-query")
+            map["dns"]["proxy-server-nameserver"][0].as_str(),
+            Some("192.0.2.53")
         );
     }
 
@@ -1340,53 +1551,16 @@ mod tests {
     }
 
     #[test]
-    fn migrates_exactly_one_downloaded_profile_to_active_state() {
-        let data_dir = std::env::temp_dir().join(format!(
-            "mioproxy-active-profile-migration-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let profiles_dir = data_dir.join("profiles");
-        fs::create_dir_all(&profiles_dir).unwrap();
-        let source = profiles_dir.join("only.yaml");
-        fs::write(&source, "proxies: []\n").unwrap();
-        fs::write(
-            data_dir.join("profiles.json"),
-            serde_json::to_vec(&serde_json::json!([{
-                "id": "profile-1",
-                "name": "Only",
-                "url": "https://example.invalid/profile",
-                "filePath": source,
-            }]))
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            active_or_inferred_profile_id_at(&data_dir)
-                .unwrap()
-                .as_deref(),
-            Some("profile-1")
-        );
-        assert_eq!(
-            active_profile_id_at(&data_dir).unwrap().as_deref(),
-            Some("profile-1")
-        );
-        let _ = fs::remove_dir_all(data_dir);
-    }
-
-    #[test]
     fn merges_nested_override_without_mutating_unrelated_values() {
         let mut base = serde_yaml::from_str::<Value>(
-            "dns:\n  enable: false\n  nameserver: [1.1.1.1]\nrules: [MATCH,DIRECT]\n",
+            "dns:\n  enable: false\n  nameserver: [1.1.1.1]\nrules: ['MATCH,DIRECT']\n",
         )
         .unwrap();
         let override_value = serde_yaml::from_str::<Value>("dns:\n  enable: true\n").unwrap();
         merge_values(&mut base, override_value);
         assert_eq!(base["dns"]["enable"].as_bool(), Some(true));
         assert_eq!(base["dns"]["nameserver"][0].as_str(), Some("1.1.1.1"));
-        assert!(base["rules"].is_sequence());
+        assert_eq!(base["rules"][0].as_str(), Some("MATCH,DIRECT"));
     }
 
     #[test]
@@ -1409,6 +1583,7 @@ mod tests {
 
     #[test]
     fn treats_ipv6_listener_as_a_port_conflict() {
+        let _guard = network_test_guard();
         let listener = TcpListener::bind(("::", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         #[cfg(windows)]
@@ -1427,6 +1602,7 @@ mod tests {
 
     #[test]
     fn treats_ipv4_listener_as_a_port_conflict() {
+        let _guard = network_test_guard();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         #[cfg(windows)]
@@ -1444,6 +1620,7 @@ mod tests {
 
     #[test]
     fn detects_a_listener_owned_by_the_managed_pid() {
+        let _guard = network_test_guard();
         let listener = TcpListener::bind(("::1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         #[cfg(windows)]
@@ -1463,22 +1640,8 @@ mod tests {
 
     #[test]
     fn skips_three_consecutive_occupied_ports() {
-        for _ in 0..200 {
-            let first = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-            let port = first.local_addr().unwrap().port();
-            let Ok(second) = TcpListener::bind(("127.0.0.1", port.saturating_add(1))) else {
-                continue;
-            };
-            let Ok(third) = TcpListener::bind(("127.0.0.1", port.saturating_add(2))) else {
-                continue;
-            };
-            let selected = select_available_port(port).unwrap();
-            assert!(selected >= port + 3);
-            assert!(port_is_available(selected).unwrap());
-            drop((first, second, third));
-            return;
-        }
-        panic!("could not reserve three consecutive local test ports");
+        let selected = scan_available_port(20_000, |port| Ok(port >= 20_003)).unwrap();
+        assert_eq!(selected, Some(20_003));
     }
 
     #[test]
@@ -1501,15 +1664,16 @@ mod tests {
 
     #[test]
     fn selects_a_different_port_when_ipv6_owns_the_preferred_port() {
+        let _guard = network_test_guard();
         let listener = TcpListener::bind(("::", 0)).unwrap();
         let preferred = listener.local_addr().unwrap().port();
         let selected = select_available_port(preferred).unwrap();
         assert_ne!(selected, preferred);
-        assert!(port_is_available(selected).unwrap());
     }
 
     #[test]
     fn records_the_selected_runtime_mixed_port() {
+        let _guard = network_test_guard();
         let data_dir = std::env::temp_dir().join(format!(
             "mioproxy-runtime-port-test-{}",
             SystemTime::now()
@@ -1541,7 +1705,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_tun_route_and_dns_override_without_touching_subscription() {
+    fn runtime_tun_layer_preserves_source_and_local_override() {
         let data_dir = std::env::temp_dir().join(format!(
             "mioproxy-config-test-{}",
             SystemTime::now()
@@ -1549,29 +1713,83 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        fs::create_dir_all(&data_dir).unwrap();
-        let override_path = data_dir.join("local-override.yaml");
+        let profiles_dir = data_dir.join("profiles");
+        fs::create_dir_all(&profiles_dir).unwrap();
+        let source_path = profiles_dir.join("profile.yaml");
+        let source = "mixed-port: 7890\ntun:\n  enable: true\nproxies: []\nproxy-groups: []\nrules: [MATCH,DIRECT]\n";
+        fs::write(&source_path, source).unwrap();
         fs::write(
-            &override_path,
-            "dns:\n  enable: false\n  nameserver: [1.1.1.1]\n",
+            data_dir.join("profiles.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "id": "profile-1",
+                "name": "Layering",
+                "url": "https://example.invalid/profile",
+                "filePath": source_path,
+            }]))
+            .unwrap(),
         )
         .unwrap();
+        let override_path = data_dir.join("local-override.yaml");
+        let local_override = "dns:\n  enable: false\n  nameserver: [system]\n";
+        fs::write(&override_path, local_override).unwrap();
+
+        let off = build_value_at(&data_dir, "profile-1").unwrap();
+        assert_eq!(off.value["tun"]["enable"].as_bool(), Some(false));
         set_tun_enabled_at(&data_dir, true).unwrap();
-        let value =
-            serde_yaml::from_str::<Value>(&fs::read_to_string(&override_path).unwrap()).unwrap();
-        assert_eq!(value["dns"]["enable"].as_bool(), Some(true));
-        assert_eq!(value["dns"]["nameserver"][0].as_str(), Some("1.1.1.1"));
-        assert_eq!(value["tun"]["enable"].as_bool(), Some(true));
-        assert_eq!(value["tun"]["auto-route"].as_bool(), Some(true));
-        assert_eq!(value["tun"]["auto-detect-interface"].as_bool(), Some(true));
-        assert_eq!(value["tun"]["dns-hijack"][0].as_str(), Some("any:53"));
-        restore_override_content_at(
-            &data_dir,
-            "dns:\n  enable: false\n  nameserver: [1.1.1.1]\n",
+        let both = build_value_at(&data_dir, "profile-1").unwrap();
+        assert_eq!(both.value["mixed-port"].as_i64(), Some(7890));
+        assert_eq!(both.value["tun"]["enable"].as_bool(), Some(true));
+        assert_eq!(both.value["tun"]["auto-route"].as_bool(), Some(true));
+        set_tun_enabled_at(&data_dir, false).unwrap();
+        let proxy_only = build_value_at(&data_dir, "profile-1").unwrap();
+        assert_eq!(proxy_only.value["mixed-port"].as_i64(), Some(7890));
+        assert_eq!(proxy_only.value["tun"]["enable"].as_bool(), Some(false));
+        assert_eq!(fs::read_to_string(&override_path).unwrap(), local_override);
+        assert_eq!(fs::read_to_string(&source_path).unwrap(), source);
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn downloaded_source_update_does_not_change_active_runtime() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "mioproxy-active-generation-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let profiles_dir = data_dir.join("profiles");
+        fs::create_dir_all(&profiles_dir).unwrap();
+        let source_path = profiles_dir.join("profile.yaml");
+        fs::write(
+            &source_path,
+            "mixed-port: 7890\nrules: [DOMAIN,old.example,DIRECT]\n",
         )
         .unwrap();
-        let restored = fs::read_to_string(override_path).unwrap();
-        assert_eq!(restored, "dns:\n  enable: false\n  nameserver: [1.1.1.1]\n");
+        fs::write(
+            data_dir.join("profiles.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "id": "profile-1",
+                "name": "Pinned",
+                "url": "https://example.invalid/profile",
+                "filePath": source_path,
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+        let built = build_value_at(&data_dir, "profile-1").unwrap();
+        let yaml = serde_yaml::to_string(&built.value).unwrap();
+        commit_runtime_state_at(&data_dir, "profile-1", &built.base_value, &yaml).unwrap();
+
+        fs::write(
+            &source_path,
+            "mixed-port: 7890\nrules: [DOMAIN,new.example,PROXY]\n",
+        )
+        .unwrap();
+        restore_active_runtime_config_at(&data_dir).unwrap();
+        let runtime = fs::read_to_string(data_dir.join("config.yaml")).unwrap();
+        assert!(runtime.contains("old.example"));
+        assert!(!runtime.contains("new.example"));
         let _ = fs::remove_dir_all(data_dir);
     }
 
@@ -1585,31 +1803,16 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(&data_dir).unwrap();
-        let profiles_dir = data_dir.join("profiles");
-        fs::create_dir_all(&profiles_dir).unwrap();
-        let source_path = profiles_dir.join("profile.yaml");
         fs::write(
-            &source_path,
-            "mixed-port: 7890\nproxies: []\nproxy-groups: []\nrules: [MATCH,DIRECT]\n",
+            data_dir.join("config.yaml"),
+            "mixed-port: 7890\ntun:\n  enable: true\nproxies: []\nproxy-groups: []\nrules: [MATCH,DIRECT]\n",
         )
         .unwrap();
-        fs::write(
-            data_dir.join("profiles.json"),
-            serde_json::to_vec(&serde_json::json!([{
-                "id": "profile-1",
-                "name": "Recovery",
-                "url": "https://example.invalid/profile",
-                "filePath": source_path,
-            }]))
-            .unwrap(),
-        )
-        .unwrap();
-        fs::write(data_dir.join("config.yaml"), "tun:\n  enable: true\n").unwrap();
 
-        restore_profile_config_at(&data_dir, "profile-1").unwrap();
+        restore_active_runtime_config_at(&data_dir).unwrap();
         let restored = fs::read_to_string(data_dir.join("config.yaml")).unwrap();
         let value = serde_yaml::from_str::<Value>(&restored).unwrap();
-        assert!(value.get("tun").is_none());
+        assert_eq!(value["tun"]["enable"].as_bool(), Some(false));
         assert_eq!(
             value["external-controller"].as_str(),
             Some(mihomo::CONTROLLER)

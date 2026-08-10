@@ -4,7 +4,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex, OnceLock,
+        Arc, Mutex, OnceLock,
     },
     time::Duration,
 };
@@ -28,7 +28,6 @@ use super::{logs, traffic};
 // common defaults used by other Mihomo clients and are not identity markers.
 pub(crate) const CONTROLLER: &str = "127.0.0.1:19090";
 const CONTROLLER_SECRET_FILE: &str = "controller-secret";
-const LEGACY_CONTROLLER_SECRET: &str = "mioproxy-v01-local";
 const DEFAULT_DELAY_URL: &str = "https://www.gstatic.com/generate_204";
 static CONTROLLER_SECRET: OnceLock<String> = OnceLock::new();
 // Keep fallback-core startup and termination recovery in one lifecycle critical
@@ -158,6 +157,8 @@ pub(crate) fn secret() -> &'static str {
 pub struct CoreState {
     pub child: Mutex<Option<CommandChild>>,
     pub stop_requested: AtomicBool,
+    ready_observed: AtomicBool,
+    last_error: Mutex<Option<String>>,
 }
 
 impl Default for CoreState {
@@ -165,13 +166,27 @@ impl Default for CoreState {
         Self {
             child: Mutex::new(None),
             stop_requested: AtomicBool::new(false),
+            ready_observed: AtomicBool::new(false),
+            last_error: Mutex::new(None),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CoreUserState {
+    #[default]
+    Stopped,
+    Starting,
+    Ready,
+    Error,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoreStatus {
+    #[serde(default)]
+    pub state: CoreUserState,
     pub running: bool,
     pub controller: String,
     pub config_path: String,
@@ -278,27 +293,6 @@ pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String>
     api_put_with_secret(path, payload, secret()).await
 }
 
-async fn migrate_legacy_controller_session(app: &AppHandle) -> Result<bool, String> {
-    let (_, config) = runtime_paths(app)?;
-    if crate::config::read_text_file_at(&config, "读取 Mihomo 配置")?.is_none() {
-        return Ok(false);
-    }
-    let payload = serde_json::json!({ "path": config.display().to_string() });
-    if api_put_with_secret("/configs?force=true", payload, LEGACY_CONTROLLER_SECRET)
-        .await
-        .is_err()
-    {
-        return Ok(false);
-    }
-    for _ in 0..20 {
-        if is_running().await {
-            return Ok(true);
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Err("检测到旧版 Mihomo 会话，但切换 Controller 令牌后仍无法连接".to_string())
-}
-
 pub(crate) async fn api_delete(path: &str) -> Result<Value, String> {
     let url = format!("http://{CONTROLLER}{path}");
     let response = Client::builder()
@@ -334,8 +328,53 @@ pub(crate) fn encode_path_segment(value: &str) -> String {
     encoded
 }
 
+fn required_listener_ready(
+    listeners: &[crate::config::TcpListenerDiagnostic],
+    mixed_port: u16,
+    managed_pid: u32,
+) -> bool {
+    listeners.iter().any(|listener| {
+        listener.owner == crate::config::ListenerOwner::MioProxyManaged
+            && listener.owning_pid == Some(managed_pid)
+            && listener.address_family == "ipv4"
+            && matches!(listener.local_address.as_str(), "127.0.0.1" | "0.0.0.0")
+            && listener.local_port == mixed_port
+            && listener.state == "listen"
+    })
+}
+
+fn all_ready_signals(
+    has_managed_pid: bool,
+    version_authenticated: bool,
+    proxies_authenticated: bool,
+    required_listener: bool,
+) -> bool {
+    has_managed_pid && version_authenticated && proxies_authenticated && required_listener
+}
+
+async fn authenticated_controller_ready() -> bool {
+    let (version, proxies) = tokio::join!(api_get("/version"), api_get("/proxies"));
+    version.is_ok() && proxies.is_ok()
+}
+
+pub(crate) async fn core_ready_for_pid(mixed_port: u16, managed_pid: u32) -> Result<bool, String> {
+    let (version, proxies) = tokio::join!(api_get("/version"), api_get("/proxies"));
+    let version_authenticated = version.is_ok();
+    let proxies_authenticated = proxies.is_ok();
+    if !version_authenticated || !proxies_authenticated {
+        return Ok(false);
+    }
+    let listeners = crate::config::windows_tcp_listener_diagnostics(mixed_port, Some(managed_pid))?;
+    Ok(all_ready_signals(
+        true,
+        version_authenticated,
+        proxies_authenticated,
+        required_listener_ready(&listeners, mixed_port, managed_pid),
+    ))
+}
+
 pub(crate) async fn is_running() -> bool {
-    api_get("/version").await.is_ok()
+    authenticated_controller_ready().await
 }
 
 pub(crate) fn owns_core<R: Runtime>(app: &AppHandle<R>) -> bool {
@@ -344,15 +383,106 @@ pub(crate) fn owns_core<R: Runtime>(app: &AppHandle<R>) -> bool {
         .unwrap_or(false)
 }
 
+fn managed_pid(state: &CoreState) -> Result<Option<u32>, String> {
+    state
+        .child
+        .lock()
+        .map(|child| child.as_ref().map(CommandChild::pid))
+        .map_err(|_| "CoreState 锁异常".to_string())
+}
+
+fn take_managed_child_if_pid(
+    state: &CoreState,
+    expected_pid: u32,
+) -> Result<Option<CommandChild>, String> {
+    let mut child = state.child.lock().map_err(|_| "CoreState 锁异常")?;
+    if child
+        .as_ref()
+        .is_some_and(|managed| managed.pid() == expected_pid)
+    {
+        Ok(child.take())
+    } else {
+        Ok(None)
+    }
+}
+
+fn stop_child_after_failed_start(state: &CoreState, expected_pid: u32) -> Result<(), String> {
+    state.stop_requested.store(true, Ordering::SeqCst);
+    if let Some(child) = take_managed_child_if_pid(state, expected_pid)? {
+        let _ = child.kill();
+    }
+    Ok(())
+}
+
+fn classify_user_state(
+    managed_pid: Option<u32>,
+    ready: bool,
+    recovery_message: Option<&str>,
+) -> CoreUserState {
+    if managed_pid.is_some() && ready {
+        CoreUserState::Ready
+    } else if recovery_message.is_some() {
+        CoreUserState::Error
+    } else if managed_pid.is_some() {
+        CoreUserState::Starting
+    } else {
+        CoreUserState::Stopped
+    }
+}
+
+fn gui_status_is_authoritative(state: CoreUserState, has_managed_child: bool) -> bool {
+    has_managed_child || matches!(state, CoreUserState::Ready | CoreUserState::Starting)
+}
+
+fn set_last_error(state: &CoreState, error: Option<String>) -> Result<(), String> {
+    *state
+        .last_error
+        .lock()
+        .map_err(|_| "CoreState 锁异常".to_string())? = error;
+    Ok(())
+}
+
+fn record_start_result<T>(state: &CoreState, result: Result<T, String>) -> Result<T, String> {
+    result.map_err(|error| match set_last_error(state, Some(error.clone())) {
+        Ok(()) => error,
+        Err(state_error) => format!("{error}；记录 Core Error 失败：{state_error}"),
+    })
+}
+
+fn last_error(state: &CoreState) -> Result<Option<String>, String> {
+    state
+        .last_error
+        .lock()
+        .map(|error| error.clone())
+        .map_err(|_| "CoreState 锁异常".to_string())
+}
+
+async fn persisted_service_core_pid_if_ready(app: &AppHandle) -> Result<Option<u32>, String> {
+    let Some(pid) = crate::service::persisted_managed_core_pid(app) else {
+        return Ok(None);
+    };
+    if core_ready_for_pid(mixed_port(app)?, pid).await? {
+        Ok(Some(pid))
+    } else {
+        Ok(None)
+    }
+}
+
 pub(crate) async fn ensure_managed_core(app: &AppHandle) -> Result<(), String> {
-    if owns_core(app) && is_running().await {
-        return Ok(());
+    let state = app.state::<CoreState>();
+    if let Some(pid) = managed_pid(state.inner())? {
+        if core_ready_for_pid(mixed_port(app)?, pid).await? {
+            return Ok(());
+        }
     }
     if let Some(status) = crate::service::request_service_status(app).await? {
         if status.owns_core && status.core.running {
             return Ok(());
         }
         return Err("当前 Mihomo 未由 MioProxy 管理，拒绝执行控制操作".to_string());
+    }
+    if persisted_service_core_pid_if_ready(app).await?.is_some() {
+        return Ok(());
     }
     if is_running().await {
         return Err("检测到非 MioProxy 管理的 Mihomo，拒绝执行控制操作".to_string());
@@ -380,16 +510,48 @@ fn mode(app: &AppHandle) -> Result<String, String> {
     Ok(runtime.mode.unwrap_or_else(|| "rule".to_string()))
 }
 
-fn status_for(app: &AppHandle, running: bool) -> Result<CoreStatus, String> {
+fn status_for(
+    app: &AppHandle,
+    state: CoreUserState,
+    recovery_message: Option<String>,
+) -> Result<CoreStatus, String> {
     let (_, config) = runtime_paths(app)?;
     Ok(CoreStatus {
-        running,
+        state,
+        running: state == CoreUserState::Ready,
         controller: CONTROLLER.to_string(),
         config_path: config.display().to_string(),
         mixed_port: mixed_port(app)?,
         mode: mode(app)?,
-        recovery_message: None,
+        recovery_message,
     })
+}
+
+async fn gui_owned_status(app: &AppHandle, state: &CoreState) -> Result<CoreStatus, String> {
+    let pid = managed_pid(state)?;
+    let mut probe_error = None;
+    let ready = if let Some(pid) = pid {
+        match core_ready_for_pid(mixed_port(app)?, pid).await {
+            Ok(ready) => ready,
+            Err(error) => {
+                probe_error = Some(format!("检查 Mihomo Ready 状态失败：{error}"));
+                false
+            }
+        }
+    } else {
+        false
+    };
+    let recovery_message = if ready {
+        state.ready_observed.store(true, Ordering::SeqCst);
+        None
+    } else {
+        probe_error.or(last_error(state)?).or_else(|| {
+            (pid.is_some() && state.ready_observed.load(Ordering::SeqCst))
+                .then(|| "Mihomo 已失去 Ready 状态".to_string())
+        })
+    };
+    let user_state = classify_user_state(pid, ready, recovery_message.as_deref());
+    status_for(app, user_state, recovery_message)
 }
 
 #[tauri::command]
@@ -418,22 +580,16 @@ pub(crate) async fn start_owned_for_lifecycle(app: &AppHandle) -> Result<CoreSta
 }
 
 async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatus, String> {
-    let child_owned = state
-        .child
-        .lock()
-        .map_err(|_| "CoreState 锁异常")?
-        .is_some();
-    if is_running().await {
-        if !child_owned {
-            return Err("检测到非 MioProxy 管理的 Mihomo，拒绝接管或复用".to_string());
-        }
+    let existing_status = gui_owned_status(app, state).await?;
+    if existing_status.state == CoreUserState::Ready {
+        set_last_error(state, None)?;
         traffic::start(app);
         logs::start(app);
         crate::tray::update_current_node(app).await;
         if let Ok(proxy_status) = crate::system_proxy::status(app).await {
             crate::tray::update_proxy_label(app, proxy_status.enabled, proxy_status.core_running);
         }
-        return status_for(app, true);
+        return Ok(existing_status);
     }
 
     // A terminated sidecar can stop answering before its event handler has
@@ -449,36 +605,56 @@ async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatu
         return Err("Mihomo 正在执行退出恢复，请稍后重试".to_string());
     }
 
-    if migrate_legacy_controller_session(app).await? {
+    if persisted_service_core_pid_if_ready(app).await?.is_some() {
         traffic::start(app);
         logs::start(app);
         crate::tray::update_current_node(app).await;
-        return status_for(app, true);
+        if let Ok(proxy_status) = crate::system_proxy::status(app).await {
+            crate::tray::update_proxy_label(app, proxy_status.enabled, proxy_status.core_running);
+        }
+        return status_for(app, CoreUserState::Ready, None);
     }
 
-    let config = ensure_default_config(app)?;
-    crate::config::prepare_runtime_resources_at(&config, CONTROLLER, secret())?;
-    let dir = config.parent().ok_or("无法确定配置目录")?.to_path_buf();
-    let command = app
-        .shell()
-        .sidecar("mihomo")
-        .map_err(|e| format!("找不到 Mihomo sidecar：{e}。请先运行 npm run mihomo:setup"))?
-        .args(vec![
-            "-d".to_string(),
-            dir.display().to_string(),
-            "-f".to_string(),
-            config.display().to_string(),
-        ]);
+    if is_running().await {
+        return Err("检测到非 MioProxy 管理的 Mihomo，拒绝接管或复用".to_string());
+    }
 
-    let (mut rx, child) = command
-        .spawn()
-        .map_err(|e| format!("Mihomo 启动失败：{e}"))?;
+    set_last_error(state, None)?;
+    let prepared = (|| {
+        let (dir, _) = runtime_paths(app)?;
+        let _ = crate::config::restore_active_runtime_config_at(&dir)?;
+        let config = ensure_default_config(app)?;
+        crate::config::clear_actual_runtime_mixed_port_at(&dir)?;
+        let mixed_port =
+            crate::config::prepare_runtime_resources_at(&config, CONTROLLER, secret())?;
+        Ok::<_, String>((dir, config, mixed_port))
+    })();
+    let (dir, config, mixed_port) = record_start_result(state, prepared)?;
+    let command = record_start_result(
+        state,
+        app.shell()
+            .sidecar("mihomo")
+            .map_err(|e| format!("找不到 Mihomo sidecar：{e}。请先运行 npm run mihomo:setup")),
+    )?
+    .args(vec![
+        "-d".to_string(),
+        dir.display().to_string(),
+        "-f".to_string(),
+        config.display().to_string(),
+    ]);
+
+    let (mut rx, child) = record_start_result(
+        state,
+        command.spawn().map_err(|e| format!("Mihomo 启动失败：{e}")),
+    )?;
+    let spawned_pid = child.pid();
     state.stop_requested.store(false, Ordering::SeqCst);
+    state.ready_observed.store(false, Ordering::SeqCst);
     *state.child.lock().map_err(|_| "CoreState 锁异常")? = Some(child);
     crate::diagnostics::record_event(app, "info", "mihomo", "GUI Mihomo started");
-    traffic::start(app);
-    logs::start(app);
 
+    let exited_before_ready = Arc::new(AtomicBool::new(false));
+    let exit_signal = Arc::clone(&exited_before_ready);
     let emitter = app.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
@@ -490,6 +666,7 @@ async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatu
                     let _ = emitter.emit("mihomo-log", String::from_utf8_lossy(&bytes).to_string());
                 }
                 CommandEvent::Terminated(payload) => {
+                    exit_signal.store(true, Ordering::SeqCst);
                     let _lifecycle = CORE_LIFECYCLE_LOCK.lock().await;
                     traffic::stop(&emitter);
                     logs::stop(&emitter);
@@ -497,17 +674,28 @@ async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatu
                     // Keep the child marker set until rollback is complete so a
                     // concurrent start cannot load the still-TUN-enabled config.
                     crate::tun::on_mihomo_exit(&emitter).await;
+                    if let Ok((data_dir, _)) = runtime_paths(&emitter) {
+                        let _ = crate::config::clear_actual_runtime_mixed_port_at(&data_dir);
+                    }
                     if let Ok(mut child) = emitter.state::<CoreState>().child.lock() {
                         *child = None;
                     }
+                    emitter
+                        .state::<CoreState>()
+                        .ready_observed
+                        .store(false, Ordering::SeqCst);
                     crate::tray::update_current_node(&emitter).await;
                     let stop_requested = emitter
                         .state::<CoreState>()
                         .stop_requested
                         .swap(false, Ordering::SeqCst);
-                    if !stop_requested
-                        && (payload.code.is_some_and(|code| code != 0) || payload.signal.is_some())
-                    {
+                    let abnormal =
+                        payload.code.is_some_and(|code| code != 0) || payload.signal.is_some();
+                    if !stop_requested && abnormal {
+                        let _ = set_last_error(
+                            emitter.state::<CoreState>().inner(),
+                            Some("Mihomo 异常退出".to_string()),
+                        );
                         crate::diagnostics::record_event(
                             &emitter,
                             "error",
@@ -516,6 +704,9 @@ async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatu
                         );
                         let _ = emitter.emit("mihomo-crashed", ());
                     } else {
+                        if !abnormal {
+                            let _ = set_last_error(emitter.state::<CoreState>().inner(), None);
+                        }
                         crate::diagnostics::record_event(
                             &emitter,
                             "info",
@@ -530,25 +721,60 @@ async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatu
         }
     });
 
-    let tray_app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        for _ in 0..10 {
-            if is_running().await {
-                break;
+    let mut readiness_error = None;
+    let mut terminated_early = false;
+    for _ in 0..50 {
+        match core_ready_for_pid(mixed_port, spawned_pid).await {
+            Ok(true) => {
+                if exited_before_ready.load(Ordering::SeqCst) {
+                    terminated_early = true;
+                    break;
+                }
+                if let Err(error) =
+                    crate::config::commit_actual_runtime_mixed_port_at(&dir, mixed_port)
+                {
+                    stop_child_after_failed_start(state, spawned_pid)?;
+                    let error = format!("保存 Mihomo Ready 监听状态失败：{error}");
+                    set_last_error(state, Some(error.clone()))?;
+                    let _ = app.emit("mihomo-crashed", ());
+                    return Err(error);
+                }
+                state.ready_observed.store(true, Ordering::SeqCst);
+                traffic::start(app);
+                logs::start(app);
+                crate::tray::update_current_node(app).await;
+                if let Ok(proxy_status) = crate::system_proxy::status(app).await {
+                    crate::tray::update_proxy_label(
+                        app,
+                        proxy_status.enabled,
+                        proxy_status.core_running,
+                    );
+                }
+                return status_for(app, CoreUserState::Ready, None);
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            Ok(false) => {}
+            Err(error) => readiness_error = Some(error),
         }
-        crate::tray::update_current_node(&tray_app).await;
-        if let Ok(proxy_status) = crate::system_proxy::status(&tray_app).await {
-            crate::tray::update_proxy_label(
-                &tray_app,
-                proxy_status.enabled,
-                proxy_status.core_running,
-            );
+        if exited_before_ready.load(Ordering::SeqCst) {
+            terminated_early = true;
+            break;
         }
-    });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 
-    status_for(app, true)
+    stop_child_after_failed_start(state, spawned_pid)?;
+    let error = if terminated_early {
+        format!("Mihomo 在达到 Ready 前退出（PID {spawned_pid}）")
+    } else {
+        readiness_error.map_or_else(
+            || format!("Mihomo 未能在 10 秒内达到 Ready（PID {spawned_pid}）"),
+            |reason| format!("Mihomo 未能在 10 秒内达到 Ready：{reason}"),
+        )
+    };
+    set_last_error(state, Some(error.clone()))?;
+    crate::diagnostics::record_event(app, "error", "mihomo", &error);
+    let _ = app.emit("mihomo-crashed", ());
+    Err(error)
 }
 
 #[tauri::command]
@@ -590,10 +816,15 @@ pub async fn mihomo_stop(
     if let Some(child) = state.child.lock().map_err(|_| "CoreState 锁异常")?.take() {
         child.kill().map_err(|e| format!("停止 Mihomo 失败：{e}"))?;
     }
+    set_last_error(state.inner(), None)?;
+    state.ready_observed.store(false, Ordering::SeqCst);
+    if let Ok((data_dir, _)) = runtime_paths(&app) {
+        let _ = crate::config::clear_actual_runtime_mixed_port_at(&data_dir);
+    }
     crate::diagnostics::record_event(&app, "info", "mihomo", "GUI Mihomo stop requested");
     crate::system_proxy::restore_for_lifecycle(&app).await?;
     crate::tray::update_current_node(&app).await;
-    status_for(&app, false)
+    status_for(&app, CoreUserState::Stopped, None)
 }
 
 pub(crate) async fn stop_owned_for_update(app: &AppHandle) -> Result<(), String> {
@@ -611,6 +842,8 @@ pub(crate) async fn stop_owned_for_update(app: &AppHandle) -> Result<(), String>
             .kill()
             .map_err(|error| format!("停止 GUI 管理的 Mihomo 失败：{error}"))?;
     }
+    set_last_error(state.inner(), None)?;
+    state.ready_observed.store(false, Ordering::SeqCst);
     for _ in 0..50 {
         if !is_running().await && !owns_core(app) {
             return Ok(());
@@ -622,13 +855,24 @@ pub(crate) async fn stop_owned_for_update(app: &AppHandle) -> Result<(), String>
 
 #[tauri::command]
 pub async fn mihomo_status(app: AppHandle) -> Result<CoreStatus, String> {
+    let state = app.state::<CoreState>();
+    let has_gui_child = managed_pid(state.inner())?.is_some();
+    let gui_status = gui_owned_status(&app, state.inner()).await?;
+    if gui_status_is_authoritative(gui_status.state, has_gui_child) {
+        return Ok(gui_status);
+    }
     if let Some(status) = crate::service::request_service_status(&app).await? {
         if !status.core.running && !status.owns_core {
             crate::system_proxy::restore_after_core_exit(&app).await;
         }
         return Ok(status.core);
     }
-    status_for(&app, is_running().await)
+    if gui_status.state != CoreUserState::Ready
+        && persisted_service_core_pid_if_ready(&app).await?.is_some()
+    {
+        return status_for(&app, CoreUserState::Ready, None);
+    }
+    Ok(gui_status)
 }
 
 #[tauri::command]
@@ -661,14 +905,28 @@ pub async fn mihomo_rule_provider_update(app: AppHandle, name: String) -> Result
     .await
 }
 
+fn selected_node_from_snapshot(value: &Value) -> Option<String> {
+    let groups = value
+        .get("proxies")
+        .and_then(Value::as_object)
+        .or_else(|| value.as_object())?;
+    groups
+        .get("PROXY")
+        .and_then(|group| group.get("now"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            groups
+                .values()
+                .find_map(|group| group.get("now").and_then(Value::as_str))
+        })
+        .map(ToOwned::to_owned)
+}
+
 pub async fn current_node() -> Option<String> {
-    api_get("/proxies").await.ok().and_then(|value| {
-        value
-            .get("PROXY")
-            .and_then(|group| group.get("now"))
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-    })
+    api_get("/proxies")
+        .await
+        .ok()
+        .and_then(|value| selected_node_from_snapshot(&value))
 }
 
 #[tauri::command]
@@ -678,7 +936,7 @@ pub async fn mihomo_reload(app: AppHandle) -> Result<Value, String> {
     }
     let (_, config) = runtime_paths(&app)?;
     if crate::config::read_text_file_at(&config, "读取 Mihomo 配置")?.is_none() {
-        return Err("运行配置不存在，请先启动内核".to_string());
+        return Err("运行配置不存在，请等待 Core Ready".to_string());
     }
     ensure_managed_core(&app).await?;
     api_put(
@@ -718,4 +976,184 @@ pub async fn mihomo_proxy_delay(proxy: String, url: Option<String>) -> Result<Va
         Duration::from_secs(7),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        all_ready_signals, classify_user_state, gui_status_is_authoritative,
+        required_listener_ready, selected_node_from_snapshot, CoreStatus, CoreUserState,
+    };
+    use crate::config::{ListenerOwner, TcpListenerDiagnostic};
+
+    fn listener(
+        address_family: &str,
+        local_address: &str,
+        local_port: u16,
+        owning_pid: Option<u32>,
+        owner: ListenerOwner,
+    ) -> TcpListenerDiagnostic {
+        TcpListenerDiagnostic {
+            address_family: address_family.to_string(),
+            local_address: local_address.to_string(),
+            local_port,
+            state: "listen".to_string(),
+            owning_pid,
+            owner,
+        }
+    }
+
+    #[test]
+    fn user_state_requires_every_ready_signal() {
+        assert_eq!(
+            classify_user_state(Some(42), true, None),
+            CoreUserState::Ready
+        );
+        assert_eq!(
+            classify_user_state(Some(42), false, None),
+            CoreUserState::Starting
+        );
+        assert_eq!(
+            classify_user_state(None, true, None),
+            CoreUserState::Stopped
+        );
+        assert_eq!(
+            classify_user_state(None, false, None),
+            CoreUserState::Stopped
+        );
+        assert_eq!(
+            classify_user_state(Some(42), false, Some("health failed")),
+            CoreUserState::Error
+        );
+        assert_eq!(
+            classify_user_state(None, false, Some("start failed")),
+            CoreUserState::Error
+        );
+    }
+
+    #[test]
+    fn ready_requires_pid_both_authenticated_endpoints_and_listener() {
+        assert!(all_ready_signals(true, true, true, true));
+        assert!(!all_ready_signals(false, true, true, true));
+        assert!(!all_ready_signals(true, false, true, true));
+        assert!(!all_ready_signals(true, true, false, true));
+        assert!(!all_ready_signals(true, true, true, false));
+    }
+
+    #[test]
+    fn gui_child_status_wins_over_a_recovered_non_owner_service() {
+        assert!(gui_status_is_authoritative(CoreUserState::Ready, false));
+        assert!(gui_status_is_authoritative(CoreUserState::Starting, false));
+        assert!(gui_status_is_authoritative(CoreUserState::Error, true));
+        assert!(!gui_status_is_authoritative(CoreUserState::Stopped, false));
+        assert!(!gui_status_is_authoritative(CoreUserState::Error, false));
+    }
+
+    #[test]
+    fn ready_listener_must_be_owned_ipv4_loopback_or_wildcard() {
+        let loopback = listener(
+            "ipv4",
+            "127.0.0.1",
+            7890,
+            Some(42),
+            ListenerOwner::MioProxyManaged,
+        );
+        let wildcard = listener(
+            "ipv4",
+            "0.0.0.0",
+            7890,
+            Some(42),
+            ListenerOwner::MioProxyManaged,
+        );
+        assert!(required_listener_ready(&[loopback], 7890, 42));
+        assert!(required_listener_ready(&[wildcard], 7890, 42));
+    }
+
+    #[test]
+    fn ipv6_only_external_or_wrong_listener_never_counts_as_ready() {
+        let listeners = [
+            listener(
+                "ipv6",
+                "::1",
+                7890,
+                Some(42),
+                ListenerOwner::MioProxyManaged,
+            ),
+            listener("ipv4", "127.0.0.1", 7890, Some(43), ListenerOwner::External),
+            listener(
+                "ipv4",
+                "192.0.2.1",
+                7890,
+                Some(42),
+                ListenerOwner::MioProxyManaged,
+            ),
+            listener(
+                "ipv4",
+                "127.0.0.1",
+                7891,
+                Some(42),
+                ListenerOwner::MioProxyManaged,
+            ),
+        ];
+        assert!(!required_listener_ready(&listeners, 7890, 42));
+    }
+
+    #[test]
+    fn core_status_serializes_the_four_lowercase_states() {
+        for (state, expected) in [
+            (CoreUserState::Stopped, "stopped"),
+            (CoreUserState::Starting, "starting"),
+            (CoreUserState::Ready, "ready"),
+            (CoreUserState::Error, "error"),
+        ] {
+            let status = CoreStatus {
+                state,
+                running: state == CoreUserState::Ready,
+                controller: "127.0.0.1:19090".to_string(),
+                config_path: "config.yaml".to_string(),
+                mixed_port: 7890,
+                mode: "rule".to_string(),
+                recovery_message: None,
+            };
+            let value = serde_json::to_value(status).unwrap();
+            assert_eq!(value["state"], expected);
+            assert_eq!(value["running"], state == CoreUserState::Ready);
+        }
+    }
+
+    #[test]
+    fn selected_node_prefers_proxy_group() {
+        let snapshot = serde_json::json!({
+            "proxies": {
+                "AUTO": { "now": "auto-node" },
+                "PROXY": { "now": "selected-node" }
+            }
+        });
+        assert_eq!(
+            selected_node_from_snapshot(&snapshot).as_deref(),
+            Some("selected-node")
+        );
+    }
+
+    #[test]
+    fn selected_node_falls_back_to_first_group_with_now() {
+        let nested = serde_json::json!({
+            "proxies": {
+                "DIRECT": { "type": "Direct" },
+                "PROXY": { "type": "Selector" },
+                "PRIMARY": { "now": "profile-node" }
+            }
+        });
+        let legacy_root = serde_json::json!({
+            "PRIMARY": { "now": "legacy-node" }
+        });
+        assert_eq!(
+            selected_node_from_snapshot(&nested).as_deref(),
+            Some("profile-node")
+        );
+        assert_eq!(
+            selected_node_from_snapshot(&legacy_root).as_deref(),
+            Some("legacy-node")
+        );
+    }
 }

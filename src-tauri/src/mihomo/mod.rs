@@ -7,10 +7,11 @@ pub use connections::{mihomo_close_all_connections, mihomo_close_connection, mih
 pub use controller::{
     current_node, mihomo_proxies, mihomo_proxy_delay, mihomo_reload, mihomo_rule_provider_update,
     mihomo_rule_providers, mihomo_rules, mihomo_select_proxy, mihomo_start, mihomo_status,
-    mihomo_stop, mihomo_version, CoreState, CoreStatus,
+    mihomo_stop, mihomo_version, CoreState, CoreStatus, CoreUserState,
 };
 
 pub(crate) use controller::{
-    api_delete, api_get, api_put, encode_path_segment, initialize_secret, is_running, mixed_port,
-    owns_core, secret, start_owned_for_lifecycle, stop_owned_for_update, CONTROLLER,
+    api_delete, api_get, api_put, core_ready_for_pid, encode_path_segment, ensure_managed_core,
+    initialize_secret, is_running, mixed_port, owns_core, secret, start_owned_for_lifecycle,
+    stop_owned_for_update, CONTROLLER,
 };

@@ -3,12 +3,9 @@ import type { CoreState, CoreStatus, MihomoVersion, ProxyPathState, ProxyState, 
 import { formatBytes, formatRate, latencyTone } from "../utils/format";
 
 const CORE_LABELS: Record<CoreState, string> = {
-  stopped: "Offline",
+  stopped: "Stopped",
   starting: "Starting…",
-  recovering: "Recovering…",
-  running: "Ready",
-  reloading: "Reloading…",
-  stopping: "Stopping…",
+  ready: "Ready",
   error: "Error",
 };
 
@@ -46,13 +43,13 @@ function TrafficChart({ snapshot }: { snapshot: TrafficSnapshot | null }) {
           <polyline className="chart-line chart-line-up" points={up} />
         </svg>
       </div>
-      {!snapshot && <span className="chart-empty">启动 Mihomo 后开始采样</span>}
+      {!snapshot && <span className="chart-empty">Core Ready 后开始采样</span>}
     </div>
   );
 }
 
 function statusClass(state: CoreState | ProxyState) {
-  return `status-pill status-${state}`;
+  return `status-pill status-${state === "ready" ? "running" : state}`;
 }
 
 export function DashboardPage({
@@ -84,9 +81,24 @@ export function DashboardPage({
   error: string | null;
   onRequestProxyTransition: () => void;
 }) {
-  const running = coreState === "running";
+  const ready = coreState === "ready";
+  const coreVisualState = ready ? "running" : coreState;
   const proxyBusy = proxyState === "enabling" || proxyState === "disabling";
-  const canToggleProxy = running && !proxyBusy;
+  const canToggleProxy = ready && !proxyBusy;
+  const proxyLabel = proxyBusy
+    ? "切换中…"
+    : proxyStatus?.enabled
+      ? "已开启"
+      : proxyStatus?.externalDetected
+        ? "外部代理"
+        : "已关闭";
+  const proxyMetric = proxyState === "error"
+    ? "ERROR"
+    : proxyStatus?.enabled
+      ? "ON"
+      : proxyStatus?.externalDetected
+        ? "EXTERNAL"
+        : "OFF";
   const delayTone = latencyTone(delay);
   const proxyPathLabel = proxyPathState === "unavailable" ? "当前节点不可用" : proxyPathState === "degraded" ? "当前节点不稳定" : delay === null ? "尚未测速" : delayTone === "fast" ? "连接顺畅" : delayTone === "medium" ? "可以接受" : "建议切换节点";
 
@@ -102,26 +114,26 @@ export function DashboardPage({
 
       {error && <div className={`error-banner ${coreState === "error" ? "error-banner-prominent" : ""}`}><ShieldCheck size={17} /><span>{error}</span></div>}
 
-      <div className={`dashboard-hero ${coreState}`}>
-        <div className={`dashboard-status-dot ${coreState}`} />
+      <div className={`dashboard-hero ${coreVisualState}`}>
+        <div className={`dashboard-status-dot ${coreVisualState}`} />
         <div className="dashboard-hero-main">
           <div className="dashboard-overline"><span>MioProxy Core</span><span className={statusClass(coreState)}>{CORE_LABELS[coreState]}</span></div>
           <div className="current-node-label">CURRENT NODE</div>
-          <strong>{currentNode ?? (running ? "DIRECT / 未选择节点" : "后台内核正在准备")}</strong>
+          <strong>{currentNode ?? (ready ? "DIRECT / 未选择节点" : "后台内核正在准备")}</strong>
           <small>{version?.version ? `Mihomo ${version.version}` : status?.controller ?? "Controller offline · 127.0.0.1:9090"}</small>
         </div>
         <div className="dashboard-hero-actions">
           <div className="dashboard-latency"><span>PROXY PATH</span><strong className={`latency-value ${delayTone}`}>{delay === null ? "—" : `${delay} ms`}</strong><small>{proxyPathLabel}</small></div>
           <button className={`quick-toggle ${proxyStatus?.enabled ? "enabled" : ""}`} type="button" onClick={onRequestProxyTransition} disabled={!canToggleProxy}>
             <ServerCog size={16} />
-            <span><small>系统代理</small><b>{proxyBusy ? "切换中…" : proxyStatus?.enabled ? "已开启" : "已关闭"}</b></span>
+            <span><small>系统代理</small><b>{proxyLabel}</b></span>
           </button>
         </div>
       </div>
 
       <div className="dashboard-quick-grid">
         <article className="quick-control panel"><div className="quick-control-icon violet"><Gauge size={18} /></div><div><span>运行模式</span><strong>{status?.mode?.toUpperCase() ?? "RULE"}</strong></div><em>当前配置</em></article>
-        <article className="quick-control panel"><div className="quick-control-icon blue"><Network size={18} /></div><div><span>活动连接</span><strong>{running ? connectionCount : 0}</strong></div><em>实时</em></article>
+        <article className="quick-control panel"><div className="quick-control-icon blue"><Network size={18} /></div><div><span>活动连接</span><strong>{ready ? connectionCount : 0}</strong></div><em>实时</em></article>
         <article className="quick-control panel"><div className="quick-control-icon green"><Zap size={18} /></div><div><span>混合端口</span><strong>{status?.mixedPort ?? 7890}</strong></div><em>127.0.0.1</em></article>
       </div>
 
@@ -133,12 +145,12 @@ export function DashboardPage({
       <TrafficChart snapshot={traffic} />
 
       <div className="dashboard-metric-grid">
-        <article className="metric-card panel"><ServerCog size={20} /><div><span>System Proxy</span><strong>{proxyState === "error" ? "ERROR" : proxyStatus?.enabled ? "ON" : "OFF"}</strong></div></article>
+        <article className="metric-card panel"><ServerCog size={20} /><div><span>System Proxy</span><strong>{proxyMetric}</strong></div></article>
         <article className="metric-card panel"><Gauge size={20} /><div><span>Rule Mode</span><strong>{status?.mode?.toUpperCase() ?? "RULE"}</strong></div></article>
-        <article className="metric-card panel"><Network size={20} /><div><span>Active Connections</span><strong>{running ? connectionCount : 0}</strong></div></article>
+        <article className="metric-card panel"><Network size={20} /><div><span>Active Connections</span><strong>{ready ? connectionCount : 0}</strong></div></article>
         <article className="metric-card panel"><Activity size={20} /><div><span>Memory</span><strong>{formatBytes(memory)}</strong></div></article>
         <article className="metric-card panel"><Radio size={20} /><div><span>Mixed Port</span><strong>{status?.mixedPort ?? 7890}</strong></div></article>
-        <article className="metric-card panel"><Zap size={20} /><div><span>Controller</span><strong>{running ? "Connected" : "Offline"}</strong></div></article>
+        <article className="metric-card panel"><Zap size={20} /><div><span>Controller</span><strong>{ready ? "Connected" : "Offline"}</strong></div></article>
       </div>
     </section>
   );

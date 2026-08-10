@@ -1,32 +1,29 @@
-import { AlertTriangle, Check, CirclePower, Network, RefreshCw, Route, ShieldCheck, Wifi } from "lucide-react";
+import { AlertTriangle, CirclePower, Network, Route, ShieldCheck, Wifi } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { mihomoApi, type ServiceConnectionStatus, type TunStatus, type TunStatusSnapshot } from "../api/mihomo";
+import { mihomoApi, type TunStatusSnapshot } from "../api/mihomo";
 
-const STATUS_LABELS: Record<TunStatus, string> = {
-  disabled: "Disabled",
-  starting: "Starting…",
-  running: "Running",
-  stopping: "Stopping…",
-  error: "Error",
-};
+const PROJECTION_LABELS = {
+  off: "OFF",
+  on: "ON",
+  external: "EXTERNAL",
+  transitioning: "TRANSITIONING",
+  error: "ERROR",
+} as const;
 
-const STATUS_COPY: Record<TunStatus, string> = {
-  disabled: "TUN 未接管系统流量",
-  starting: "正在校验配置并建立 TUN 路由",
-  running: "Mihomo 正在接管全局流量",
-  stopping: "正在撤销 TUN 配置并恢复运行状态",
-  error: "TUN 没有处于安全运行状态",
-};
+const PROJECTION_COPY = {
+  off: "MioProxy TUN 未接管系统流量",
+  on: "Mihomo TUN 正在接管全局流量",
+  external: "检测到外部 TUN；MioProxy 未接管，Core 与系统代理仍可使用。",
+  transitioning: "正在生成、校验并加载 Mihomo TUN 运行配置",
+  error: "TUN 没有处于安全运行状态，可关闭并执行恢复",
+} as const;
 
-export function TunPage({ profileId, coreRunning, systemProxyEnabled, systemProxyBusy, onSetSystemProxy }: {
+export function TunPage({ profileId, coreRunning, systemProxyEnabled }: {
   profileId: string | null;
   coreRunning: boolean;
   systemProxyEnabled: boolean;
-  systemProxyBusy: boolean;
-  onSetSystemProxy: (enabled: boolean) => Promise<void>;
 }) {
   const [snapshot, setSnapshot] = useState<TunStatusSnapshot | null>(null);
-  const [service, setService] = useState<ServiceConnectionStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestInFlight = useRef(false);
@@ -37,14 +34,8 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled, systemProx
     }
     requestInFlight.current = true;
     try {
-      const [nextSnapshot, nextService] = await Promise.all([mihomoApi.tunStatus(), mihomoApi.serviceStatus()]);
-      setSnapshot(nextSnapshot);
-      setService(nextService);
-      if (nextService.versionMismatch) {
-        setError(nextService.error ?? "MioProxy GUI 与 Service 版本不匹配，已阻止接管 Mihomo");
-      } else if (clearError) {
-        setError(null);
-      }
+      setSnapshot(await mihomoApi.tunStatus());
+      if (clearError) setError(null);
     } catch (value) {
       setError(value instanceof Error ? value.message : String(value));
     } finally {
@@ -58,58 +49,60 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled, systemProx
     return () => window.clearInterval(timer);
   }, [load]);
 
-  async function setTunEnabled(enabled: boolean) {
+  async function requestTunTransition() {
     if (requestInFlight.current) {
       return;
     }
-    if (enabled && !profileId) {
-      setError("请先选择已下载的 Profile");
-      return;
-    }
-    setSnapshot((current) =>
-      current
-        ? {
-            ...current,
-            status: enabled ? "starting" : "stopping",
-            message: null,
-          }
-        : current,
-    );
     setLoading(true);
     setError(null);
     requestInFlight.current = true;
+    let failed = false;
     try {
+      const current = await mihomoApi.tunStatus();
+      const enabled = !current.desiredEnabled;
+      if (enabled && !profileId) {
+        setSnapshot(current);
+        setError("请先选择已下载的 Profile");
+        return;
+      }
+      setSnapshot({
+        ...current,
+        status: enabled ? "starting" : "stopping",
+        message: null,
+        desiredEnabled: enabled,
+      });
       setSnapshot(await mihomoApi.tunSetEnabled(enabled, profileId));
     } catch (value) {
+      failed = true;
       setError(value instanceof Error ? value.message : String(value));
-      requestInFlight.current = false;
-      await load(false);
     } finally {
       requestInFlight.current = false;
       setLoading(false);
     }
-  }
-
-  async function requestTunTransition() {
-    try {
-      const current = await mihomoApi.tunStatus();
-      setSnapshot(current);
-      await setTunEnabled(!(current.owner === "mioproxy" && current.status === "running"));
-    } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
-    }
+    if (failed) await load(false);
   }
 
   const status = snapshot?.status ?? "disabled";
   const transitioning = status === "starting" || status === "stopping";
-  const blocked = !coreRunning || !profileId || systemProxyEnabled;
+  const externalTunActive = Boolean(snapshot?.externalDetected);
+  const desiredEnabled = Boolean(snapshot?.desiredEnabled);
+  const projection = status === "error"
+    ? "error"
+    : transitioning
+      ? "transitioning"
+      : snapshot?.owner === "mioproxy" && status === "running"
+        ? "on"
+        : externalTunActive
+          ? "external"
+          : "off";
+  const blockedForEnable = !coreRunning || !profileId;
 
   return (
     <section className="page-stack tun-page">
       <header className="page-header">
-        <div><p className="eyebrow">TUN / WINDOWS ROUTE</p><h1>透明代理</h1><p>通过 Mihomo TUN 接管系统流量。启用前会检查管理员权限并保存默认路由、DNS 和网络适配器快照。</p></div>
-        <button className={status === "running" ? "power-button stop" : "power-button"} type="button" onClick={() => void requestTunTransition()} disabled={loading || !snapshot || transitioning || blocked && status !== "running" && status !== "error"}>
-          <CirclePower size={17} />{loading ? "处理中…" : STATUS_LABELS[status]}
+        <div><p className="eyebrow">TUN / WINDOWS ROUTE</p><h1>透明代理</h1><p>通过 Mihomo TUN、auto-route 与 DNS 运行配置接管系统流量。</p></div>
+        <button className={desiredEnabled ? "power-button stop" : "power-button"} type="button" onClick={() => void requestTunTransition()} disabled={loading || !snapshot || transitioning || !desiredEnabled && blockedForEnable} aria-pressed={desiredEnabled}>
+          <CirclePower size={17} />{loading || transitioning ? "处理中…" : desiredEnabled ? status === "error" ? "关闭并恢复" : "关闭" : status === "error" ? "重试开启" : "开启"}
         </button>
       </header>
 
@@ -118,11 +111,11 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled, systemProx
 
       <div className={`tun-status-card panel ${status}`}>
         <div className={`tun-status-dot ${status}`} />
-        <div className="tun-status-copy"><span>TRANSPARENT ROUTE</span><strong>{STATUS_LABELS[status]}</strong><small>{STATUS_COPY[status]}</small></div>
-        <div className="tun-status-meta"><span>管理员权限 <b>{snapshot?.admin ? "已满足" : service?.admin ? "由 Service 提供" : "需要提升"}</b></span><span>内核 <b>{coreRunning ? "Running" : "Disabled"}</b></span><span>所有权 <b>{service?.versionMismatch ? "版本不匹配" : service?.reachable ? service.ownsCore ? "MioProxy Service" : service.ownershipConflict ? "冲突" : "Service 在线" : "GUI fallback"}</b></span><span>系统代理 <b>{systemProxyEnabled ? "冲突" : "关闭"}</b></span></div>
+        <div className="tun-status-copy"><span>TRANSPARENT ROUTE</span><strong>{PROJECTION_LABELS[projection]}</strong><small>{PROJECTION_COPY[projection]}</small></div>
+        <div className="tun-status-meta"><span>Core <b>{coreRunning ? "Ready" : "Preparing"}</b></span><span>System Proxy <b>{systemProxyEnabled ? "ON" : "OFF"}</b></span>{externalTunActive && <span>External TUN <b>Active</b></span>}</div>
       </div>
 
-      {(!coreRunning || !profileId || systemProxyEnabled) && <div className="tun-prerequisite panel"><AlertTriangle size={17} /><div className="tun-prerequisite-copy"><strong>启用前置条件</strong><span>{!coreRunning ? "后台内核正在准备，请稍后重试。" : !profileId ? "请先添加并下载一个 Profile。" : "请先关闭系统代理，避免 auto-route 和 Windows Proxy 同时接管。"}</span>{systemProxyEnabled && <button className="secondary-button tun-prerequisite-action" type="button" onClick={() => void onSetSystemProxy(false)} disabled={systemProxyBusy}>{systemProxyBusy ? "关闭中…" : "关闭系统代理"}</button>}</div></div>}
+      {(!coreRunning || !profileId) && <div className="tun-prerequisite panel"><AlertTriangle size={17} /><div className="tun-prerequisite-copy"><strong>启用前置条件</strong><span>{!coreRunning ? "后台内核正在准备，请稍后重试。" : "请先添加并下载一个 Profile。"}</span></div></div>}
 
       <div className="tun-settings-grid">
         <article className="tun-setting-card panel"><div className="tun-setting-icon blue"><Route size={18} /></div><div><span>Auto Route</span><strong>已启用</strong><small>全局路由进入 MioProxy TUN</small></div></article>
@@ -130,7 +123,6 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled, systemProx
         <article className="tun-setting-card panel"><div className="tun-setting-icon green"><Network size={18} /></div><div><span>DNS Hijack</span><strong>any:53 + TCP</strong><small>交由 Mihomo DNS 模块处理</small></div></article>
       </div>
 
-      <section className="tun-snapshot-card panel"><div className="section-heading"><div><span>FAILURE RECOVERY</span><strong>运行前快照</strong></div><button className="icon-button" type="button" onClick={() => void load()} aria-label="刷新 TUN 状态"><RefreshCw size={15} /></button></div><div className="tun-snapshot-grid"><span><b>{snapshot?.snapshot ? "已捕获" : "未捕获"}</b>默认路由</span><span><b>{snapshot?.snapshot ? "已捕获" : "未捕获"}</b>DNS 服务器</span><span><b>{snapshot?.snapshot ? "已捕获" : "未捕获"}</b>网络适配器</span></div><small className="tun-recovery-note"><Check size={14} /> TUN 失败、Mihomo 崩溃或 MioProxy 退出时，会先恢复 Local Override，再结束当前会话。</small></section>
     </section>
   );
 }

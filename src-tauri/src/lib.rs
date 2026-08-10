@@ -104,13 +104,39 @@ pub fn run() {
             if let Err(error) = tray::setup(app.handle()) {
                 return Err(Box::new(std::io::Error::other(error)));
             }
-            tun::start_monitor(app.handle().clone());
             let recovery_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 tun::recover_after_startup(recovery_app.clone()).await;
                 update::recover_after_startup(recovery_app.clone()).await;
                 if let Err(error) = system_proxy::recover_stale_state(&recovery_app).await {
                     eprintln!("恢复系统代理状态失败：{error}");
+                }
+                let service_start =
+                    service::request_core(&recovery_app, service::ServiceCommand::Start).await;
+                match service_start {
+                    Ok(Some(status)) if status.state == mihomo::CoreUserState::Ready => {
+                        mihomo::traffic::start(&recovery_app);
+                        mihomo::logs::start(&recovery_app);
+                        tray::update_current_node(&recovery_app).await;
+                    }
+                    Ok(Some(status)) => diagnostics::record_event(
+                        &recovery_app,
+                        "error",
+                        "mihomo",
+                        status
+                            .recovery_message
+                            .unwrap_or_else(|| "Service Core 未达到 Ready".to_string()),
+                    ),
+                    Ok(None) | Err(_) => {
+                        if let Err(error) = mihomo::start_owned_for_lifecycle(&recovery_app).await {
+                            diagnostics::record_event(
+                                &recovery_app,
+                                "error",
+                                "mihomo",
+                                format!("自动准备 Core 失败：{error}"),
+                            );
+                        }
+                    }
                 }
             });
             Ok(())

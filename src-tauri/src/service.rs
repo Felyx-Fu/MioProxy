@@ -9,6 +9,7 @@ pub const SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const TOKEN_FILE: &str = "service-token";
 const USER_SID_FILE: &str = "service-user-sid";
 const CORE_STATE_FILE: &str = "service-core-state.json";
+const SERVICE_CORE_OWNER_FILE: &str = "service-core-owner.json";
 const CORE_STATE_FORMAT_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,7 +148,6 @@ mod windows_impl {
                 SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             },
-            SystemInformation::GetTickCount64,
             Threading::{
                 GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_SET_QUOTA,
                 PROCESS_TERMINATE,
@@ -482,6 +482,30 @@ mod windows_impl {
         Ok(Some(response))
     }
 
+    fn is_optional_ipc_transport_error(error: &str) -> bool {
+        error.starts_with("连接 MioProxy Service 失败：")
+            || error.starts_with("写入 Service 请求失败：")
+            || error.starts_with("发送 Service 请求失败：")
+            || error.starts_with("读取 Service 响应失败：")
+            || error == "等待 MioProxy Service IPC 请求锁超时"
+            || error == "写入 Service 请求超时"
+            || error == "发送 Service 请求超时"
+            || error == "读取 Service 响应超时"
+            || error == "MioProxy Service 已安装但当前 IPC 不可用，已阻止 GUI 接管 Mihomo"
+            || error.starts_with("MioProxy Service 协议版本不匹配：")
+            || error.starts_with("MioProxy Service 版本不匹配：")
+    }
+
+    async fn optional_request(
+        app: &AppHandle,
+        command: ServiceCommand,
+    ) -> Result<Option<ServiceResponse>, String> {
+        match try_request(app, command).await {
+            Err(error) if is_optional_ipc_transport_error(&error) => Ok(None),
+            result => result,
+        }
+    }
+
     pub(crate) fn data<T: for<'de> Deserialize<'de>>(
         response: ServiceResponse,
     ) -> Result<T, String> {
@@ -597,7 +621,7 @@ mod windows_impl {
     pub(crate) async fn service_tun_status(
         app: &AppHandle,
     ) -> Result<Option<crate::tun::TunStatusSnapshot>, String> {
-        let Some(response) = try_request(app, ServiceCommand::Status).await? else {
+        let Some(response) = optional_request(app, ServiceCommand::Status).await? else {
             return Ok(None);
         };
         let status: ServiceStatusData = data(response)?;
@@ -625,7 +649,7 @@ mod windows_impl {
         app: &AppHandle,
         command: ServiceCommand,
     ) -> Result<Option<crate::mihomo::CoreStatus>, String> {
-        let Some(response) = try_request(app, command).await? else {
+        let Some(response) = optional_request(app, command).await? else {
             return Ok(None);
         };
         data(response).map(Some)
@@ -653,14 +677,14 @@ mod windows_impl {
     pub(crate) async fn request_service_status(
         app: &AppHandle,
     ) -> Result<Option<ServiceStatusData>, String> {
-        let Some(response) = try_request(app, ServiceCommand::Status).await? else {
+        let Some(response) = optional_request(app, ServiceCommand::Status).await? else {
             return Ok(None);
         };
         data(response).map(Some)
     }
 
     pub(crate) async fn request_reload(app: &AppHandle) -> Result<Option<Value>, String> {
-        let Some(response) = try_request(app, ServiceCommand::Reload).await? else {
+        let Some(response) = optional_request(app, ServiceCommand::Reload).await? else {
             return Ok(None);
         };
         Ok(Some(response.data.unwrap_or(Value::Null)))
@@ -670,7 +694,7 @@ mod windows_impl {
         app: &AppHandle,
         profile_id: &str,
     ) -> Result<Option<crate::config::ConfigApplyResult>, String> {
-        let Some(response) = try_request(
+        let Some(response) = optional_request(
             app,
             ServiceCommand::ApplyProfile {
                 profile_id: profile_id.to_string(),
@@ -944,9 +968,11 @@ mod windows_impl {
     #[derive(Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct PersistedServiceTunState {
-        previous_override: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous_override: Option<String>,
         profile_id: String,
-        snapshot: crate::tun::NetworkSnapshot,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot: Option<crate::tun::NetworkSnapshot>,
     }
 
     #[derive(Serialize, Deserialize)]
@@ -955,6 +981,44 @@ mod windows_impl {
         #[serde(default)]
         format_version: u8,
         desired_running: bool,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PersistedServiceCoreOwner {
+        owner: String,
+        pid: u32,
+    }
+
+    fn read_persisted_service_core_pid_at(data_dir: &Path) -> Option<u32> {
+        let path = data_dir.join(SERVICE_CORE_OWNER_FILE);
+        let content = config::read_text_file_at(&path, "读取 Service Core owner").ok()??;
+        let state = serde_json::from_str::<PersistedServiceCoreOwner>(&content).ok()?;
+        (state.owner == "service" && state.pid != 0).then_some(state.pid)
+    }
+
+    pub(crate) fn persisted_managed_core_pid(app: &AppHandle) -> Option<u32> {
+        let data_dir = app.path().app_data_dir().ok()?;
+        read_persisted_service_core_pid_at(&data_dir)
+    }
+
+    fn persist_service_core_owner(data_dir: &Path, pid: u32) -> Result<(), String> {
+        let bytes = serde_json::to_vec(&PersistedServiceCoreOwner {
+            owner: "service".to_string(),
+            pid,
+        })
+        .map_err(|error| error.to_string())?;
+        write_atomic(&data_dir.join(SERVICE_CORE_OWNER_FILE), &bytes)
+    }
+
+    fn clear_service_core_owner_if_matches(data_dir: &Path, pid: u32) -> Result<(), String> {
+        if read_persisted_service_core_pid_at(data_dir) == Some(pid) {
+            config::remove_file(
+                &data_dir.join(SERVICE_CORE_OWNER_FILE),
+                "清理 Service Core owner",
+            )?;
+        }
+        Ok(())
     }
 
     fn read_desired_core_state(data_dir: &Path) -> Result<bool, String> {
@@ -1083,22 +1147,56 @@ mod windows_impl {
         fn write_tun_persisted(&self) -> Result<(), String> {
             let tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
             let state = PersistedServiceTunState {
-                previous_override: tun
-                    .previous_override
-                    .clone()
-                    .ok_or_else(|| "Service TUN 缺少恢复用 Override 快照".to_string())?,
+                previous_override: tun.previous_override.clone(),
                 profile_id: tun
                     .profile_id
                     .clone()
                     .ok_or_else(|| "Service TUN 缺少恢复用 Profile".to_string())?,
-                snapshot: tun
-                    .snapshot
-                    .clone()
-                    .ok_or_else(|| "Service TUN 缺少网络快照".to_string())?,
+                snapshot: tun.snapshot.clone(),
             };
             let path = self.service_tun_path();
             let bytes = serde_json::to_vec_pretty(&state).map_err(|e| e.to_string())?;
             write_atomic(&path, &bytes)
+        }
+
+        fn ensure_profile_apply_allowed(&self) -> Result<(), String> {
+            let status = self
+                .tun
+                .lock()
+                .map_err(|_| "Service TUN 状态锁异常")?
+                .status;
+            match status {
+                crate::tun::TunStatus::Disabled | crate::tun::TunStatus::Running => Ok(()),
+                crate::tun::TunStatus::Starting | crate::tun::TunStatus::Stopping => {
+                    Err("Service TUN 正在切换，暂时不能应用 Profile".to_string())
+                }
+                crate::tun::TunStatus::Error if self.has_tun_recovery() => {
+                    Err("Service TUN 正在等待恢复，暂时不能应用 Profile".to_string())
+                }
+                crate::tun::TunStatus::Error => Ok(()),
+            }
+        }
+
+        fn rebind_tun_profile(&self, profile_id: &str) -> Result<(), String> {
+            let previous_profile_id = {
+                let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
+                if tun.status == crate::tun::TunStatus::Disabled {
+                    return Ok(());
+                }
+                if tun.status != crate::tun::TunStatus::Running {
+                    return Err("Service TUN 正在切换或等待恢复，暂时不能应用 Profile".to_string());
+                }
+                let previous_profile_id = tun.profile_id.clone();
+                tun.profile_id = Some(profile_id.to_string());
+                previous_profile_id
+            };
+            if let Err(error) = self.write_tun_persisted() {
+                if let Ok(mut tun) = self.tun.lock() {
+                    tun.profile_id = previous_profile_id;
+                }
+                return Err(format!("更新 Service TUN 显示 Profile 失败：{error}"));
+            }
+            Ok(())
         }
 
         fn clear_tun_persisted(&self) -> Result<(), String> {
@@ -1112,7 +1210,7 @@ mod windows_impl {
                     .tun
                     .lock()
                     .ok()
-                    .is_some_and(|tun| tun.previous_override.is_some())
+                    .is_some_and(|tun| tun.profile_id.is_some())
         }
 
         fn tun_data(&self) -> Result<ServiceTunData, String> {
@@ -1137,7 +1235,9 @@ mod windows_impl {
             let mut child = self.child.lock().map_err(|_| "Service Mihomo 状态锁异常")?;
             if let Some(process) = child.as_mut() {
                 if process.try_wait().map_err(|e| e.to_string())?.is_some() {
+                    let managed_pid = process.id();
                     *child = None;
+                    clear_service_core_owner_if_matches(&self.data_dir, managed_pid)?;
                 }
             }
             Ok(())
@@ -1155,6 +1255,7 @@ mod windows_impl {
             process
                 .kill()
                 .map_err(|error| format!("注入受管 Mihomo 异常退出失败：{error}"))?;
+            clear_service_core_owner_if_matches(&self.data_dir, managed_pid)?;
             Ok(json!({
                 "triggered": true,
                 "managedPid": managed_pid,
@@ -1181,20 +1282,14 @@ mod windows_impl {
                 .map(Child::id))
         }
 
-        fn managed_listener_ready(
-            &self,
-            mixed_port: u16,
-            managed_pid: u32,
-        ) -> Result<bool, String> {
-            Ok(
-                config::windows_tcp_listener_diagnostics(mixed_port, Some(managed_pid))?
-                    .iter()
-                    .any(|listener| {
-                        listener.owner == config::ListenerOwner::MioProxyManaged
-                            && listener.local_port == mixed_port
-                            && listener.state == "listen"
-                    }),
-            )
+        async fn owned_core_ready(&self) -> Result<bool, String> {
+            let Some(managed_pid) = self.managed_core_pid()? else {
+                return Ok(false);
+            };
+            let (configured_mixed_port, _) = self.runtime_config()?;
+            let mixed_port = config::actual_runtime_mixed_port_at(&self.data_dir)
+                .unwrap_or(configured_mixed_port);
+            mihomo::core_ready_for_pid(mixed_port, managed_pid).await
         }
 
         fn stop_owned_child_for_retry(&self) -> Result<(), String> {
@@ -1204,8 +1299,10 @@ mod windows_impl {
                 .map_err(|_| "Service Mihomo 状态锁异常")?
                 .take()
             {
+                let managed_pid = child.id();
                 let _ = child.kill();
                 let _ = child.wait();
+                clear_service_core_owner_if_matches(&self.data_dir, managed_pid)?;
             }
             Ok(())
         }
@@ -1254,19 +1351,6 @@ rules:
             Ok(true)
         }
 
-        async fn reconcile_outbound_compatibility(&self) -> Result<(), String> {
-            if !self.refresh_outbound_compatibility()? {
-                return Ok(());
-            }
-            if !self.owns_core()? || !mihomo::is_running().await {
-                return Ok(());
-            }
-            if !config::restore_active_profile_config_at(&self.data_dir)? {
-                return Ok(());
-            }
-            self.reload().await.map(|_| ())
-        }
-
         fn runtime_config(&self) -> Result<(u16, String), String> {
             #[derive(Deserialize)]
             struct RuntimeConfig {
@@ -1288,21 +1372,49 @@ rules:
         }
 
         async fn core_status(&self) -> Result<crate::mihomo::CoreStatus, String> {
-            let running = mihomo::is_running().await;
+            let managed_pid = self.managed_core_pid()?;
+            let controller_ready = mihomo::is_running().await;
             let (configured_mixed_port, mode) = self.runtime_config()?;
-            let mixed_port = if running {
+            let mixed_port = if controller_ready {
                 config::actual_runtime_mixed_port_at(&self.data_dir)
                     .unwrap_or(configured_mixed_port)
             } else {
                 configured_mixed_port
             };
+            let recovery_message = self.core_recovery_message()?;
+            let ready = match managed_pid {
+                Some(managed_pid) => mihomo::core_ready_for_pid(mixed_port, managed_pid).await?,
+                None => false,
+            };
+            let state = if ready {
+                crate::mihomo::CoreUserState::Ready
+            } else if managed_pid.is_some() {
+                if recovery_message.is_some() {
+                    crate::mihomo::CoreUserState::Error
+                } else {
+                    crate::mihomo::CoreUserState::Starting
+                }
+            } else if controller_ready {
+                // A controller owned by another MioProxy runtime is an ownership
+                // boundary, not a Service Core failure.
+                crate::mihomo::CoreUserState::Stopped
+            } else if self.desired_core_running()? {
+                if recovery_message.is_some() {
+                    crate::mihomo::CoreUserState::Error
+                } else {
+                    crate::mihomo::CoreUserState::Starting
+                }
+            } else {
+                crate::mihomo::CoreUserState::Stopped
+            };
             Ok(crate::mihomo::CoreStatus {
-                running,
+                state,
+                running: ready,
                 controller: mihomo::CONTROLLER.to_string(),
                 config_path: self.config_path().display().to_string(),
                 mixed_port,
                 mode,
-                recovery_message: self.core_recovery_message()?,
+                recovery_message,
             })
         }
 
@@ -1584,14 +1696,24 @@ rules:
         }
 
         async fn start(&self) -> Result<crate::mihomo::CoreStatus, String> {
+            self.set_desired_core_running(true)?;
             if let Some(managed_pid) = self.managed_core_pid()? {
                 let (mixed_port, _) = self.runtime_config()?;
-                if mihomo::is_running().await
-                    && self.managed_listener_ready(mixed_port, managed_pid)?
-                {
+                let mixed_port =
+                    config::actual_runtime_mixed_port_at(&self.data_dir).unwrap_or(mixed_port);
+                if mihomo::core_ready_for_pid(mixed_port, managed_pid).await? {
+                    self.set_core_recovery_message(None)?;
                     return self.core_status().await;
                 }
                 self.stop_owned_child_for_retry()?;
+            }
+            if mihomo::is_running().await {
+                // A GUI-owned MioProxy Core can outlive a temporary Service IPC
+                // outage. Treat it as an ownership boundary, not a Service
+                // failure, and never race it with another child.
+                self.set_desired_core_running(false)?;
+                self.set_core_recovery_message(None)?;
+                return self.core_status().await;
             }
             if self.has_tun_recovery() {
                 self.disable_tun().await?;
@@ -1632,24 +1754,43 @@ rules:
                     let _ = child.wait();
                     return Err(error);
                 }
-                if let Err(error) = self.set_desired_core_running(true) {
+                if let Err(error) = persist_service_core_owner(&self.data_dir, managed_pid) {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(format!("保存 Service Mihomo 期望状态失败：{error}"));
+                    return Err(format!("保存 Service Core owner 失败：{error}"));
                 }
                 let _ = self.set_core_recovery_message(None);
-                *self.child.lock().map_err(|_| "Service Mihomo 状态锁异常")? = Some(child);
+                match self.child.lock() {
+                    Ok(mut current) => *current = Some(child),
+                    Err(_) => {
+                        let _ = clear_service_core_owner_if_matches(&self.data_dir, managed_pid);
+                        let mut child = child;
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("Service Mihomo 状态锁异常".to_string());
+                    }
+                }
+                let mut runtime_state_error = None;
                 for _ in 0..50 {
-                    if mihomo::is_running().await
-                        && self.managed_listener_ready(mixed_port, managed_pid)?
-                    {
-                        config::commit_actual_runtime_mixed_port_at(&self.data_dir, mixed_port)?;
-                        return self.core_status().await;
+                    if mihomo::core_ready_for_pid(mixed_port, managed_pid).await? {
+                        match config::commit_actual_runtime_mixed_port_at(
+                            &self.data_dir,
+                            mixed_port,
+                        ) {
+                            Ok(()) => return self.core_status().await,
+                            Err(error) => {
+                                runtime_state_error = Some(format!(
+                                    "保存 MioProxy mixed-port {mixed_port} 失败：{error}"
+                                ));
+                                break;
+                            }
+                        }
                     }
                     tokio::time::sleep(Duration::from_millis(200)).await;
                 }
                 self.stop_owned_child_for_retry()?;
-                last_error = format!("MioProxy mixed-port {mixed_port} 未通过健康检查");
+                last_error = runtime_state_error
+                    .unwrap_or_else(|| format!("MioProxy mixed-port {mixed_port} 未通过健康检查"));
                 minimum_mixed_port = mixed_port.checked_add(1);
             }
             let _ = self.set_core_recovery_message(Some(last_error.clone()));
@@ -1657,7 +1798,16 @@ rules:
         }
 
         async fn ensure_desired_core_ready(&self) {
-            if !self.desired_core_running().unwrap_or(false) || self.owns_core().unwrap_or(false) {
+            if !self.desired_core_running().unwrap_or(false) {
+                return;
+            }
+            if self.owned_core_ready().await.unwrap_or(false) {
+                let _ = self.set_core_recovery_message(None);
+                return;
+            }
+            if self.managed_core_pid().ok().flatten().is_none() && mihomo::is_running().await {
+                let _ = self.set_desired_core_running(false);
+                let _ = self.set_core_recovery_message(None);
                 return;
             }
             if let Err(error) = self.start().await {
@@ -1679,10 +1829,12 @@ rules:
                     .map_err(|_| "Service Mihomo 状态锁异常")?
                     .take()
                 {
+                    let managed_pid = child.id();
                     child
                         .kill()
                         .map_err(|e| format!("Service 停止 Mihomo 失败：{e}"))?;
                     let _ = child.wait();
+                    clear_service_core_owner_if_matches(&self.data_dir, managed_pid)?;
                 }
             } else if mihomo::is_running().await {
                 return Err("当前 Mihomo 不是 MioProxy Service 管理，拒绝停止外部进程".to_string());
@@ -1705,19 +1857,20 @@ rules:
             &self,
             profile_id: &str,
         ) -> Result<crate::config::ConfigApplyResult, String> {
-            if !self.owns_core()? || !mihomo::is_running().await {
-                return Err("Service 当前没有拥有运行中的 Mihomo，拒绝应用配置".to_string());
+            let _registry = crate::profiles::lock_registry().await;
+            if !self.owned_core_ready().await? {
+                return Err("Service Core 尚未 Ready，拒绝应用配置".to_string());
             }
             let built = config::build_value_at(&self.data_dir, profile_id)?;
             let profile_name = built.profile.name.clone();
             let override_active = built.override_active;
+            let expected_tun = config::tun_enabled_in_value(&built.value);
             let yaml = serde_yaml::to_string(&built.value).map_err(|e| e.to_string())?;
             let candidate = config::candidate_path_at(&self.data_dir);
+            let stable = self.config_path();
+            let previous_stable = config::read_text_file_at(&stable, "读取当前 Runtime 配置")?
+                .ok_or_else(|| "当前 Runtime 配置不存在，拒绝无回滚点应用 Profile".to_string())?;
             write_atomic(&candidate, yaml.as_bytes())?;
-            if !mihomo::is_running().await {
-                let _ = config::remove_file(&candidate, "清理候选配置");
-                return Err("Mihomo 未运行，无法加载配置".to_string());
-            }
             let result = mihomo::api_put(
                 "/configs?force=true",
                 json!({ "path": candidate.display().to_string() }),
@@ -1727,23 +1880,41 @@ rules:
                 let _ = config::remove_file(&candidate, "清理候选配置");
                 return Err(format!("Mihomo 配置校验失败：{error}"));
             }
-            let stable = self.config_path();
-            if let Err(error) = write_atomic(&stable, yaml.as_bytes()) {
-                let _ = config::remove_file(&candidate, "清理候选配置");
-                let rollback = mihomo::api_put(
-                    "/configs?force=true",
-                    json!({ "path": stable.display().to_string() }),
+            let finish = async {
+                config::verify_controller_runtime(Some(expected_tun)).await?;
+                config::commit_runtime_state_at(
+                    &self.data_dir,
+                    profile_id,
+                    &built.base_value,
+                    &yaml,
                 )
-                .await;
-                return Err(match rollback {
-                    Ok(_) => format!("保存稳定配置失败：{error}；已回滚运行配置"),
-                    Err(rollback_error) => {
-                        format!("保存稳定配置失败：{error}；回滚运行配置失败：{rollback_error}")
-                    }
+            }
+            .await;
+            if let Err(error) = finish {
+                let stable_restore = write_atomic(&stable, previous_stable.as_bytes());
+                let controller_restore = if stable_restore.is_ok() {
+                    mihomo::api_put(
+                        "/configs?force=true",
+                        json!({ "path": stable.display().to_string() }),
+                    )
+                    .await
+                    .map(|_| ())
+                } else {
+                    Err("旧 Runtime 配置文件恢复失败".to_string())
+                };
+                let _ = config::remove_file(&candidate, "清理候选配置");
+                return Err(match (stable_restore, controller_restore) {
+                    (Ok(()), Ok(())) => format!("应用 Profile 事务失败，已回滚：{error}"),
+                    (stable_result, controller_result) => format!(
+                        "应用 Profile 事务失败：{error}；Runtime 回滚：{}；Controller 回滚：{}",
+                        stable_result.err().unwrap_or_else(|| "成功".to_string()),
+                        controller_result
+                            .err()
+                            .unwrap_or_else(|| "成功".to_string())
+                    ),
                 });
             }
             let _ = config::remove_file(&candidate, "清理候选配置");
-            config::set_active_profile_id_at(&self.data_dir, profile_id)?;
             Ok(crate::config::ConfigApplyResult {
                 profile_id: profile_id.to_string(),
                 profile_name,
@@ -1753,10 +1924,71 @@ rules:
             })
         }
 
+        async fn apply_active_runtime(&self, expected_tun: bool) -> Result<(), String> {
+            if !self.owned_core_ready().await? {
+                return Err("Service Core 尚未 Ready，拒绝重载 Runtime 配置".to_string());
+            }
+            let value = config::active_runtime_value_at(&self.data_dir)?
+                .ok_or_else(|| "没有可用于 TUN 的活动 Runtime 基线".to_string())?;
+            if config::tun_enabled_in_value(&value) != expected_tun {
+                return Err(format!(
+                    "生成的 Runtime TUN 状态不一致：期望 {expected_tun}"
+                ));
+            }
+            let yaml = serde_yaml::to_string(&value)
+                .map_err(|error| format!("生成活动 Runtime 配置失败：{error}"))?;
+            let candidate = config::candidate_path_at(&self.data_dir);
+            let stable = self.config_path();
+            let previous_stable = config::read_text_file_at(&stable, "读取当前 Runtime 配置")?
+                .ok_or_else(|| "当前 Runtime 配置不存在，拒绝无回滚点重载".to_string())?;
+            write_atomic(&candidate, yaml.as_bytes())?;
+            let load = match mihomo::api_put(
+                "/configs?force=true",
+                json!({ "path": candidate.display().to_string() }),
+            )
+            .await
+            {
+                Ok(_) => match config::verify_controller_runtime(Some(expected_tun)).await {
+                    Ok(()) => write_atomic(&stable, yaml.as_bytes()),
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            };
+            if let Err(error) = load {
+                let stable_restore = write_atomic(&stable, previous_stable.as_bytes());
+                let controller_restore = if stable_restore.is_ok() {
+                    mihomo::api_put(
+                        "/configs?force=true",
+                        json!({ "path": stable.display().to_string() }),
+                    )
+                    .await
+                    .map(|_| ())
+                } else {
+                    Err("旧 Runtime 配置文件恢复失败".to_string())
+                };
+                let _ = config::remove_file(&candidate, "清理候选配置");
+                return Err(match (stable_restore, controller_restore) {
+                    (Ok(()), Ok(())) => format!("Runtime 重载失败，已回滚：{error}"),
+                    (stable_result, controller_result) => format!(
+                        "Runtime 重载失败：{error}；文件回滚：{}；Controller 回滚：{}",
+                        stable_result.err().unwrap_or_else(|| "成功".to_string()),
+                        controller_result
+                            .err()
+                            .unwrap_or_else(|| "成功".to_string())
+                    ),
+                });
+            }
+            let _ = config::remove_file(&candidate, "清理候选配置");
+            if !self.owned_core_ready().await? {
+                return Err("Runtime 重载后 Service Core 未保持 Ready".to_string());
+            }
+            Ok(())
+        }
+
         async fn enable_tun(
             &self,
             profile_id: String,
-            system_proxy_enabled: bool,
+            _system_proxy_enabled: bool,
         ) -> Result<ServiceTunData, String> {
             let _transition = self.tun_transition.lock().await;
             if !is_admin() {
@@ -1764,9 +1996,6 @@ rules:
             }
             if let Some(message) = crate::tun::foreign_tun_conflict()? {
                 return Err(message);
-            }
-            if system_proxy_enabled {
-                return Err("TUN 与系统代理不能同时开启".to_string());
             }
             if profile_id.trim().is_empty() {
                 return Err("启用 TUN 需要已下载的 Profile".to_string());
@@ -1777,14 +2006,19 @@ rules:
                 .map_err(|_| "Service TUN 状态锁异常")?
                 .status;
             if current_status == crate::tun::TunStatus::Running {
-                if self.owns_core()? && mihomo::is_running().await {
+                if self.owned_core_ready().await?
+                    && config::verify_controller_runtime(Some(true)).await.is_ok()
+                {
                     return self.tun_data();
                 }
                 self.disable_tun_inner().await?;
-                return Err("Service Mihomo 已退出，TUN 原始配置已恢复，请重新启动内核".to_string());
+                return Err(
+                    "Service Mihomo 已退出，TUN 原始配置已恢复；请等待 Core 自动恢复后重试"
+                        .to_string(),
+                );
             }
-            if !self.owns_core()? || !mihomo::is_running().await {
-                return Err("Service 尚未拥有运行中的 Mihomo".to_string());
+            if !self.owned_core_ready().await? {
+                return Err("Service Core 尚未 Ready".to_string());
             }
             if matches!(
                 current_status,
@@ -1795,27 +2029,26 @@ rules:
             if current_status == crate::tun::TunStatus::Error && self.has_tun_recovery() {
                 return Err("Service TUN 仍有待恢复状态，请先执行停止/恢复".to_string());
             }
-            if config::configured_tun_enabled_at(&self.data_dir, &profile_id)?
-                || mihomo::api_get("/configs")
-                    .await
-                    .ok()
-                    .and_then(|value| value.get("tun").cloned())
-                    .and_then(|value| value.get("enable").and_then(Value::as_bool))
-                    == Some(true)
-            {
-                return Err(
-                    "当前配置或 Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string()
-                );
+            if config::active_runtime_value_at(&self.data_dir)?.is_none() {
+                return Err("启用 TUN 前需要先应用一个 Profile".to_string());
             }
-            let previous_override = config::override_content_at(&self.data_dir)?;
-            let snapshot = crate::tun::capture_snapshot().await?;
+            if mihomo::api_get("/configs")
+                .await
+                .ok()
+                .and_then(|value| value.get("tun").cloned())
+                .and_then(|value| value.get("enable").and_then(Value::as_bool))
+                == Some(true)
+            {
+                return Err("Mihomo 已经启用了 TUN，请先恢复后再开始托管会话".to_string());
+            }
+            let snapshot = crate::tun::capture_snapshot().await.ok();
             {
                 let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
                 tun.status = crate::tun::TunStatus::Starting;
                 tun.message = None;
                 tun.profile_id = Some(profile_id.clone());
-                tun.previous_override = Some(previous_override.clone());
-                tun.snapshot = Some(snapshot);
+                tun.previous_override = None;
+                tun.snapshot = snapshot;
             }
             if let Err(error) = self.write_tun_persisted() {
                 if let Ok(mut tun) = self.tun.lock() {
@@ -1825,68 +2058,30 @@ rules:
             }
             if let Err(error) = config::set_tun_enabled_at(&self.data_dir, true) {
                 return self
-                    .rollback_tun(
-                        &profile_id,
-                        &previous_override,
-                        format!("写入 TUN 配置失败：{error}"),
-                    )
+                    .rollback_tun(&profile_id, format!("写入 TUN 配置失败：{error}"))
                     .await;
             }
-            if let Err(error) = self.apply_profile(&profile_id).await {
+            if let Err(error) = self.apply_active_runtime(true).await {
                 return self
-                    .rollback_tun(
-                        &profile_id,
-                        &previous_override,
-                        format!("加载 TUN 配置失败：{error}"),
-                    )
-                    .await;
-            }
-            let tun_enabled = mihomo::api_get("/configs")
-                .await
-                .ok()
-                .and_then(|value| value.get("tun").cloned())
-                .and_then(|value| value.get("enable").and_then(Value::as_bool));
-            if tun_enabled != Some(true) {
-                return self
-                    .rollback_tun(
-                        &profile_id,
-                        &previous_override,
-                        "Mihomo 未确认 TUN 已启用".to_string(),
-                    )
+                    .rollback_tun(&profile_id, format!("加载 TUN 配置失败：{error}"))
                     .await;
             }
             if let Err(error) = crate::tun::wait_for_tun_ready().await {
                 return self
-                    .rollback_tun(
-                        &profile_id,
-                        &previous_override,
-                        format!("TUN 网卡启动失败：{error}"),
-                    )
+                    .rollback_tun(&profile_id, format!("TUN 网卡启动失败：{error}"))
                     .await;
             }
-            let baseline = match crate::tun::capture_snapshot().await {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    return self
-                        .rollback_tun(
-                            &profile_id,
-                            &previous_override,
-                            format!("TUN 网卡就绪后无法建立网络基线：{error}"),
-                        )
-                        .await;
-                }
-            };
+            let baseline = crate::tun::capture_snapshot().await.ok();
             {
                 let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
                 tun.status = crate::tun::TunStatus::Running;
                 tun.message = None;
-                tun.snapshot = Some(baseline);
+                tun.snapshot = baseline;
             }
             if let Err(error) = self.write_tun_persisted() {
                 return self
                     .rollback_tun(
                         &profile_id,
-                        &previous_override,
                         format!("保存 Service TUN 运行状态失败：{error}"),
                     )
                     .await;
@@ -1904,20 +2099,18 @@ rules:
         async fn rollback_tun(
             &self,
             profile_id: &str,
-            previous_override: &str,
             reason: String,
         ) -> Result<ServiceTunData, String> {
+            let runtime_restore = config::set_tun_enabled_at(&self.data_dir, false);
             let recovery =
-                config::restore_override_content_at(&self.data_dir, previous_override).map(|_| ());
-            let owns_core = self.owns_core().unwrap_or(false) && mihomo::is_running().await;
-            let recovery = if recovery.is_ok() && owns_core {
-                self.apply_profile(profile_id).await.map(|_| ())
-            } else if recovery.is_ok() {
-                config::restore_profile_config_at(&self.data_dir, profile_id)
-            } else {
-                recovery
-            }
-            .and_then(|_| self.clear_tun_persisted());
+                if runtime_restore.is_ok() && self.owned_core_ready().await.unwrap_or(false) {
+                    self.apply_active_runtime(false).await
+                } else if runtime_restore.is_ok() {
+                    config::restore_active_runtime_config_at(&self.data_dir).map(|_| ())
+                } else {
+                    runtime_restore
+                };
+            let recovery = recovery.and_then(|_| self.clear_tun_persisted());
             match recovery {
                 Ok(()) => {
                     let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
@@ -1934,7 +2127,6 @@ rules:
                     tun.status = crate::tun::TunStatus::Error;
                     tun.message = Some(message.clone());
                     tun.profile_id = Some(profile_id.to_string());
-                    tun.previous_override = Some(previous_override.to_string());
                     Err(message)
                 }
             }
@@ -1947,31 +2139,58 @@ rules:
 
         async fn disable_tun_inner(&self) -> Result<ServiceTunData, String> {
             let persisted = self.read_tun_persisted()?;
-            let (previous, profile_id) = {
+            let (previous, profile_id, has_session) = {
                 let in_memory = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
                 let previous = persisted
                     .as_ref()
                     .map(|state| state.previous_override.clone())
-                    .or_else(|| in_memory.previous_override.clone());
+                    .unwrap_or_else(|| in_memory.previous_override.clone());
                 let profile_id = persisted
                     .as_ref()
                     .map(|state| state.profile_id.clone())
                     .or_else(|| in_memory.profile_id.clone());
-                (previous, profile_id)
+                (
+                    previous,
+                    profile_id,
+                    persisted.is_some() || in_memory.profile_id.is_some(),
+                )
             };
-            let Some(previous) = previous else {
+            if !has_session {
+                config::set_tun_enabled_at(&self.data_dir, false)?;
+                if self.owned_core_ready().await? {
+                    if config::active_runtime_value_at(&self.data_dir)?.is_some() {
+                        self.apply_active_runtime(false).await?;
+                    }
+                } else {
+                    let _ = config::restore_active_runtime_config_at(&self.data_dir)?;
+                }
                 if let Ok(mut tun) = self.tun.lock() {
                     *tun = ServiceTunState::default();
                 }
                 return self.tun_data();
-            };
+            }
+            if self.managed_core_pid()?.is_none() && mihomo::is_running().await {
+                return Err(
+                    "检测到非 Service 所有的 Mihomo，拒绝由 Service 修改其 TUN 状态".to_string(),
+                );
+            }
             {
                 let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
                 tun.status = crate::tun::TunStatus::Stopping;
                 tun.message = None;
             }
-            if let Err(error) = config::restore_override_content_at(&self.data_dir, &previous) {
-                let message = format!("恢复 TUN 原始 Override 失败：{error}");
+            if let Some(previous) = previous.as_deref() {
+                if let Err(error) = config::restore_override_content_at(&self.data_dir, previous) {
+                    let message = format!("迁移旧 TUN 会话的 Override 快照失败：{error}");
+                    if let Ok(mut tun) = self.tun.lock() {
+                        tun.status = crate::tun::TunStatus::Error;
+                        tun.message = Some(message.clone());
+                    }
+                    return Err(message);
+                }
+            }
+            if let Err(error) = config::set_tun_enabled_at(&self.data_dir, false) {
+                let message = format!("写入 TUN 停止状态失败：{error}");
                 if let Ok(mut tun) = self.tun.lock() {
                     tun.status = crate::tun::TunStatus::Error;
                     tun.message = Some(message.clone());
@@ -1986,11 +2205,33 @@ rules:
                 }
                 return Err(message);
             };
-            let owns_core = self.owns_core().unwrap_or(false) && mihomo::is_running().await;
-            let restore = if owns_core {
+            let core_ready = self.owned_core_ready().await?;
+            if self.managed_core_pid()?.is_some() && !core_ready {
+                let message = "停止 TUN 时 Service Core 未处于 Ready".to_string();
+                if let Ok(mut tun) = self.tun.lock() {
+                    tun.status = crate::tun::TunStatus::Error;
+                    tun.message = Some(message.clone());
+                }
+                return Err(message);
+            }
+            let restore = if previous.is_some() && core_ready {
+                // Legacy sessions wrote TUN into local-override.yaml. Rebuild
+                // their active base exactly once after restoring that snapshot.
                 self.apply_profile(&profile_id).await.map(|_| ())
+            } else if previous.is_some() {
+                let built = config::build_value_at(&self.data_dir, &profile_id)?;
+                let yaml = serde_yaml::to_string(&built.value)
+                    .map_err(|error| format!("生成旧 TUN 恢复配置失败：{error}"))?;
+                config::commit_runtime_state_at(
+                    &self.data_dir,
+                    &profile_id,
+                    &built.base_value,
+                    &yaml,
+                )
+            } else if core_ready {
+                self.apply_active_runtime(false).await
             } else {
-                config::restore_profile_config_at(&self.data_dir, &profile_id)
+                config::restore_active_runtime_config_at(&self.data_dir).map(|_| ())
             };
             if let Err(error) = restore {
                 let message = format!("停止 TUN 后恢复配置失败：{error}");
@@ -1999,6 +2240,24 @@ rules:
                     tun.message = Some(message.clone());
                 }
                 return Err(message);
+            }
+            if core_ready {
+                if let Err(error) = config::verify_controller_runtime(Some(false)).await {
+                    let message = format!("停止 TUN 后 Controller 回读失败：{error}");
+                    if let Ok(mut tun) = self.tun.lock() {
+                        tun.status = crate::tun::TunStatus::Error;
+                        tun.message = Some(message.clone());
+                    }
+                    return Err(message);
+                }
+                if !self.owned_core_ready().await? {
+                    let message = "停止 TUN 后 Service Core 未保持 Ready".to_string();
+                    if let Ok(mut tun) = self.tun.lock() {
+                        tun.status = crate::tun::TunStatus::Error;
+                        tun.message = Some(message.clone());
+                    }
+                    return Err(message);
+                }
             }
             if let Err(error) = self.clear_tun_persisted() {
                 let message = format!("清理 Service TUN 恢复状态失败：{error}");
@@ -2033,11 +2292,25 @@ rules:
             let Some(persisted) = self.read_tun_persisted()? else {
                 return Ok(None);
             };
-            let result =
-                config::restore_override_content_at(&self.data_dir, &persisted.previous_override)
+            let legacy_restore = match persisted.previous_override.as_deref() {
+                Some(previous) => config::restore_override_content_at(&self.data_dir, previous)
                     .and_then(|_| {
-                        config::restore_profile_config_at(&self.data_dir, &persisted.profile_id)
-                    });
+                        config::set_tun_enabled_at(&self.data_dir, false)?;
+                        let built = config::build_value_at(&self.data_dir, &persisted.profile_id)?;
+                        let yaml = serde_yaml::to_string(&built.value)
+                            .map_err(|error| format!("生成旧 TUN 恢复配置失败：{error}"))?;
+                        config::commit_runtime_state_at(
+                            &self.data_dir,
+                            &persisted.profile_id,
+                            &built.base_value,
+                            &yaml,
+                        )
+                    }),
+                None => config::set_tun_enabled_at(&self.data_dir, false).and_then(|_| {
+                    config::restore_active_runtime_config_at(&self.data_dir).map(|_| ())
+                }),
+            };
+            let result = legacy_restore;
             match result {
                 Ok(()) => {
                     self.clear_tun_persisted()?;
@@ -2053,9 +2326,9 @@ rules:
                     let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
                     tun.status = crate::tun::TunStatus::Error;
                     tun.message = Some(format!("Service TUN 启动恢复失败：{error}"));
-                    tun.previous_override = Some(persisted.previous_override);
+                    tun.previous_override = persisted.previous_override;
                     tun.profile_id = Some(persisted.profile_id);
-                    tun.snapshot = Some(persisted.snapshot);
+                    tun.snapshot = persisted.snapshot;
                     Ok(tun.message.clone())
                 }
             }
@@ -2064,6 +2337,7 @@ rules:
         async fn status(&self) -> Result<ServiceStatusData, String> {
             let core = self.core_status().await?;
             let running = core.running;
+            let controller_ready = mihomo::is_running().await;
             self.refresh_child()?;
             let owns_core = self
                 .child
@@ -2076,7 +2350,7 @@ rules:
                 core_update: self.core_update_status()?,
                 running,
                 owns_core,
-                ownership_conflict: running && !owns_core,
+                ownership_conflict: controller_ready && !owns_core,
                 admin: is_admin(),
                 tun_status: tun.status,
                 tun_message: tun.message,
@@ -2114,11 +2388,12 @@ rules:
                 }
                 ServiceCommand::ApplyProfile { profile_id } => {
                     let _transition = self.tun_transition.lock().await;
-                    if self.tun_data()?.status != "disabled" {
-                        return Err("请先关闭 TUN，再切换 Profile".to_string());
+                    self.ensure_profile_apply_allowed()?;
+                    let result = self.apply_profile(&profile_id).await?;
+                    if let Err(error) = self.rebind_tun_profile(&profile_id) {
+                        eprintln!("{error}");
                     }
-                    Ok(serde_json::to_value(self.apply_profile(&profile_id).await?)
-                        .map_err(|e| e.to_string())?)
+                    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
                 }
                 ServiceCommand::TunSetEnabled {
                     enabled,
@@ -2152,11 +2427,16 @@ rules:
                 .map_err(|_| "Service Mihomo 状态锁异常")?
                 .take()
             {
+                let managed_pid = child.id();
                 if let Err(error) = child.kill() {
                     errors.push(format!("Service 停止 Mihomo 失败：{error}"));
                 }
                 if let Err(error) = child.wait() {
                     errors.push(format!("等待 Service Mihomo 退出失败：{error}"));
+                }
+                if let Err(error) = clear_service_core_owner_if_matches(&self.data_dir, managed_pid)
+                {
+                    errors.push(format!("清理 Service Core owner 失败：{error}"));
                 }
             }
             if errors.is_empty() {
@@ -2188,8 +2468,6 @@ rules:
         }
 
         async fn monitor(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
-            let mut previous_tick = unsafe { GetTickCount64() };
-            let mut was_active = false;
             loop {
                 tokio::select! {
                     changed = shutdown.changed() => {
@@ -2205,33 +2483,39 @@ rules:
                     Ok(tun) if tun.status != "disabled" && self.has_tun_recovery() => tun,
                     _ => {
                         drop(transition);
-                        if self.desired_core_running().unwrap_or(false)
-                            && !self.owns_core().unwrap_or(false)
-                        {
-                            if let Err(error) =
-                                self.recover_after_managed_core_exit(false, None).await
-                            {
-                                let _ = self.set_core_recovery_message(Some(error));
+                        if self.desired_core_running().unwrap_or(false) {
+                            match self.owned_core_ready().await {
+                                Ok(true) => {
+                                    let _ = self.set_core_recovery_message(None);
+                                }
+                                Ok(false) => {
+                                    if self.owns_core().unwrap_or(false) {
+                                        let _ = self.stop_owned_child_for_retry();
+                                    }
+                                    if let Err(error) = self.start().await {
+                                        let _ = self.set_core_recovery_message(Some(error));
+                                    }
+                                }
+                                Err(error) => {
+                                    let _ = self.set_core_recovery_message(Some(error));
+                                }
                             }
                         }
-                        if let Err(error) = self.reconcile_outbound_compatibility().await {
-                            eprintln!("outbound compatibility reconcile failed: {error}");
-                        }
-                        was_active = false;
                         continue;
                     }
                 };
-                let core_missing =
-                    !self.owns_core().unwrap_or(false) || !mihomo::is_running().await;
-                if core_missing {
+                let core_ready = self.owned_core_ready().await.unwrap_or(false);
+                if !core_ready {
                     let desired = self.desired_core_running().unwrap_or(false);
                     let tun_was_running = tun.status == "running";
                     let tun_profile_id = tun.profile_id.clone();
+                    if self.owns_core().unwrap_or(false) {
+                        let _ = self.stop_owned_child_for_retry();
+                    }
                     let cleanup = self.disable_tun_inner().await;
                     drop(transition);
                     if let Err(error) = cleanup {
                         let _ = self.set_core_recovery_message(Some(error));
-                        was_active = false;
                         continue;
                     }
                     if desired {
@@ -2247,70 +2531,7 @@ rules:
                             }
                         }
                     }
-                    was_active = false;
                     continue;
-                }
-                if tun.status != "running" {
-                    drop(transition);
-                    continue;
-                }
-                if !was_active {
-                    previous_tick = unsafe { GetTickCount64() };
-                    was_active = true;
-                }
-                let now = unsafe { GetTickCount64() };
-                let wake_gap = now.saturating_sub(previous_tick) > 30_000;
-                previous_tick = now;
-                let Ok(snapshot) = crate::tun::capture_snapshot().await else {
-                    drop(transition);
-                    continue;
-                };
-                let changed = wake_gap
-                    || tun
-                        .snapshot
-                        .as_ref()
-                        .map(|old| {
-                            old.default_route != snapshot.default_route
-                                || old.dns_servers != snapshot.dns_servers
-                                || old.adapters != snapshot.adapters
-                        })
-                        .unwrap_or(true);
-                if !changed {
-                    drop(transition);
-                    continue;
-                }
-                let Some(profile_id) = tun.profile_id.clone() else {
-                    drop(transition);
-                    continue;
-                };
-                if let Ok(mut current) = self.tun.lock() {
-                    current.status = crate::tun::TunStatus::Starting;
-                    current.message = Some("检测到网络变化，正在重新绑定 TUN 路由".to_string());
-                    current.snapshot = Some(snapshot);
-                }
-                match self.apply_profile(&profile_id).await {
-                    Ok(_) => {
-                        if !self.owns_core().unwrap_or(false) || !mihomo::is_running().await {
-                            let _ = self.disable_tun_inner().await;
-                            was_active = false;
-                            continue;
-                        }
-                        let baseline = crate::tun::capture_snapshot().await.ok();
-                        if let Ok(mut current) = self.tun.lock() {
-                            current.status = crate::tun::TunStatus::Running;
-                            current.message = None;
-                            if let Some(baseline) = baseline {
-                                current.snapshot = Some(baseline);
-                            }
-                        }
-                        let _ = self.write_tun_persisted();
-                    }
-                    Err(error) => {
-                        if let Ok(mut current) = self.tun.lock() {
-                            current.status = crate::tun::TunStatus::Error;
-                            current.message = Some(format!("网络变化后重载 TUN 失败：{error}"));
-                        }
-                    }
                 }
                 drop(transition);
             }
@@ -2722,6 +2943,55 @@ rules:
         }
 
         #[test]
+        fn service_core_owner_is_cleared_only_for_matching_pid() {
+            let data_dir = std::env::temp_dir().join(format!(
+                "mioproxy-service-core-owner-test-{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&data_dir).unwrap();
+            persist_service_core_owner(&data_dir, 4242).unwrap();
+            assert_eq!(read_persisted_service_core_pid_at(&data_dir), Some(4242));
+            clear_service_core_owner_if_matches(&data_dir, 4343).unwrap();
+            assert_eq!(read_persisted_service_core_pid_at(&data_dir), Some(4242));
+            clear_service_core_owner_if_matches(&data_dir, 4242).unwrap();
+            assert_eq!(read_persisted_service_core_pid_at(&data_dir), None);
+            let _ = fs::remove_dir_all(data_dir);
+        }
+
+        #[test]
+        fn ordinary_ipc_can_fall_back_when_service_transport_is_unavailable() {
+            for error in [
+                "MioProxy Service 已安装但当前 IPC 不可用，已阻止 GUI 接管 Mihomo",
+                "连接 MioProxy Service 失败：pipe unavailable",
+                "MioProxy Service 协议版本不匹配：GUI=1，Service=2",
+                "MioProxy Service 版本不匹配：GUI=0.9.1，Service=0.9.0",
+            ] {
+                assert!(is_optional_ipc_transport_error(error));
+            }
+            assert!(!is_optional_ipc_transport_error("Service 令牌无效"));
+        }
+
+        #[test]
+        fn legacy_service_tun_state_migrates_optional_recovery_fields() {
+            let state = serde_json::from_str::<PersistedServiceTunState>(
+                r#"{"previousOverride":"legacy override","profileId":"profile-1"}"#,
+            )
+            .unwrap();
+            assert_eq!(state.previous_override.as_deref(), Some("legacy override"));
+            assert_eq!(state.profile_id, "profile-1");
+            assert!(state.snapshot.is_none());
+
+            let current =
+                serde_json::from_str::<PersistedServiceTunState>(r#"{"profileId":"profile-2"}"#)
+                    .unwrap();
+            assert!(current.previous_override.is_none());
+            assert!(current.snapshot.is_none());
+        }
+
+        #[test]
         fn serializes_service_command_fields_in_camel_case() {
             let value = serde_json::to_value(ServiceCommand::TunSetEnabled {
                 enabled: true,
@@ -2915,10 +3185,16 @@ pub use windows_impl::{
 
 #[cfg(windows)]
 pub(crate) use windows_impl::{
-    prepare_for_update, request_apply_profile, request_core, request_core_update, request_reload,
-    request_service_status, request_tun, restore_for_lifecycle, resume_after_update_failure,
-    service_tun_status, verify_stopped_for_update,
+    persisted_managed_core_pid, prepare_for_update, request_apply_profile, request_core,
+    request_core_update, request_reload, request_service_status, request_tun,
+    restore_for_lifecycle, resume_after_update_failure, service_tun_status,
+    verify_stopped_for_update,
 };
+
+#[cfg(not(windows))]
+pub(crate) fn persisted_managed_core_pid(_app: &AppHandle) -> Option<u32> {
+    None
+}
 
 #[cfg(not(windows))]
 pub(crate) async fn try_request(

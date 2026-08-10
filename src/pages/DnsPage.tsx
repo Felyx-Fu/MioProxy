@@ -64,7 +64,7 @@ export function DnsPage({ profileId }: { profileId: string | null }) {
     setMessage(null);
     try {
       const result = await mihomoApi.configApply(profileId);
-      setMessage(result.controllerValidated ? "DNS 配置已通过 Mihomo 校验并加载。" : "DNS 配置未应用。请先启动 Mihomo 完成 Controller 校验。");
+      setMessage(result.controllerValidated ? "DNS 配置已通过 Mihomo 校验并加载。" : "DNS 配置未应用。请等待 Core Ready 后完成 Controller 校验。");
     } catch (value) {
       setError(value instanceof Error ? value.message : String(value));
     } finally {

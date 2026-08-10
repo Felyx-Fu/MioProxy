@@ -21,9 +21,10 @@ import { useTraffic } from "./hooks/useTraffic";
 export default function App() {
   const [page, setPage] = useState<Page>("home");
   const [status, setStatus] = useState<CoreStatus | null>(null);
-  const [coreState, setCoreState] = useState<CoreState>("stopped");
+  const [coreState, setCoreState] = useState<CoreState>("starting");
   const [version, setVersion] = useState<MihomoVersion | null>(null);
   const [proxies, setProxies] = useState<ProxiesResponse | null>(null);
+  const [activeProxyGroup, setActiveProxyGroup] = useState("PROXY");
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [proxyStatus, setProxyStatus] = useState<SystemProxyStatus | null>(null);
@@ -57,8 +58,10 @@ export default function App() {
   const serviceWasUnavailable = useRef(false);
   const serviceOutageStartedAt = useRef<number | null>(null);
   const serviceNoticeTimer = useRef<number | null>(null);
+  const coreCrashPending = useRef(false);
+  const coreReady = coreState === "ready";
   const traffic = useTraffic();
-  const connections = useConnections(Boolean(status?.running));
+  const connections = useConnections(coreReady);
 
   const dismissToast = useCallback((id: number) => {
     setToasts((current) => current.filter((toast) => toast.id !== id));
@@ -81,9 +84,9 @@ export default function App() {
     try {
       const next = await mihomoApi.status();
       setStatus(next);
-      setCoreState((current) => current === "error" && !next.running ? "error" : next.running ? "running" : "stopped");
+      setCoreState(next.state);
       if (next.recoveryMessage) setError(next.recoveryMessage);
-      if (next.running) {
+      if (next.state === "ready") {
         setVersion(await mihomoApi.version());
       } else {
         setVersion(null);
@@ -134,9 +137,6 @@ export default function App() {
       const recovered = serviceWasUnavailable.current && next.reachable;
       serviceWasUnavailable.current = !next.reachable && Boolean(next.error);
       setServiceConnection(next);
-      if (next.reachable) {
-        setCoreState(next.coreRunning ? "running" : next.desiredCoreRunning ? next.coreRecoveryMessage ? "recovering" : "starting" : "stopped");
-      }
       if (next.reachable || !next.error) {
         serviceOutageStartedAt.current = null;
         if (serviceNoticeTimer.current !== null) window.clearTimeout(serviceNoticeTimer.current);
@@ -329,8 +329,12 @@ export default function App() {
     let unlistenCrashed: (() => void) | undefined;
     void listen("mihomo-stopped", () => {
       if (!active) return;
-      setStatus((current) => current ? { ...current, running: false } : current);
-      setCoreState((current) => current === "stopping" ? "stopped" : "error");
+      if (coreCrashPending.current) {
+        coreCrashPending.current = false;
+        return;
+      }
+      setStatus((current) => current ? { ...current, state: "stopped", running: false } : current);
+      setCoreState("stopped");
       setProxyState("disabled");
     }).then((stop) => {
       if (active) unlistenStopped = stop;
@@ -339,7 +343,8 @@ export default function App() {
     void listen("mihomo-crashed", () => {
       if (!active) return;
       const message = "Mihomo 已异常退出，请检查日志或运行配置。";
-      setStatus((current) => current ? { ...current, running: false } : current);
+      coreCrashPending.current = true;
+      setStatus((current) => current ? { ...current, state: "error", running: false } : current);
       setCoreState("error");
       setProxyState("disabled");
       setError(message);
@@ -356,22 +361,30 @@ export default function App() {
   }, [pushToast]);
 
   useEffect(() => {
-    if (status?.running) void refreshProxies();
+    if (coreReady) void refreshProxies();
     else {
       setProxies(null);
       setProxyPathState("unknown");
     }
-  }, [status?.running, refreshProxies]);
+  }, [coreReady, refreshProxies]);
 
   useEffect(() => {
-    if (!status?.running) return;
+    if (!coreReady) return;
     const timer = window.setInterval(() => void refreshProxies(), 5000);
     return () => window.clearInterval(timer);
-  }, [status?.running, refreshProxies]);
+  }, [coreReady, refreshProxies]);
 
-  const currentNode = proxies?.proxies.PROXY?.now ?? null;
+  const selectableProxyGroups = Object.entries(proxies?.proxies ?? {}).filter(([, group]) =>
+    ["Selector", "URLTest", "Fallback", "LoadBalance"].includes(group.type ?? "") && Boolean(group.now),
+  );
+  const resolvedProxyGroup = proxies?.proxies[activeProxyGroup]?.now
+    ? activeProxyGroup
+    : proxies?.proxies.PROXY?.now
+      ? "PROXY"
+      : selectableProxyGroups[0]?.[0] ?? null;
+  const currentNode = resolvedProxyGroup ? proxies?.proxies[resolvedProxyGroup]?.now ?? null : null;
   useEffect(() => {
-    if (!status?.running || !currentNode) return;
+    if (!coreReady || !currentNode) return;
     let active = true;
     setProxyPathState("unknown");
     void mihomoApi.proxyDelay(currentNode).then((result) => {
@@ -382,7 +395,7 @@ export default function App() {
       if (active) setProxyPathState("unavailable");
     });
     return () => { active = false; };
-  }, [currentNode, status?.running]);
+  }, [coreReady, currentNode]);
 
   async function addProfile(name: string, url: string) {
     setError(null);
@@ -453,8 +466,9 @@ export default function App() {
     setError(null);
     try {
       await mihomoApi.selectProxy(group, proxy);
+      setActiveProxyGroup(group);
       await refreshProxies();
-      if (group === "PROXY") setProxyPathState("unknown");
+      setProxyPathState("unknown");
       pushToast("success", `已切换到 ${proxy}`);
     } catch (e) {
       const message = errorMessage(e);
@@ -574,10 +588,10 @@ export default function App() {
         {page === "logs" && <LogsPage />}
         {page === "profiles" && <ProfilesPage profiles={profiles} selectedId={selectedProfileId} busyId={profileBusyId} error={error} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} />}
         {page === "proxies" && <ProxiesPage data={proxies} loading={proxyLoading} busyProxy={proxyBusy} delayByProxy={delayByProxy} profilesLoaded={profilesLoaded} profileCount={profiles.length} onRefresh={refreshProxies} onSelect={selectProxy} onDelay={testProxyDelay} />}
-        {page === "rules" && <RulesPage running={Boolean(status?.running)} />}
+        {page === "rules" && <RulesPage running={coreReady} />}
         {page === "dns" && <DnsPage profileId={selectedProfileId} />}
         {page === "overrides" && <OverridesPage profileId={selectedProfileId} />}
-        {page === "tun" && <TunPage profileId={selectedProfileId} coreRunning={Boolean(status?.running)} systemProxyEnabled={Boolean(proxyStatus?.enabled)} systemProxyBusy={settingsBusy} onSetSystemProxy={setSystemProxyEnabled} />}
+        {page === "tun" && <TunPage profileId={selectedProfileId} coreRunning={coreReady} systemProxyEnabled={Boolean(proxyStatus?.enabled)} />}
         {page === "settings" && <SettingsPage status={status} coreState={coreState} proxyStatus={proxyStatus} proxyState={proxyState} serviceConnection={serviceReconnectVisible ? serviceConnection : null} startup={startup} updatePreferences={updatePreferences} busy={settingsBusy} onRequestProxyTransition={requestSystemProxyTransition} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} onToggleUpdatePreference={toggleUpdatePreference} appUpdate={{ ...updateStatus, checking: updateChecking, downloading: updateDownloading, installing: updateInstalling, downloaded: updateDownloaded, progress: updateProgress, availableVersion: availableUpdate?.version ?? null, releaseNotes: availableUpdate?.body ?? null, error: updateError }} onCheckForUpdate={() => void checkForUpdate()} onInstallUpdate={() => void installUpdate()} coreUpdate={coreUpdate} coreUpdateBusy={coreUpdateBusy} onCheckCoreUpdate={() => void checkCoreUpdate()} onInstallCoreUpdate={() => void installCoreUpdate()} diagnosticBusy={diagnosticBusy} diagnosticPath={diagnosticPath} onGenerateDiagnosticBundle={() => void generateDiagnosticBundle()} />}
       </main>
       <ToastHost toasts={toasts} onDismiss={dismissToast} />

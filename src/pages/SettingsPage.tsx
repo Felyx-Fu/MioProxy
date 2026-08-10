@@ -78,9 +78,9 @@ export function SettingsPage({
         </article>}
         <article className="setting-row">
           <Power size={20} />
-          <div className="setting-copy"><span>系统代理</span><strong>{proxyStatus?.enabled ? `已开启 · 127.0.0.1:${proxyStatus.mixedPort}` : "已关闭 · 保留 Windows 原始设置"}</strong><small>{status?.running ? "由 MioProxy 接管，内核退出时自动恢复" : "启动 Mihomo 后才能开启"}</small></div>
-          <button className="setting-toggle" type="button" onClick={onRequestProxyTransition} disabled={coreState !== "running" || busy} aria-pressed={proxyStatus?.enabled ?? false}>
-            {proxyState === "enabling" || proxyState === "disabling" ? "切换中…" : proxyStatus?.enabled ? "关闭" : "开启"}
+          <div className="setting-copy"><span>系统代理</span><strong>{proxyStatus?.enabled ? `已开启 · 127.0.0.1:${proxyStatus.mixedPort}` : proxyStatus?.externalDetected ? "外部代理 · MioProxy 未接管" : "已关闭 · 保留 Windows 原始设置"}</strong><small>{coreState === "ready" ? proxyStatus?.externalDetected ? "可请求由 MioProxy 接管；原始设置会先保存" : "由 MioProxy 接管，内核退出时自动恢复" : "Core Ready 后才能开启"}</small></div>
+          <button className="setting-toggle" type="button" onClick={onRequestProxyTransition} disabled={coreState !== "ready" || busy} aria-pressed={proxyStatus?.enabled ?? false}>
+            {proxyState === "enabling" || proxyState === "disabling" ? "切换中…" : proxyStatus?.enabled ? "关闭" : proxyStatus?.externalDetected ? "接管" : "开启"}
           </button>
         </article>
         <article className="setting-row">
@@ -106,7 +106,7 @@ export function SettingsPage({
         </article>
         <article className="setting-row">
           <ShieldCheck size={20} />
-          <div className="setting-copy"><span>Mihomo Core 更新</span><strong>{coreUpdate?.availableVersion ? `Mihomo ${coreUpdate.availableVersion} 可用` : coreUpdate?.currentVersion ? `当前版本 ${coreUpdate.currentVersion}` : "由 MioProxy Service 管理"}</strong><small>{coreUpdate?.error ?? (coreUpdate?.phase === "completed" ? "Core 已完成健康检查" : coreUpdate?.assetName ?? "仅使用官方 Release，并保留失败回滚")}</small></div>
+          <div className="setting-copy"><span>Mihomo Core 更新</span><strong>{coreUpdate?.availableVersion ? `Mihomo ${coreUpdate.availableVersion} 可用` : coreUpdate?.currentVersion ? `当前版本 ${coreUpdate.currentVersion}` : "等待 Core 版本信息"}</strong><small>{coreUpdate?.error ?? (coreUpdate?.phase === "completed" ? "Core 已完成健康检查" : coreUpdate?.assetName ?? "仅使用官方 Release，并保留失败回滚")}</small></div>
           <button className="setting-toggle" type="button" onClick={coreUpdate?.availableVersion ? onInstallCoreUpdate : onCheckCoreUpdate} disabled={busy || coreUpdateBusy}>
             {coreUpdateBusy ? "处理中…" : coreUpdate?.availableVersion ? "下载并安装" : "检查更新"}
           </button>
@@ -134,7 +134,7 @@ export function SettingsPage({
         </article>
         <article>
           <FolderCog size={20} />
-          <div><span>运行配置</span><strong>{status?.configPath ?? "启动内核后生成 config.yaml"}</strong></div>
+          <div><span>运行配置</span><strong>{status?.configPath ?? "Core Ready 后生成 config.yaml"}</strong></div>
         </article>
         <article>
           <LockKeyhole size={20} />

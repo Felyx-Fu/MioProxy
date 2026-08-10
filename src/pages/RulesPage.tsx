@@ -77,7 +77,7 @@ export function RulesPage({ running }: { running: boolean }) {
       {error && <div className="error-banner"><Workflow size={17} /><span>{error}</span></div>}
       {message && <div className="success-banner"><Database size={17} /><span>{message}</span></div>}
 
-      {!running ? <div className="empty-card empty-card-large panel"><Workflow size={28} /><strong>内核未运行</strong><p>启动 Mihomo 后，当前规则和 Rule Provider 会从 Controller API 加载。</p></div> : <>
+      {!running ? <div className="empty-card empty-card-large panel"><Workflow size={28} /><strong>Core 尚未 Ready</strong><p>Core Ready 后，当前规则和 Rule Provider 会从 Controller API 加载。</p></div> : <>
         <div className="rules-overview-grid"><article className="metric-card panel"><Workflow size={19} /><div><span>当前规则</span><strong>{rules.length}</strong></div></article><article className="metric-card panel"><Database size={19} /><div><span>Rule Providers</span><strong>{Object.keys(providers).length}</strong></div></article><article className="metric-card panel"><RotateCw size={19} /><div><span>数据来源</span><strong>Controller</strong></div></article></div>
 
         <div className="rules-toolbar panel"><label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索规则、域名或命中策略" /></label><select value={type} onChange={(event) => setType(event.target.value)}><option value="all">所有类型</option>{types.map((item) => <option value={item} key={item}>{item}</option>)}</select></div>

@@ -59,7 +59,7 @@ export function OverridesPage({ profileId }: { profileId: string | null }) {
         setSavedContent(snapshot.content);
       }
       const result = await mihomoApi.configApply(profileId);
-      setMessage(result.controllerValidated ? "最终配置已通过 Mihomo 校验并加载。" : "最终配置未应用。请先启动 Mihomo 完成 Controller 校验。");
+      setMessage(result.controllerValidated ? "最终配置已通过 Mihomo 校验并加载。" : "最终配置未应用。请等待 Core Ready 后完成 Controller 校验。");
       setPreview(await mihomoApi.configPreview(profileId));
     } catch (value) {
       setError(value instanceof Error ? value.message : String(value));
