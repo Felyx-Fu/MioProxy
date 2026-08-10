@@ -5,6 +5,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
+
 use base64::{engine::general_purpose, Engine as _};
 use percent_encoding::percent_decode_str;
 use reqwest::{Client, Url};
@@ -34,28 +37,14 @@ fn profiles_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 pub(crate) fn read_profiles(app: &AppHandle) -> Result<Vec<Profile>, String> {
     let path = profiles_path(app)?;
-    if !path.exists() {
+    let Some(content) = crate::config::read_text_file_at(&path, "读取 Profile 数据")? else {
         return Ok(Vec::new());
-    }
-
-    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    };
     serde_json::from_str(&content).map_err(|e| format!("Profile 数据损坏：{e}"))
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-
-    let temp = path.with_extension(format!(
-        "{}.tmp",
-        path.extension().and_then(|e| e.to_str()).unwrap_or("file")
-    ));
-    fs::write(&temp, bytes).map_err(|e| e.to_string())?;
-    if path.exists() {
-        fs::remove_file(path).map_err(|e| e.to_string())?;
-    }
-    fs::rename(temp, path).map_err(|e| e.to_string())
+    crate::config::write_atomic(path, bytes)
 }
 
 fn write_profiles(app: &AppHandle, profiles: &[Profile]) -> Result<(), String> {
@@ -94,6 +83,54 @@ fn count_nodes(body: &str) -> Option<u32> {
     yaml.get("proxies")?
         .as_sequence()
         .map(|items| items.len() as u32)
+}
+
+fn staged_profile_path(data_dir: &Path, profile_id: &str) -> Result<PathBuf, String> {
+    if profile_id.is_empty()
+        || !profile_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("Profile ID 无效，拒绝生成文件路径".to_string());
+    }
+    let mut random = [0u8; 8];
+    getrandom::fill(&mut random).map_err(|e| format!("生成 Profile 文件名失败：{e}"))?;
+    let suffix = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(data_dir
+        .join("profiles")
+        .join(format!("{profile_id}-{suffix}.yaml")))
+}
+
+fn remove_profile_file(data_dir: &Path, raw_path: &str) -> Result<(), String> {
+    let path = Path::new(raw_path);
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    #[cfg(windows)]
+    if metadata.file_attributes() & 0x400 != 0 {
+        return Err(format!(
+            "拒绝删除 Profile Reparse Point：{}",
+            path.display()
+        ));
+    }
+    #[cfg(not(windows))]
+    if metadata.file_type().is_symlink() {
+        return Err(format!("拒绝删除 Profile 符号链接：{}", path.display()));
+    }
+
+    let profiles_root = fs::canonicalize(data_dir.join("profiles"))
+        .map_err(|e| format!("解析 Profile 目录失败：{e}"))?;
+    let canonical_path =
+        fs::canonicalize(path).map_err(|e| format!("解析 Profile 文件失败：{e}"))?;
+    if !canonical_path.starts_with(&profiles_root) {
+        return Err("Profile 文件必须位于应用数据目录的 profiles 文件夹内".to_string());
+    }
+    fs::remove_file(path).map_err(|e| e.to_string())
 }
 
 fn value_key(value: &str) -> Value {
@@ -436,6 +473,7 @@ pub fn profile_list(app: AppHandle) -> Result<Vec<Profile>, String> {
 
 #[tauri::command]
 pub fn profile_add(app: AppHandle, name: String, url: String) -> Result<Profile, String> {
+    crate::ensure_mutations_allowed(&app)?;
     let url = validate_subscription_url(&url)?;
     let name = name.trim();
     if name.is_empty() {
@@ -457,11 +495,13 @@ pub fn profile_add(app: AppHandle, name: String, url: String) -> Result<Profile,
     };
     profiles.push(profile.clone());
     write_profiles(&app, &profiles)?;
+    crate::diagnostics::record_event(&app, "info", "profile", "Profile added");
     Ok(profile)
 }
 
 #[tauri::command]
 pub async fn profile_download(app: AppHandle, id: String) -> Result<Profile, String> {
+    crate::ensure_mutations_allowed(&app)?;
     let _transition = crate::tun::lock_transitions().await;
     if crate::tun::is_active(&app) {
         return Err("请先关闭 TUN，再更新 Profile".to_string());
@@ -498,10 +538,9 @@ pub async fn profile_download(app: AppHandle, id: String) -> Result<Profile, Str
         return Err("订阅响应为空".to_string());
     }
     let body = normalize_subscription_body(&body)?;
+    crate::config::validate_profile_yaml(&body)?;
 
-    let path = data_dir(&app)?
-        .join("profiles")
-        .join(format!("{}.yaml", profile.id));
+    let path = staged_profile_path(&data_dir(&app)?, &profile.id)?;
     write_atomic(&path, body.as_bytes())?;
 
     let updated_at = timestamp();
@@ -516,16 +555,26 @@ pub async fn profile_download(app: AppHandle, id: String) -> Result<Profile, Str
         updated.clone()
     };
     write_profiles(&app, &profiles)?;
+    if let Some(previous_path) = profile.file_path {
+        if previous_path != path.display().to_string() {
+            if let Err(error) = remove_profile_file(&data_dir(&app)?, &previous_path) {
+                eprintln!("清理旧 Profile 文件失败：{error}");
+            }
+        }
+    }
+    crate::diagnostics::record_event(&app, "info", "profile", "Profile updated");
     Ok(updated)
 }
 
 #[tauri::command]
 pub async fn profile_apply(app: AppHandle, id: String) -> Result<String, String> {
+    crate::ensure_mutations_allowed(&app)?;
     crate::config::apply_profile(app, id).await
 }
 
 #[tauri::command]
 pub async fn profile_remove(app: AppHandle, id: String) -> Result<(), String> {
+    crate::ensure_mutations_allowed(&app)?;
     let _transition = crate::tun::lock_transitions().await;
     if crate::tun::is_active(&app) {
         return Err("请先关闭 TUN，再删除 Profile".to_string());
@@ -540,20 +589,29 @@ pub async fn profile_remove(app: AppHandle, id: String) -> Result<(), String> {
         .iter()
         .position(|profile| profile.id == id)
         .ok_or_else(|| "找不到这个 Profile".to_string())?;
-    if let Some(path) = profiles[index].file_path.as_ref() {
-        if Path::new(path).exists() {
-            fs::remove_file(path).map_err(|e| e.to_string())?;
+    let previous_path = profiles[index].file_path.clone();
+    profiles.remove(index);
+    write_profiles(&app, &profiles)?;
+    if let Some(path) = previous_path {
+        if let Err(error) = remove_profile_file(&data_dir(&app)?, &path) {
+            eprintln!("清理已删除 Profile 文件失败：{error}");
         }
     }
-    profiles.remove(index);
-    write_profiles(&app, &profiles)
+    crate::diagnostics::record_event(&app, "info", "profile", "Profile removed");
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_profile_id, normalize_subscription_body};
+    use super::{
+        generate_profile_id, normalize_subscription_body, remove_profile_file, staged_profile_path,
+    };
     use base64::{engine::general_purpose, Engine as _};
     use serde_yaml::Value;
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn normalizes_base64_proxy_subscription() {
@@ -666,5 +724,28 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.starts_with("profile-"));
         assert_eq!(first.len(), "profile-".len() + 32);
+    }
+
+    #[test]
+    fn profile_paths_are_scoped_to_the_profiles_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "mioproxy-profile-path-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let profiles_dir = root.join("profiles");
+        fs::create_dir_all(&profiles_dir).unwrap();
+        let inside = profiles_dir.join("profile.yaml");
+        let outside = root.join("outside.yaml");
+        fs::write(&inside, "proxies: []\n").unwrap();
+        fs::write(&outside, "do not remove\n").unwrap();
+        assert!(remove_profile_file(&root, inside.to_str().unwrap()).is_ok());
+        assert!(!inside.exists());
+        assert!(remove_profile_file(&root, outside.to_str().unwrap()).is_err());
+        assert!(outside.exists());
+        assert!(staged_profile_path(&root, "../outside").is_err());
+        let _ = fs::remove_dir_all(root);
     }
 }

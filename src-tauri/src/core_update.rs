@@ -6,6 +6,9 @@ use std::{
     sync::atomic::Ordering,
 };
 
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
+
 use reqwest::{Client, Url};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -70,7 +73,7 @@ struct ReleaseResponse {
 
 fn github_client() -> Result<Client, String> {
     Client::builder()
-        .user_agent("MioProxy-Core-Updater/0.8")
+        .user_agent("MioProxy-Core-Updater/0.9")
         .build()
         .map_err(|error| format!("创建 Mihomo 更新客户端失败：{error}"))
 }
@@ -106,7 +109,13 @@ fn is_candidate_asset(name: &str, compatible: bool) -> bool {
     } else {
         "mihomo-windows-amd64-"
     };
-    name.starts_with(prefix) && name.ends_with(".zip")
+    !name.is_empty()
+        && !name.contains(['/', '\\'])
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        && name.starts_with(prefix)
+        && name.ends_with(".zip")
 }
 
 pub(crate) fn parse_release(body: &[u8]) -> Result<CoreRelease, String> {
@@ -181,6 +190,32 @@ fn ensure_regular_file(path: &Path, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn ensure_not_reparse(path: &Path, label: &str) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("读取 {label} 属性失败：{error}")),
+    };
+    if metadata.file_attributes() & 0x400 != 0 {
+        return Err(format!("拒绝使用 Reparse Point {label}"));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn ensure_not_reparse(path: &Path, label: &str) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("读取 {label} 属性失败：{error}")),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(format!("拒绝使用符号链接 {label}"));
+    }
+    Ok(())
+}
+
 fn extract_core(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let mut archive = ZipArchive::new(Cursor::new(bytes))
         .map_err(|error| format!("Mihomo ZIP 包无效：{error}"))?;
@@ -221,6 +256,7 @@ pub(crate) async fn download_to_staging(
 ) -> Result<PathBuf, String> {
     fs::create_dir_all(updates_dir)
         .map_err(|error| format!("创建 Core staging 目录失败：{error}"))?;
+    ensure_not_reparse(updates_dir, "Core staging 目录")?;
     let client = github_client()?;
     let response = client
         .get(release.download_url.clone())
@@ -283,6 +319,7 @@ pub(crate) struct CoreBackup {
 
 pub(crate) fn replace_core(core_path: &Path, staged_path: &Path) -> Result<CoreBackup, String> {
     ensure_regular_file(staged_path, "staged Mihomo Core")?;
+    ensure_not_reparse(staged_path, "staged Mihomo Core")?;
     if core_path.exists() {
         ensure_regular_file(core_path, "当前 Mihomo Core")?;
     }
@@ -290,8 +327,12 @@ pub(crate) fn replace_core(core_path: &Path, staged_path: &Path) -> Result<CoreB
         .parent()
         .ok_or_else(|| "无法确定 Mihomo Core 目录".to_string())?;
     fs::create_dir_all(parent).map_err(|error| format!("创建 Mihomo Core 目录失败：{error}"))?;
+    ensure_not_reparse(parent, "Mihomo Core 目录")?;
     let replacement = parent.join(".mihomo.exe.replacement");
     let backup_path = core_path.with_file_name("mihomo.exe.backup");
+    ensure_not_reparse(core_path, "当前 Mihomo Core")?;
+    ensure_not_reparse(&replacement, "Mihomo Core replacement")?;
+    ensure_not_reparse(&backup_path, "旧 Mihomo Core 备份")?;
     let _ = fs::remove_file(&replacement);
     if backup_path.exists() {
         ensure_regular_file(&backup_path, "旧 Mihomo Core 备份")?;
@@ -321,6 +362,8 @@ pub(crate) fn replace_core(core_path: &Path, staged_path: &Path) -> Result<CoreB
 }
 
 pub(crate) fn rollback_core(backup: &CoreBackup) -> Result<(), String> {
+    ensure_not_reparse(&backup.core_path, "当前 Mihomo Core")?;
+    ensure_not_reparse(&backup.backup_path, "旧 Mihomo Core 备份")?;
     let _ = fs::remove_file(&backup.core_path);
     if backup.had_original {
         fs::rename(&backup.backup_path, &backup.core_path)
@@ -331,6 +374,7 @@ pub(crate) fn rollback_core(backup: &CoreBackup) -> Result<(), String> {
 
 pub(crate) fn finalize_core(backup: &CoreBackup) -> Result<(), String> {
     if backup.had_original {
+        ensure_not_reparse(&backup.backup_path, "旧 Mihomo Core 备份")?;
         fs::remove_file(&backup.backup_path)
             .map_err(|error| format!("删除旧 Mihomo Core 备份失败：{error}"))?;
     }
@@ -339,6 +383,8 @@ pub(crate) fn finalize_core(backup: &CoreBackup) -> Result<(), String> {
 
 pub(crate) fn recover_orphaned_backup(core_path: &Path) -> Result<bool, String> {
     let backup_path = core_path.with_file_name("mihomo.exe.backup");
+    ensure_not_reparse(core_path, "当前 Mihomo Core")?;
+    ensure_not_reparse(&backup_path, "旧 Mihomo Core 备份")?;
     if !backup_path.exists() {
         return Ok(false);
     }
@@ -386,7 +432,7 @@ pub(crate) async fn mihomo_core_update_install(
     app: tauri::AppHandle,
 ) -> Result<CoreUpdateStatus, String> {
     crate::ensure_mutations_allowed(&app)?;
-    if crate::system_proxy::is_enabled_for_update()? {
+    if crate::system_proxy::is_enabled_for_update(&app)? {
         return Err(
             "Core 更新前必须关闭 Windows System Proxy，避免 Mihomo 停止期间断网".to_string(),
         );
@@ -464,6 +510,19 @@ mod tests {
         ))
         .unwrap()
         .replace(",\"digest\":\"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"", "");
+        assert!(parse_release(body.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn rejects_asset_names_with_path_separators() {
+        let body = String::from_utf8(release_json(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ))
+        .unwrap()
+        .replace(
+            "mihomo-windows-amd64-compatible-v1.19.28.zip",
+            "mihomo-windows-amd64-compatible-..\\evil.zip",
+        );
         assert!(parse_release(body.as_bytes()).is_err());
     }
 

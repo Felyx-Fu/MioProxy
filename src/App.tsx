@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Update, type DownloadEvent } from "@tauri-apps/plugin-updater";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { mihomoApi, type CoreState, type CoreStatus, type CoreUpdateStatus, type MihomoVersion, type Profile, type ProxiesResponse, type ProxyState, type StartupSettings, type SystemProxyStatus, type UpdatePreferences, type UpdateStatus } from "./api/mihomo";
+import { mihomoApi, type CoreState, type CoreStatus, type CoreUpdateStatus, type MihomoVersion, type Profile, type ProxiesResponse, type ProxyPathState, type ProxyState, type ServiceConnectionStatus, type StartupSettings, type SystemProxyStatus, type UpdatePreferences, type UpdateStatus } from "./api/mihomo";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { ToastHost, type ToastMessage, type ToastTone } from "./components/Feedback";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
@@ -28,9 +28,9 @@ export default function App() {
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [proxyStatus, setProxyStatus] = useState<SystemProxyStatus | null>(null);
   const [proxyState, setProxyState] = useState<ProxyState>("disabled");
+  const [proxyPathState, setProxyPathState] = useState<ProxyPathState>("unknown");
   const [startup, setStartup] = useState<StartupSettings | null>(null);
   const [updatePreferences, setUpdatePreferences] = useState<UpdatePreferences | null>(null);
-  const [busy, setBusy] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [profileBusyId, setProfileBusyId] = useState<string | null>(null);
   const [proxyLoading, setProxyLoading] = useState(false);
@@ -39,7 +39,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ currentVersion: "0.8.0", updating: false, checkpoint: null, recoveryError: null });
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ currentVersion: "0.9.1", updating: false, checkpoint: null, recoveryError: null });
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateDownloading, setUpdateDownloading] = useState(false);
@@ -49,7 +49,14 @@ export default function App() {
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [coreUpdate, setCoreUpdate] = useState<CoreUpdateStatus | null>(null);
   const [coreUpdateBusy, setCoreUpdateBusy] = useState(false);
+  const [diagnosticBusy, setDiagnosticBusy] = useState(false);
+  const [diagnosticPath, setDiagnosticPath] = useState<string | null>(null);
+  const [serviceConnection, setServiceConnection] = useState<ServiceConnectionStatus | null>(null);
+  const [serviceReconnectVisible, setServiceReconnectVisible] = useState(false);
   const toastId = useRef(0);
+  const serviceWasUnavailable = useRef(false);
+  const serviceOutageStartedAt = useRef<number | null>(null);
+  const serviceNoticeTimer = useRef<number | null>(null);
   const traffic = useTraffic();
   const connections = useConnections(Boolean(status?.running));
 
@@ -66,11 +73,16 @@ export default function App() {
     return value instanceof Error ? value.message : String(value).replace(/^Error:\s*/, "");
   }
 
+  function isServiceIpcFailure(message: string) {
+    return /MioProxy Service|IPC|Named Pipe|命名管道|pipe|服务端身份/i.test(message);
+  }
+
   const refreshStatus = useCallback(async () => {
     try {
       const next = await mihomoApi.status();
       setStatus(next);
       setCoreState((current) => current === "error" && !next.running ? "error" : next.running ? "running" : "stopped");
+      if (next.recoveryMessage) setError(next.recoveryMessage);
       if (next.running) {
         setVersion(await mihomoApi.version());
       } else {
@@ -78,6 +90,7 @@ export default function App() {
       }
     } catch (e) {
       const message = errorMessage(e);
+      if (isServiceIpcFailure(message)) return;
       setCoreState("error");
       setError(message);
     }
@@ -99,8 +112,9 @@ export default function App() {
     try {
       const next = await mihomoApi.systemProxyStatus();
       setProxyStatus(next);
-      setProxyState((current) => current === "error" && !next.enabled ? "error" : next.enabled ? "enabled" : "disabled");
+      setProxyState(next.enabled ? "enabled" : "disabled");
     } catch (e) {
+      if (isServiceIpcFailure(errorMessage(e))) return;
       setProxyState("error");
       setError(errorMessage(e));
     }
@@ -114,14 +128,47 @@ export default function App() {
     }
   }, []);
 
+  const refreshServiceConnection = useCallback(async () => {
+    try {
+      const next = await mihomoApi.serviceStatus();
+      const recovered = serviceWasUnavailable.current && next.reachable;
+      serviceWasUnavailable.current = !next.reachable && Boolean(next.error);
+      setServiceConnection(next);
+      if (next.reachable) {
+        setCoreState(next.coreRunning ? "running" : next.desiredCoreRunning ? next.coreRecoveryMessage ? "recovering" : "starting" : "stopped");
+      }
+      if (next.reachable || !next.error) {
+        serviceOutageStartedAt.current = null;
+        if (serviceNoticeTimer.current !== null) window.clearTimeout(serviceNoticeTimer.current);
+        serviceNoticeTimer.current = null;
+        setServiceReconnectVisible(false);
+      } else if (next.versionMismatch) {
+        setServiceReconnectVisible(true);
+      } else if (serviceOutageStartedAt.current === null) {
+        serviceOutageStartedAt.current = Date.now();
+        serviceNoticeTimer.current = window.setTimeout(() => {
+          if (serviceWasUnavailable.current) setServiceReconnectVisible(true);
+        }, 5000);
+      }
+      if (recovered) {
+        void refreshStatus();
+        void refreshSystemProxy();
+        void refreshProxies();
+      }
+    } catch {
+      serviceWasUnavailable.current = true;
+    }
+  }, [refreshProxies, refreshStatus, refreshSystemProxy]);
+
   useEffect(() => {
     void refreshStatus();
     void refreshSystemProxy();
     void refreshStartup();
+    void refreshServiceConnection();
     void mihomoApi.updatePreferencesStatus().then(setUpdatePreferences).catch((e) => setUpdateError(errorMessage(e)));
     void mihomoApi.updateStatus().then(setUpdateStatus).catch((e) => setUpdateError(errorMessage(e)));
     void mihomoApi.coreUpdateStatus().then(setCoreUpdate).catch(() => undefined);
-  }, [refreshStatus, refreshStartup, refreshSystemProxy]);
+  }, [refreshServiceConnection, refreshStatus, refreshStartup, refreshSystemProxy]);
 
   const downloadUpdate = useCallback(async (update: Update, silent = false) => {
     setUpdateDownloading(true);
@@ -227,13 +274,43 @@ export default function App() {
     }
   }
 
+  async function generateDiagnosticBundle() {
+    setDiagnosticBusy(true);
+    try {
+      const path = await mihomoApi.diagnosticBundleGenerate();
+      setDiagnosticPath(path);
+      pushToast("success", "脱敏诊断包已生成");
+    } catch (e) {
+      const message = errorMessage(e);
+      setError(message);
+      pushToast("error", `生成诊断包失败：${message}`);
+    } finally {
+      setDiagnosticBusy(false);
+    }
+  }
+
   useEffect(() => {
     const timer = window.setInterval(() => {
       void refreshStatus();
       void refreshSystemProxy();
+      void refreshServiceConnection();
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [refreshStatus, refreshSystemProxy]);
+  }, [refreshServiceConnection, refreshStatus, refreshSystemProxy]);
+
+  useEffect(() => {
+    if (serviceConnection?.reachable || !serviceConnection?.error) return;
+    let cancelled = false;
+    void (async () => {
+      for (const delay of [250, 500, 1000, 2000, 4000]) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
+        if (cancelled) return;
+        await refreshServiceConnection();
+        if (!serviceWasUnavailable.current) return;
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [refreshServiceConnection, serviceConnection?.error, serviceConnection?.reachable]);
 
   useEffect(() => {
     void mihomoApi.profileList().then((next) => {
@@ -280,7 +357,10 @@ export default function App() {
 
   useEffect(() => {
     if (status?.running) void refreshProxies();
-    else setProxies(null);
+    else {
+      setProxies(null);
+      setProxyPathState("unknown");
+    }
   }, [status?.running, refreshProxies]);
 
   useEffect(() => {
@@ -293,34 +373,16 @@ export default function App() {
   useEffect(() => {
     if (!status?.running || !currentNode) return;
     let active = true;
+    setProxyPathState("unknown");
     void mihomoApi.proxyDelay(currentNode).then((result) => {
-      if (active) setDelayByProxy((current) => ({ ...current, [currentNode]: result.delay }));
-    }).catch(() => undefined);
+      if (!active) return;
+      setDelayByProxy((current) => ({ ...current, [currentNode]: result.delay }));
+      setProxyPathState("healthy");
+    }).catch(() => {
+      if (active) setProxyPathState("unavailable");
+    });
     return () => { active = false; };
   }, [currentNode, status?.running]);
-
-  async function toggleCore() {
-    if (coreState === "starting" || coreState === "stopping" || coreState === "reloading") return;
-    const willRun = !status?.running;
-    setCoreState(willRun ? "starting" : "stopping");
-    setBusy(true);
-    setError(null);
-    try {
-      const next = status?.running ? await mihomoApi.stop() : await mihomoApi.start();
-      setStatus(next);
-      await new Promise((resolve) => setTimeout(resolve, 450));
-      await refreshStatus();
-      await refreshSystemProxy();
-      pushToast("success", willRun ? "Mihomo 已启动" : "Mihomo 已停止");
-    } catch (e) {
-      const message = errorMessage(e);
-      setCoreState("error");
-      setError(message);
-      pushToast("error", message);
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function addProfile(name: string, url: string) {
     setError(null);
@@ -392,6 +454,7 @@ export default function App() {
     try {
       await mihomoApi.selectProxy(group, proxy);
       await refreshProxies();
+      if (group === "PROXY") setProxyPathState("unknown");
       pushToast("success", `已切换到 ${proxy}`);
     } catch (e) {
       const message = errorMessage(e);
@@ -408,23 +471,20 @@ export default function App() {
     try {
       const result = await mihomoApi.proxyDelay(proxy);
       setDelayByProxy((current) => ({ ...current, [proxy]: result.delay }));
+      if (proxy === currentNode) setProxyPathState("healthy");
     } catch (e) {
-      const message = errorMessage(e);
-      setError(message);
-      pushToast("error", message);
+      if (proxy === currentNode) setProxyPathState("unavailable");
     } finally {
       setProxyBusy(null);
     }
   }
 
-  async function toggleSystemProxy() {
-    if (!proxyStatus) return;
-    const willEnable = !proxyStatus.enabled;
-    setProxyState(willEnable ? "enabling" : "disabling");
+  async function setSystemProxyEnabled(enabled: boolean) {
+    setProxyState(enabled ? "enabling" : "disabling");
     setSettingsBusy(true);
     setError(null);
     try {
-      const next = await mihomoApi.systemProxySetEnabled(willEnable);
+      const next = await mihomoApi.systemProxySetEnabled(enabled);
       setProxyStatus(next);
       setProxyState(next.enabled ? "enabled" : "disabled");
       pushToast("success", next.enabled ? "系统代理已开启" : "系统代理已关闭");
@@ -471,6 +531,20 @@ export default function App() {
     }
   }
 
+  async function requestSystemProxyTransition() {
+    if (settingsBusy) return;
+    try {
+      const current = await mihomoApi.systemProxyStatus();
+      setProxyStatus(current);
+      await setSystemProxyEnabled(!current.enabled);
+    } catch (e) {
+      const message = errorMessage(e);
+      setProxyState("error");
+      setError(message);
+      pushToast("error", `读取系统代理状态失败：${message}`);
+    }
+  }
+
   async function toggleUpdatePreference(field: keyof UpdatePreferences, enabled: boolean) {
     if (!updatePreferences) return;
     setSettingsBusy(true);
@@ -495,7 +569,7 @@ export default function App() {
     <div className="app-shell">
       <Sidebar page={page} onChange={setPage} />
       <main className="content">
-        {page === "home" && <DashboardPage status={status} coreState={coreState} version={version} proxyStatus={proxyStatus} proxyState={proxyState} traffic={traffic.snapshot} connectionCount={connections.data?.connections.length ?? 0} currentNode={currentNode} delay={currentNode ? delayByProxy[currentNode] ?? null : null} memory={connections.data?.memory ?? null} busy={busy} error={error} onToggle={toggleCore} onToggleProxy={toggleSystemProxy} />}
+        {page === "home" && <DashboardPage status={status} coreState={coreState} version={version} proxyStatus={proxyStatus} proxyState={proxyState} traffic={traffic.snapshot} connectionCount={connections.data?.connections.length ?? 0} currentNode={currentNode} delay={currentNode ? delayByProxy[currentNode] ?? null : null} proxyPathState={proxyPathState} memory={connections.data?.memory ?? null} error={error} onRequestProxyTransition={() => void requestSystemProxyTransition()} />}
         {page === "connections" && <ConnectionsPage state={connections} onRefresh={connections.refresh} onClose={connections.closeConnection} onCloseAll={connections.closeAllConnections} />}
         {page === "logs" && <LogsPage />}
         {page === "profiles" && <ProfilesPage profiles={profiles} selectedId={selectedProfileId} busyId={profileBusyId} error={error} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} />}
@@ -503,8 +577,8 @@ export default function App() {
         {page === "rules" && <RulesPage running={Boolean(status?.running)} />}
         {page === "dns" && <DnsPage profileId={selectedProfileId} />}
         {page === "overrides" && <OverridesPage profileId={selectedProfileId} />}
-        {page === "tun" && <TunPage profileId={selectedProfileId} coreRunning={Boolean(status?.running)} systemProxyEnabled={Boolean(proxyStatus?.enabled)} systemProxyBusy={settingsBusy} onToggleSystemProxy={toggleSystemProxy} />}
-        {page === "settings" && <SettingsPage status={status} coreState={coreState} proxyStatus={proxyStatus} proxyState={proxyState} startup={startup} updatePreferences={updatePreferences} busy={busy || settingsBusy} onToggleProxy={toggleSystemProxy} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} onToggleUpdatePreference={toggleUpdatePreference} appUpdate={{ ...updateStatus, checking: updateChecking, downloading: updateDownloading, installing: updateInstalling, downloaded: updateDownloaded, progress: updateProgress, availableVersion: availableUpdate?.version ?? null, releaseNotes: availableUpdate?.body ?? null, error: updateError }} onCheckForUpdate={() => void checkForUpdate()} onInstallUpdate={() => void installUpdate()} coreUpdate={coreUpdate} coreUpdateBusy={coreUpdateBusy} onCheckCoreUpdate={() => void checkCoreUpdate()} onInstallCoreUpdate={() => void installCoreUpdate()} />}
+        {page === "tun" && <TunPage profileId={selectedProfileId} coreRunning={Boolean(status?.running)} systemProxyEnabled={Boolean(proxyStatus?.enabled)} systemProxyBusy={settingsBusy} onSetSystemProxy={setSystemProxyEnabled} />}
+        {page === "settings" && <SettingsPage status={status} coreState={coreState} proxyStatus={proxyStatus} proxyState={proxyState} serviceConnection={serviceReconnectVisible ? serviceConnection : null} startup={startup} updatePreferences={updatePreferences} busy={settingsBusy} onRequestProxyTransition={requestSystemProxyTransition} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} onToggleUpdatePreference={toggleUpdatePreference} appUpdate={{ ...updateStatus, checking: updateChecking, downloading: updateDownloading, installing: updateInstalling, downloaded: updateDownloaded, progress: updateProgress, availableVersion: availableUpdate?.version ?? null, releaseNotes: availableUpdate?.body ?? null, error: updateError }} onCheckForUpdate={() => void checkForUpdate()} onInstallUpdate={() => void installUpdate()} coreUpdate={coreUpdate} coreUpdateBusy={coreUpdateBusy} onCheckCoreUpdate={() => void checkCoreUpdate()} onInstallCoreUpdate={() => void installCoreUpdate()} diagnosticBusy={diagnosticBusy} diagnosticPath={diagnosticPath} onGenerateDiagnosticBundle={() => void generateDiagnosticBundle()} />}
       </main>
       <ToastHost toasts={toasts} onDismiss={dismissToast} />
     </div>

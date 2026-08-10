@@ -40,6 +40,24 @@ pub enum TunStatus {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TunActualState {
+    Disabled,
+    MioProxyTun,
+    ExternalTun,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TunOwner {
+    MioProxy,
+    External,
+    None,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkSnapshot {
@@ -58,6 +76,10 @@ pub struct TunStatusSnapshot {
     pub admin: bool,
     pub profile_id: Option<String>,
     pub snapshot: Option<NetworkSnapshot>,
+    pub desired_enabled: bool,
+    pub actual_state: TunActualState,
+    pub owner: TunOwner,
+    pub external_detected: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,10 +236,9 @@ fn write_persisted(app: &AppHandle, state: &PersistedTunState) -> Result<(), Str
 
 fn read_persisted(app: &AppHandle) -> Result<Option<PersistedTunState>, String> {
     let path = state_path(app)?;
-    if !path.exists() {
+    let Some(content) = config::read_text_file_at(&path, "读取 TUN 恢复状态")? else {
         return Ok(None);
-    }
-    let content = fs::read_to_string(path).map_err(|e| format!("读取 TUN 恢复状态失败：{e}"))?;
+    };
     serde_json::from_str(&content)
         .map(Some)
         .map_err(|e| format!("TUN 恢复状态损坏：{e}"))
@@ -225,10 +246,7 @@ fn read_persisted(app: &AppHandle) -> Result<Option<PersistedTunState>, String> 
 
 fn clear_persisted(app: &AppHandle) -> Result<(), String> {
     let path = state_path(app)?;
-    if path.exists() {
-        fs::remove_file(path).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    config::remove_file(&path, "删除 TUN 恢复状态")
 }
 
 #[cfg(windows)]
@@ -282,11 +300,42 @@ pub(crate) async fn wait_for_tun_ready() -> Result<(), String> {
     Err("Mihomo 未创建状态为 Up 的 MioProxy TUN 网卡".to_string())
 }
 
-pub(crate) async fn capture_snapshot() -> Result<NetworkSnapshot, String> {
-    let mihomo_running = mihomo::is_running().await;
-    if !mihomo_running {
-        return Err("Mihomo 未运行，无法创建 TUN 运行前快照".to_string());
-    }
+const FOREIGN_TUN_CONFLICT_SCRIPT: &str = r#"
+$candidates = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+  $_.Status -eq 'Up' -and $_.Name -ne 'MioProxy' -and
+  ($_.Name -match '(?i)(clash|mihomo|mimo|meta.*tunnel|wintun|\btun\b)' -or $_.InterfaceDescription -match '(?i)(clash|mihomo|mimo|meta.*tunnel|wintun|\btun\b)')
+})
+$conflicts = @($candidates | Where-Object {
+  $adapter = $_
+  $defaultRoute = Get-NetRoute -PolicyStore ActiveStore -InterfaceIndex $adapter.ifIndex -ErrorAction SilentlyContinue |
+    Where-Object { $_.DestinationPrefix -in @('0.0.0.0/0', '::/0') } | Select-Object -First 1
+  $dns = Get-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ErrorAction SilentlyContinue |
+    Where-Object { $_.ServerAddresses } | Select-Object -First 1
+  $null -ne $defaultRoute -or $null -ne $dns
+} | Select-Object -ExpandProperty Name)
+$conflicts | ConvertTo-Json -Compress
+"#;
+
+pub(crate) fn foreign_tun_conflict() -> Result<Option<String>, String> {
+    let names = powershell_json(FOREIGN_TUN_CONFLICT_SCRIPT)?;
+    let names = match names {
+        Value::String(name) => vec![name],
+        Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .collect(),
+        Value::Null => Vec::new(),
+        _ => return Err("解析外部 TUN 检测结果失败".to_string()),
+    };
+    Ok((!names.is_empty()).then(|| {
+        format!(
+            "检测到另一虚拟代理网卡正在接管系统路由或 DNS（{}）。请先关闭其他客户端的 TUN 模式。",
+            names.join("、")
+        )
+    }))
+}
+
+async fn capture_network_snapshot(mihomo_running: bool) -> Result<NetworkSnapshot, String> {
     let default_route = powershell_json(
         "$routes = @(Get-NetRoute -PolicyStore ActiveStore | Where-Object { $_.DestinationPrefix -in @('0.0.0.0/0', '::/0') } | ForEach-Object { $route = $_; $interface = Get-NetIPInterface -InterfaceIndex $route.InterfaceIndex -AddressFamily $route.AddressFamily -ErrorAction SilentlyContinue | Select-Object -First 1; $interfaceMetric = if ($null -eq $interface) { 0 } else { [int]$interface.InterfaceMetric }; [pscustomobject]@{ DestinationPrefix = $route.DestinationPrefix; InterfaceAlias = $route.InterfaceAlias; InterfaceIndex = $route.InterfaceIndex; NextHop = $route.NextHop; RouteMetric = [int]$route.RouteMetric; InterfaceMetric = $interfaceMetric; EffectiveMetric = [int]$route.RouteMetric + $interfaceMetric; AddressFamily = $route.AddressFamily } } | Group-Object DestinationPrefix | ForEach-Object { $_.Group | Sort-Object EffectiveMetric,RouteMetric,InterfaceIndex | Select-Object -First 1 }); $routes | ConvertTo-Json -Compress",
     )?;
@@ -305,6 +354,18 @@ pub(crate) async fn capture_snapshot() -> Result<NetworkSnapshot, String> {
     })
 }
 
+pub(crate) async fn capture_snapshot() -> Result<NetworkSnapshot, String> {
+    let mihomo_running = mihomo::is_running().await;
+    if !mihomo_running {
+        return Err("Mihomo 未运行，无法创建 TUN 运行前快照".to_string());
+    }
+    capture_network_snapshot(mihomo_running).await
+}
+
+pub(crate) async fn diagnostic_network_snapshot() -> Result<NetworkSnapshot, String> {
+    capture_network_snapshot(mihomo::is_running().await).await
+}
+
 fn runtime_snapshot(state: &TunState) -> Result<TunRuntime, String> {
     state
         .runtime
@@ -315,13 +376,46 @@ fn runtime_snapshot(state: &TunState) -> Result<TunRuntime, String> {
 
 fn response(state: &TunState) -> Result<TunStatusSnapshot, String> {
     let runtime = runtime_snapshot(state)?;
+    let (actual_state, owner) = tun_state_for_status(runtime.status);
+    let desired_enabled = requires_recovery(&runtime);
     Ok(TunStatusSnapshot {
         status: runtime.status,
         message: runtime.message,
         admin: is_admin(),
         profile_id: runtime.profile_id,
         snapshot: runtime.snapshot,
+        desired_enabled,
+        actual_state,
+        owner,
+        external_detected: false,
     })
+}
+
+pub(crate) fn tun_state_for_status(status: TunStatus) -> (TunActualState, TunOwner) {
+    match status {
+        TunStatus::Starting | TunStatus::Running | TunStatus::Stopping => {
+            (TunActualState::MioProxyTun, TunOwner::MioProxy)
+        }
+        TunStatus::Disabled => (TunActualState::Disabled, TunOwner::None),
+        TunStatus::Error => (TunActualState::Unknown, TunOwner::Unknown),
+    }
+}
+
+async fn with_external_tun_state(snapshot: TunStatusSnapshot) -> Result<TunStatusSnapshot, String> {
+    let foreign_tun_detected = foreign_tun_conflict()?.is_some();
+    Ok(with_foreign_tun_detection(snapshot, foreign_tun_detected))
+}
+
+fn with_foreign_tun_detection(
+    mut snapshot: TunStatusSnapshot,
+    foreign_tun_detected: bool,
+) -> TunStatusSnapshot {
+    if snapshot.owner != TunOwner::MioProxy && foreign_tun_detected {
+        snapshot.actual_state = TunActualState::ExternalTun;
+        snapshot.owner = TunOwner::External;
+        snapshot.external_detected = true;
+    }
+    snapshot
 }
 
 fn set_runtime(state: &TunState, update: impl FnOnce(&mut TunRuntime)) -> Result<(), String> {
@@ -463,11 +557,15 @@ async fn enable_tun(
         set_error(state, "需要管理员权限才能启用 Windows TUN".to_string())?;
         return Err("需要管理员权限才能启用 Windows TUN".to_string());
     }
+    if let Some(message) = foreign_tun_conflict()? {
+        set_error(state, message.clone())?;
+        return Err(message);
+    }
     if !mihomo::is_running().await || !mihomo::owns_core(app) {
         set_error(state, "请先启动 Mihomo，再启用 TUN".to_string())?;
         return Err("请先启动 Mihomo，再启用 TUN".to_string());
     }
-    if system_proxy::status(app).await?.enabled {
+    if system_proxy::status(app).await?.windows_state == system_proxy::ProxyWindowsState::MioProxy {
         set_error(
             state,
             "TUN 与系统代理不能同时开启，请先关闭系统代理".to_string(),
@@ -565,6 +663,7 @@ async fn enable_tun(
         current.message = None;
         current.snapshot = Some(baseline);
     })?;
+    crate::diagnostics::record_event(app, "info", "tun", "TUN enabled");
     let running = runtime_snapshot(state)?;
     if let Err(error) = write_persisted(app, &persisted_for(&running)?) {
         return rollback_enable(
@@ -627,6 +726,12 @@ async fn disable_tun(app: &AppHandle, state: &TunState) -> Result<TunStatusSnaps
         return Err(error);
     }
     set_runtime(state, |runtime| *runtime = TunRuntime::default())?;
+    crate::diagnostics::record_event(
+        app,
+        "info",
+        "tun",
+        "TUN disabled and network state restored",
+    );
     response(state)
 }
 
@@ -636,12 +741,23 @@ pub async fn tun_status(
     state: State<'_, TunState>,
 ) -> Result<TunStatusSnapshot, String> {
     if active_runtime(&state)?.is_some() {
-        return response(&state);
+        return with_external_tun_state(response(&state)?).await;
     }
     if let Some(snapshot) = crate::service::service_tun_status(&app).await? {
-        return Ok(snapshot);
+        return with_external_tun_state(snapshot).await;
     }
-    response(&state)
+    with_external_tun_state(response(&state)?).await
+}
+
+pub(crate) async fn diagnostic_status(app: &AppHandle) -> Result<TunStatusSnapshot, String> {
+    let state = app.state::<TunState>();
+    if active_runtime(&state)?.is_some() {
+        return with_external_tun_state(response(&state)?).await;
+    }
+    if let Some(snapshot) = crate::service::service_tun_status(app).await? {
+        return with_external_tun_state(snapshot).await;
+    }
+    with_external_tun_state(response(&state)?).await
 }
 
 #[tauri::command]
@@ -653,7 +769,8 @@ pub async fn tun_set_enabled(
 ) -> Result<TunStatusSnapshot, String> {
     crate::ensure_mutations_allowed(&app)?;
     let _transition = lock_transitions().await;
-    let system_proxy_enabled = system_proxy::status(&app).await?.enabled;
+    let system_proxy_enabled = system_proxy::status(&app).await?.windows_state
+        == system_proxy::ProxyWindowsState::MioProxy;
     if active_runtime(&state)?.is_some() {
         if enabled {
             return Err("GUI TUN 会话仍在运行，请先关闭本地 TUN".to_string());
@@ -678,7 +795,8 @@ pub(crate) async fn set_enabled_for_lifecycle(
 ) -> Result<TunStatusSnapshot, String> {
     let state = app.state::<TunState>();
     let _transition = lock_transitions().await;
-    let system_proxy_enabled = system_proxy::status(app).await?.enabled;
+    let system_proxy_enabled =
+        system_proxy::status(app).await?.windows_state == system_proxy::ProxyWindowsState::MioProxy;
     if active_runtime(&state)?.is_some() {
         return response(&state);
     }
@@ -749,6 +867,12 @@ pub async fn on_mihomo_exit(app: &AppHandle) {
                     ..TunRuntime::default()
                 };
             });
+            crate::diagnostics::record_event(
+                app,
+                "warn",
+                "tun",
+                "Recovered TUN state after Mihomo exit",
+            );
         }
         Err(error) => {
             let _ = set_runtime(&state, |current| {
@@ -804,6 +928,12 @@ pub async fn recover_after_startup(app: AppHandle) {
                     ..TunRuntime::default()
                 };
             });
+            crate::diagnostics::record_event(
+                &app,
+                "warn",
+                "tun",
+                "Recovered stale TUN state during startup",
+            );
         }
         Err(error) => {
             let _ = set_runtime(&state, |current| {
@@ -891,7 +1021,10 @@ pub fn start_monitor(app: AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{requires_recovery, NetworkSnapshot, TunRuntime, TunStatus};
+    use super::{
+        requires_recovery, with_foreign_tun_detection, NetworkSnapshot, TunActualState, TunOwner,
+        TunRuntime, TunStatus, TunStatusSnapshot,
+    };
 
     #[test]
     fn corrupted_persisted_state_blocks_normal_tun_operations() {
@@ -936,5 +1069,27 @@ mod tests {
         assert!(snapshot.default_route.is_string());
         assert!(snapshot.dns_servers.is_string());
         assert!(snapshot.adapters.is_string());
+    }
+
+    #[test]
+    fn foreign_tun_is_external_state_not_mioproxy_tun() {
+        let snapshot = TunStatusSnapshot {
+            status: TunStatus::Disabled,
+            message: None,
+            admin: true,
+            profile_id: None,
+            snapshot: None,
+            desired_enabled: false,
+            actual_state: TunActualState::Disabled,
+            owner: TunOwner::None,
+            external_detected: false,
+        };
+
+        let classified = with_foreign_tun_detection(snapshot, true);
+        assert_eq!(classified.status, TunStatus::Disabled);
+        assert!(!classified.desired_enabled);
+        assert_eq!(classified.actual_state, TunActualState::ExternalTun);
+        assert_eq!(classified.owner, TunOwner::External);
+        assert!(classified.external_detected);
     }
 }

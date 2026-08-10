@@ -1,5 +1,5 @@
-import { Download, FolderCog, LockKeyhole, Power, Rocket, ShieldCheck } from "lucide-react";
-import type { CoreState, CoreStatus, CoreUpdateStatus, ProxyState, StartupSettings, SystemProxyStatus, UpdatePreferences, UpdateStatus } from "../api/mihomo";
+import { Download, FileDown, FolderCog, LockKeyhole, Power, Rocket, ShieldCheck } from "lucide-react";
+import type { CoreState, CoreStatus, CoreUpdateStatus, ProxyState, ServiceConnectionStatus, StartupSettings, SystemProxyStatus, UpdatePreferences, UpdateStatus } from "../api/mihomo";
 
 type AppUpdateState = UpdateStatus & {
   checking: boolean;
@@ -17,10 +17,11 @@ type SettingsPageProps = {
   coreState: CoreState;
   proxyStatus: SystemProxyStatus | null;
   proxyState: ProxyState;
+  serviceConnection: ServiceConnectionStatus | null;
   startup: StartupSettings | null;
   updatePreferences: UpdatePreferences | null;
   busy: boolean;
-  onToggleProxy: () => void;
+  onRequestProxyTransition: () => void;
   onToggleStartup: (enabled: boolean) => void;
   onToggleMinimized: (enabled: boolean) => void;
   onToggleUpdatePreference: (field: keyof UpdatePreferences, enabled: boolean) => void;
@@ -31,6 +32,9 @@ type SettingsPageProps = {
   coreUpdateBusy: boolean;
   onCheckCoreUpdate: () => void;
   onInstallCoreUpdate: () => void;
+  diagnosticBusy: boolean;
+  diagnosticPath: string | null;
+  onGenerateDiagnosticBundle: () => void;
 };
 
 export function SettingsPage({
@@ -38,10 +42,11 @@ export function SettingsPage({
   coreState,
   proxyStatus,
   proxyState,
+  serviceConnection,
   startup,
   updatePreferences,
   busy,
-  onToggleProxy,
+  onRequestProxyTransition,
   onToggleStartup,
   onToggleMinimized,
   onToggleUpdatePreference,
@@ -52,6 +57,9 @@ export function SettingsPage({
   coreUpdateBusy,
   onCheckCoreUpdate,
   onInstallCoreUpdate,
+  diagnosticBusy,
+  diagnosticPath,
+  onGenerateDiagnosticBundle,
 }: SettingsPageProps) {
   return (
     <section className="page-stack">
@@ -64,10 +72,14 @@ export function SettingsPage({
       </header>
 
       <div className="settings-list">
+        {serviceConnection?.error && <article className="setting-row">
+          <ShieldCheck size={20} />
+          <div className="setting-copy"><span>后台服务</span><strong>{serviceConnection.versionMismatch ? "后台服务版本不兼容" : "正在重新连接后台服务"}</strong><small>{serviceConnection.versionMismatch ? "请在完成应用升级后修复后台服务。" : "MioProxy 会在后台自动恢复连接；短暂中断不会影响窗口使用。"}</small></div>
+        </article>}
         <article className="setting-row">
           <Power size={20} />
           <div className="setting-copy"><span>系统代理</span><strong>{proxyStatus?.enabled ? `已开启 · 127.0.0.1:${proxyStatus.mixedPort}` : "已关闭 · 保留 Windows 原始设置"}</strong><small>{status?.running ? "由 MioProxy 接管，内核退出时自动恢复" : "启动 Mihomo 后才能开启"}</small></div>
-          <button className="setting-toggle" type="button" onClick={onToggleProxy} disabled={coreState !== "running" || busy} aria-pressed={proxyStatus?.enabled ?? false}>
+          <button className="setting-toggle" type="button" onClick={onRequestProxyTransition} disabled={coreState !== "running" || busy} aria-pressed={proxyStatus?.enabled ?? false}>
             {proxyState === "enabling" || proxyState === "disabling" ? "切换中…" : proxyStatus?.enabled ? "关闭" : "开启"}
           </button>
         </article>
@@ -100,6 +112,13 @@ export function SettingsPage({
           </button>
         </article>
         <article className="setting-row">
+          <FileDown size={20} />
+          <div className="setting-copy"><span>诊断包</span><strong>{diagnosticPath ? "最近一次诊断包已生成" : "导出脱敏运行信息"}</strong><small>不包含订阅 token、密码或更新私钥</small></div>
+          <button className="setting-toggle" type="button" onClick={onGenerateDiagnosticBundle} disabled={busy || diagnosticBusy}>
+            {diagnosticBusy ? "生成中…" : "生成诊断包"}
+          </button>
+        </article>
+        <article className="setting-row">
           <Rocket size={20} />
           <div className="setting-copy"><span>开机启动 MioProxy</span><strong>{startup?.enabled ? "已开启" : "未开启"}</strong><small>仅写入当前用户启动项，不需要管理员权限</small></div>
           <button className="setting-toggle" type="button" onClick={() => onToggleStartup(!(startup?.enabled ?? false))} disabled={busy} aria-pressed={startup?.enabled ?? false}>
@@ -119,7 +138,7 @@ export function SettingsPage({
         </article>
         <article>
           <LockKeyhole size={20} />
-          <div><span>Controller</span><strong>仅监听 127.0.0.1:9090</strong></div>
+          <div><span>Controller</span><strong>仅监听 127.0.0.1:19090</strong></div>
         </article>
         <article>
           <ShieldCheck size={20} />

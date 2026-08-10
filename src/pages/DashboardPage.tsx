@@ -1,11 +1,12 @@
-import { Activity, CirclePower, Gauge, Network, Radio, ServerCog, ShieldCheck, Zap } from "lucide-react";
-import type { CoreState, CoreStatus, MihomoVersion, ProxyState, SystemProxyStatus, TrafficSnapshot } from "../api/mihomo";
+import { Activity, Gauge, Network, Radio, ServerCog, ShieldCheck, Zap } from "lucide-react";
+import type { CoreState, CoreStatus, MihomoVersion, ProxyPathState, ProxyState, SystemProxyStatus, TrafficSnapshot } from "../api/mihomo";
 import { formatBytes, formatRate, latencyTone } from "../utils/format";
 
 const CORE_LABELS: Record<CoreState, string> = {
   stopped: "Offline",
   starting: "Starting…",
-  running: "Running",
+  recovering: "Recovering…",
+  running: "Ready",
   reloading: "Reloading…",
   stopping: "Stopping…",
   error: "Error",
@@ -64,11 +65,10 @@ export function DashboardPage({
   connectionCount,
   currentNode,
   delay,
+  proxyPathState,
   memory,
-  busy,
   error,
-  onToggle,
-  onToggleProxy,
+  onRequestProxyTransition,
 }: {
   status: CoreStatus | null;
   coreState: CoreState;
@@ -79,16 +79,16 @@ export function DashboardPage({
   connectionCount: number;
   currentNode: string | null;
   delay: number | null;
+  proxyPathState: ProxyPathState;
   memory: number | null;
-  busy: boolean;
   error: string | null;
-  onToggle: () => void;
-  onToggleProxy: () => void;
+  onRequestProxyTransition: () => void;
 }) {
   const running = coreState === "running";
   const proxyBusy = proxyState === "enabling" || proxyState === "disabling";
   const canToggleProxy = running && !proxyBusy;
   const delayTone = latencyTone(delay);
+  const proxyPathLabel = proxyPathState === "unavailable" ? "当前节点不可用" : proxyPathState === "degraded" ? "当前节点不稳定" : delay === null ? "尚未测速" : delayTone === "fast" ? "连接顺畅" : delayTone === "medium" ? "可以接受" : "建议切换节点";
 
   return (
     <section className="page-stack dashboard-page">
@@ -96,12 +96,8 @@ export function DashboardPage({
         <div>
           <p className="eyebrow">MIOPROXY / SIGNAL DECK</p>
           <h1>实时控制台</h1>
-          <p>把内核、当前节点和网络流量放在一个清晰的控制面上。</p>
+          <p>后台内核自动保持就绪；在这里直接选择系统代理或 TUN。</p>
         </div>
-        <button className={running ? "power-button stop" : "power-button"} disabled={busy || coreState === "starting" || coreState === "stopping" || coreState === "reloading"} onClick={onToggle}>
-          <CirclePower size={18} />
-          {coreState === "starting" ? "启动中…" : coreState === "stopping" ? "停止中…" : coreState === "reloading" ? "重载中…" : running ? "停止内核" : "启动内核"}
-        </button>
       </header>
 
       {error && <div className={`error-banner ${coreState === "error" ? "error-banner-prominent" : ""}`}><ShieldCheck size={17} /><span>{error}</span></div>}
@@ -111,12 +107,12 @@ export function DashboardPage({
         <div className="dashboard-hero-main">
           <div className="dashboard-overline"><span>MioProxy Core</span><span className={statusClass(coreState)}>{CORE_LABELS[coreState]}</span></div>
           <div className="current-node-label">CURRENT NODE</div>
-          <strong>{currentNode ?? (running ? "DIRECT / 未选择节点" : "等待启动 Mihomo")}</strong>
+          <strong>{currentNode ?? (running ? "DIRECT / 未选择节点" : "后台内核正在准备")}</strong>
           <small>{version?.version ? `Mihomo ${version.version}` : status?.controller ?? "Controller offline · 127.0.0.1:9090"}</small>
         </div>
         <div className="dashboard-hero-actions">
-          <div className="dashboard-latency"><span>LATENCY</span><strong className={`latency-value ${delayTone}`}>{delay === null ? "—" : `${delay} ms`}</strong><small>{delay === null ? "尚未测速" : delayTone === "fast" ? "连接顺畅" : delayTone === "medium" ? "可以接受" : "建议切换节点"}</small></div>
-          <button className={`quick-toggle ${proxyStatus?.enabled ? "enabled" : ""}`} type="button" onClick={onToggleProxy} disabled={!canToggleProxy}>
+          <div className="dashboard-latency"><span>PROXY PATH</span><strong className={`latency-value ${delayTone}`}>{delay === null ? "—" : `${delay} ms`}</strong><small>{proxyPathLabel}</small></div>
+          <button className={`quick-toggle ${proxyStatus?.enabled ? "enabled" : ""}`} type="button" onClick={onRequestProxyTransition} disabled={!canToggleProxy}>
             <ServerCog size={16} />
             <span><small>系统代理</small><b>{proxyBusy ? "切换中…" : proxyStatus?.enabled ? "已开启" : "已关闭"}</b></span>
           </button>

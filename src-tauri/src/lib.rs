@@ -1,6 +1,9 @@
 mod config;
 mod core_update;
+mod diagnostics;
+mod migration;
 mod mihomo;
+mod outbound;
 mod profiles;
 pub mod service;
 mod startup;
@@ -16,21 +19,41 @@ use mihomo::{
     CoreState,
 };
 use profiles::{profile_add, profile_apply, profile_download, profile_list, profile_remove};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 use tauri::Manager;
 
-#[derive(Default)]
 pub struct AppLifecycle {
     pub exiting: AtomicBool,
     pub updating: AtomicBool,
+    pub migration_error: Mutex<Option<String>>,
+}
+
+impl Default for AppLifecycle {
+    fn default() -> Self {
+        Self {
+            exiting: AtomicBool::new(false),
+            updating: AtomicBool::new(false),
+            migration_error: Mutex::new(None),
+        }
+    }
 }
 
 pub(crate) fn ensure_mutations_allowed(app: &tauri::AppHandle) -> Result<(), String> {
-    if app
-        .try_state::<AppLifecycle>()
-        .is_some_and(|lifecycle| lifecycle.updating.load(Ordering::SeqCst))
-    {
-        return Err("MioProxy 正在准备更新，暂时禁止切换代理、TUN 或内核状态".to_string());
+    if let Some(lifecycle) = app.try_state::<AppLifecycle>() {
+        if lifecycle.updating.load(Ordering::SeqCst) {
+            return Err("MioProxy 正在准备更新，暂时禁止切换代理、TUN 或内核状态".to_string());
+        }
+        if let Some(error) = lifecycle
+            .migration_error
+            .lock()
+            .map_err(|_| "配置迁移状态锁异常")?
+            .clone()
+        {
+            return Err(format!("配置迁移未完成，已阻止修改用户数据：{error}"));
+        }
     }
     Ok(())
 }
@@ -50,21 +73,28 @@ pub fn run() {
         .manage(CoreState::default())
         .manage(mihomo::traffic::TrafficStreamState::default())
         .manage(mihomo::logs::LogStreamState::default())
+        .manage(diagnostics::DiagnosticLogState::default())
         .manage(AppLifecycle::default())
         .manage(system_proxy::SystemProxyState::default())
         .manage(tun::TunState::default())
         .manage(tray::TrayState::default())
         .setup(|app| {
+            diagnostics::record_event(app.handle(), "info", "gui", "GUI startup");
             update::register_app_handle(app.handle());
             let data_dir = app.path().app_data_dir().map_err(|error| {
                 Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error>
             })?;
+            if let Err(error) = migration::ensure_current(app.handle()) {
+                if let Ok(mut migration_error) = app.state::<AppLifecycle>().migration_error.lock()
+                {
+                    *migration_error = Some(error.clone());
+                }
+                eprintln!("配置迁移检查失败：{error}");
+                diagnostics::record_event(app.handle(), "error", "migration", error);
+            }
             mihomo::initialize_secret(&data_dir).map_err(|error| {
                 Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error>
             })?;
-            if let Err(error) = system_proxy::recover_stale_state(app.handle()) {
-                eprintln!("恢复系统代理状态失败：{error}");
-            }
             match update::recover_checkpoint(app.handle()) {
                 Ok(Some(message)) => eprintln!("更新恢复提示：{message}"),
                 Ok(None) => {}
@@ -78,7 +108,10 @@ pub fn run() {
             let recovery_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 tun::recover_after_startup(recovery_app.clone()).await;
-                update::recover_after_startup(recovery_app).await;
+                update::recover_after_startup(recovery_app.clone()).await;
+                if let Err(error) = system_proxy::recover_stale_state(&recovery_app).await {
+                    eprintln!("恢复系统代理状态失败：{error}");
+                }
             });
             Ok(())
         })
@@ -137,6 +170,9 @@ pub fn run() {
             core_update::mihomo_core_update_status,
             core_update::mihomo_core_update_check,
             core_update::mihomo_core_update_install,
+            diagnostics::diagnostic_bundle_generate,
+            #[cfg(feature = "validation-fault-injection")]
+            service::validation_crash_managed_core,
         ])
         .build(tauri::generate_context!())
         .expect("error while building MioProxy")

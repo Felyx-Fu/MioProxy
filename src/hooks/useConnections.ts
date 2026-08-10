@@ -1,17 +1,21 @@
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { mihomoApi } from "../api/mihomo";
 import { connectionStore } from "../stores/connectionStore";
 
 export function useConnections(enabled: boolean) {
   const state = useSyncExternalStore(connectionStore.subscribe, connectionStore.getSnapshot, connectionStore.getSnapshot);
+  const requestInFlight = useRef(false);
 
   const refresh = useCallback(async () => {
-    if (!enabled) return;
+    if (!enabled || requestInFlight.current) return;
+    requestInFlight.current = true;
     connectionStore.setLoading(true);
     try {
       connectionStore.setData(await mihomoApi.connections());
     } catch (error) {
       connectionStore.setError(String(error));
+    } finally {
+      requestInFlight.current = false;
     }
   }, [enabled]);
 

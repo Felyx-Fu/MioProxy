@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <!--
+      The Service executable is installed as a normal Tauri file. These
+      actions make MSI upgrades/uninstalls use the Service's own guarded
+      lifecycle instead of deleting a running binary or leaving the Service
+      registered after uninstall. The uninstall flag is supported by the
+      0.7/0.8 Service binaries that may still be present during an upgrade.
+    -->
+    <ComponentGroup Id="MioProxyServiceInstaller">
+      <!-- Referencing the generated Service component pulls this fragment into
+           the MSI without adding another copy of the binary. -->
+      <ComponentRef Id="mioproxy_service" />
+    </ComponentGroup>
+
+    <CustomAction
+      Id="MioProxyServiceUninstall"
+      FileKey="Bin_mioproxy_service"
+      ExeCommand="--uninstall"
+      Execute="deferred"
+      Return="check"
+      Impersonate="no" />
+    <CustomAction
+      Id="MioProxyServiceInstall"
+      FileKey="Bin_mioproxy_service"
+      ExeCommand='--install --data-dir &quot;[AppDataFolder]dev.MioProxy&quot; --mihomo-path &quot;[INSTALLDIR]mihomo.exe&quot; --user-sid &quot;[UserSID]&quot;'
+      Execute="deferred"
+      Return="check"
+      Impersonate="no" />
+
+    <InstallExecuteSequence>
+      <Custom Action="MioProxyServiceUninstall" Before="InstallFiles">
+        WIX_UPGRADE_DETECTED OR UPGRADINGPRODUCTCODE OR REMOVE~="ALL"
+      </Custom>
+      <Custom Action="MioProxyServiceInstall" After="InstallFiles">
+        (NOT Installed) OR WIX_UPGRADE_DETECTED OR UPGRADINGPRODUCTCODE
+      </Custom>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>

@@ -1,5 +1,4 @@
 use std::{
-    fs,
     path::{Path, PathBuf},
     sync::{atomic::Ordering, OnceLock},
 };
@@ -109,12 +108,8 @@ fn preferences_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
 }
 
 fn read_preferences_at(path: &Path) -> Result<UpdatePreferences, String> {
-    let content = match fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(UpdatePreferences::default())
-        }
-        Err(error) => return Err(format!("读取更新设置失败：{error}")),
+    let Some(content) = config::read_text_file_at(path, "读取更新设置")? else {
+        return Ok(UpdatePreferences::default());
     };
     serde_json::from_str(&content).map_err(|error| format!("更新设置格式无效：{error}"))
 }
@@ -126,10 +121,8 @@ fn write_preferences_at(path: &Path, preferences: &UpdatePreferences) -> Result<
 }
 
 fn read_checkpoint_at(path: &Path) -> Result<Option<UpdateCheckpoint>, String> {
-    let content = match fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("读取更新检查点失败：{error}")),
+    let Some(content) = config::read_text_file_at(path, "读取更新检查点")? else {
+        return Ok(None);
     };
     serde_json::from_str(&content)
         .map(Some)
@@ -143,11 +136,7 @@ fn write_checkpoint_at(path: &Path, checkpoint: &UpdateCheckpoint) -> Result<(),
 }
 
 fn clear_checkpoint_at(path: &Path) -> Result<(), String> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("删除更新检查点失败：{error}")),
-    }
+    config::remove_file(path, "删除更新检查点")
 }
 
 pub(crate) fn parse_version(value: &str) -> Result<Version, String> {
@@ -339,7 +328,7 @@ async fn capture_runtime_snapshot(app: &AppHandle) -> Result<UpdateRuntimeSnapsh
     let tun_was_enabled = local_tun_enabled || service_tun_was_enabled;
     let tun_profile_id = profile_id.or_else(|| crate::tun::active_profile_id(app));
     Ok(UpdateRuntimeSnapshot {
-        system_proxy_was_enabled: crate::system_proxy::is_enabled_for_update()?,
+        system_proxy_was_enabled: crate::system_proxy::is_enabled_for_update(app)?,
         system_proxy_was_managed: crate::system_proxy::is_managed_for_update(app)?,
         service_was_running,
         core_was_running,
@@ -472,7 +461,7 @@ pub(crate) async fn update_prepare(
         if crate::mihomo::owns_core(&app) {
             return Err("GUI 仍拥有 Mihomo 子进程，拒绝启动更新安装器".to_string());
         }
-        if crate::system_proxy::is_enabled_for_update()? {
+        if crate::system_proxy::is_enabled_for_update(&app)? {
             return Err("System Proxy 仍处于开启状态，拒绝启动更新安装器".to_string());
         }
         mark_phase(&app, UpdatePhase::Installing)
@@ -483,12 +472,20 @@ pub(crate) async fn update_prepare(
         let _ = mark_failed(&app, &error);
         lifecycle.updating.store(false, Ordering::SeqCst);
         if let Err(recovery_error) = recover_after_update_failure(&app).await {
+            crate::diagnostics::record_event(&app, "error", "update", &error);
             return Err(format!(
                 "{error}；更新失败后的网络状态恢复也失败：{recovery_error}"
             ));
         }
+        crate::diagnostics::record_event(&app, "error", "update", &error);
         return Err(error);
     }
+    crate::diagnostics::record_event(
+        &app,
+        "info",
+        "update",
+        "Application update entered installing phase",
+    );
     update_status(app).await
 }
 
@@ -538,6 +535,7 @@ pub(crate) async fn update_check<R: Runtime>(
     else {
         return Ok(None);
     };
+    ensure_upgrade(&update.current_version, &update.version)?;
     let date = update.date.and_then(|date| {
         date.format(&time::format_description::well_known::Rfc3339)
             .ok()
@@ -579,6 +577,7 @@ pub(crate) fn update_preferences_set(
     check_on_startup: bool,
     auto_download: bool,
 ) -> Result<UpdatePreferences, String> {
+    crate::ensure_mutations_allowed(&app)?;
     let preferences = UpdatePreferences {
         check_on_startup,
         auto_download,
@@ -600,6 +599,7 @@ pub(crate) async fn update_mark_failed(
     if let Some(lifecycle) = app.try_state::<AppLifecycle>() {
         lifecycle.updating.store(false, Ordering::SeqCst);
     }
+    crate::diagnostics::record_event(&app, "error", "update", &error);
     let recovery_error = recover_after_update_failure(&app)
         .await
         .err()
@@ -712,7 +712,7 @@ mod tests {
         );
 
         let mut mismatch = base;
-        mismatch.target_version = "0.9.0".to_string();
+        mismatch.target_version = "1.0.0".to_string();
         assert_eq!(
             checkpoint_recovery(&mismatch),
             CheckpointRecovery::VersionMismatch

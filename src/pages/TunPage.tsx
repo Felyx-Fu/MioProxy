@@ -18,12 +18,12 @@ const STATUS_COPY: Record<TunStatus, string> = {
   error: "TUN 没有处于安全运行状态",
 };
 
-export function TunPage({ profileId, coreRunning, systemProxyEnabled, systemProxyBusy, onToggleSystemProxy }: {
+export function TunPage({ profileId, coreRunning, systemProxyEnabled, systemProxyBusy, onSetSystemProxy }: {
   profileId: string | null;
   coreRunning: boolean;
   systemProxyEnabled: boolean;
   systemProxyBusy: boolean;
-  onToggleSystemProxy: () => Promise<void>;
+  onSetSystemProxy: (enabled: boolean) => Promise<void>;
 }) {
   const [snapshot, setSnapshot] = useState<TunStatusSnapshot | null>(null);
   const [service, setService] = useState<ServiceConnectionStatus | null>(null);
@@ -58,11 +58,10 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled, systemProx
     return () => window.clearInterval(timer);
   }, [load]);
 
-  async function toggle() {
+  async function setTunEnabled(enabled: boolean) {
     if (requestInFlight.current) {
       return;
     }
-    const enabled = snapshot?.status === "disabled";
     if (enabled && !profileId) {
       setError("请先选择已下载的 Profile");
       return;
@@ -91,6 +90,16 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled, systemProx
     }
   }
 
+  async function requestTunTransition() {
+    try {
+      const current = await mihomoApi.tunStatus();
+      setSnapshot(current);
+      await setTunEnabled(!(current.owner === "mioproxy" && current.status === "running"));
+    } catch (value) {
+      setError(value instanceof Error ? value.message : String(value));
+    }
+  }
+
   const status = snapshot?.status ?? "disabled";
   const transitioning = status === "starting" || status === "stopping";
   const blocked = !coreRunning || !profileId || systemProxyEnabled;
@@ -99,7 +108,7 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled, systemProx
     <section className="page-stack tun-page">
       <header className="page-header">
         <div><p className="eyebrow">TUN / WINDOWS ROUTE</p><h1>透明代理</h1><p>通过 Mihomo TUN 接管系统流量。启用前会检查管理员权限并保存默认路由、DNS 和网络适配器快照。</p></div>
-        <button className={status === "running" ? "power-button stop" : "power-button"} type="button" onClick={() => void toggle()} disabled={loading || !snapshot || transitioning || blocked && status !== "running" && status !== "error"}>
+        <button className={status === "running" ? "power-button stop" : "power-button"} type="button" onClick={() => void requestTunTransition()} disabled={loading || !snapshot || transitioning || blocked && status !== "running" && status !== "error"}>
           <CirclePower size={17} />{loading ? "处理中…" : STATUS_LABELS[status]}
         </button>
       </header>
@@ -113,7 +122,7 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled, systemProx
         <div className="tun-status-meta"><span>管理员权限 <b>{snapshot?.admin ? "已满足" : service?.admin ? "由 Service 提供" : "需要提升"}</b></span><span>内核 <b>{coreRunning ? "Running" : "Disabled"}</b></span><span>所有权 <b>{service?.versionMismatch ? "版本不匹配" : service?.reachable ? service.ownsCore ? "MioProxy Service" : service.ownershipConflict ? "冲突" : "Service 在线" : "GUI fallback"}</b></span><span>系统代理 <b>{systemProxyEnabled ? "冲突" : "关闭"}</b></span></div>
       </div>
 
-      {(!coreRunning || !profileId || systemProxyEnabled) && <div className="tun-prerequisite panel"><AlertTriangle size={17} /><div className="tun-prerequisite-copy"><strong>启用前置条件</strong><span>{!coreRunning ? "请先启动 Mihomo。" : !profileId ? "请先添加并下载一个 Profile。" : "请先关闭系统代理，避免 auto-route 和 Windows Proxy 同时接管。"}</span>{systemProxyEnabled && <button className="secondary-button tun-prerequisite-action" type="button" onClick={() => void onToggleSystemProxy()} disabled={systemProxyBusy}>{systemProxyBusy ? "关闭中…" : "关闭系统代理"}</button>}</div></div>}
+      {(!coreRunning || !profileId || systemProxyEnabled) && <div className="tun-prerequisite panel"><AlertTriangle size={17} /><div className="tun-prerequisite-copy"><strong>启用前置条件</strong><span>{!coreRunning ? "后台内核正在准备，请稍后重试。" : !profileId ? "请先添加并下载一个 Profile。" : "请先关闭系统代理，避免 auto-route 和 Windows Proxy 同时接管。"}</span>{systemProxyEnabled && <button className="secondary-button tun-prerequisite-action" type="button" onClick={() => void onSetSystemProxy(false)} disabled={systemProxyBusy}>{systemProxyBusy ? "关闭中…" : "关闭系统代理"}</button>}</div></div>}
 
       <div className="tun-settings-grid">
         <article className="tun-setting-card panel"><div className="tun-setting-icon blue"><Route size={18} /></div><div><span>Auto Route</span><strong>已启用</strong><small>全局路由进入 MioProxy TUN</small></div></article>

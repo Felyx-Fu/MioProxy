@@ -2113,7 +2113,7 @@ dependencies = [
 
 [[package]]
 name = "mioproxy"
-version = "0.8.0"
+version = "0.9.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",

@@ -1,6 +1,5 @@
 use std::{
     collections::VecDeque,
-    fs,
     sync::Mutex,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -113,9 +112,20 @@ fn load_totals(app: &AppHandle) -> StoredTotals {
             }
         }
     };
-    let stored = fs::read_to_string(path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<StoredTotals>(&content).ok());
+    let stored = match crate::config::read_text_file_at(&path, "读取每日流量统计") {
+        Ok(Some(content)) => match serde_json::from_str::<StoredTotals>(&content) {
+            Ok(totals) => Some(totals),
+            Err(error) => {
+                eprintln!("每日流量统计文件损坏，保留原文件并从零开始：{error}");
+                None
+            }
+        },
+        Ok(None) => None,
+        Err(error) => {
+            eprintln!("读取每日流量统计失败，保留原文件并从零开始：{error}");
+            None
+        }
+    };
     match stored.filter(|totals| totals.day == today_key()) {
         Some(totals) => totals,
         None => StoredTotals {
@@ -126,15 +136,10 @@ fn load_totals(app: &AppHandle) -> StoredTotals {
     }
 }
 
-fn save_totals(app: &AppHandle, totals: &StoredTotals) {
-    if let Some(path) = totals_path(app) {
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        if let Ok(content) = serde_json::to_vec(totals) {
-            let _ = fs::write(path, content);
-        }
-    }
+fn save_totals(app: &AppHandle, totals: &StoredTotals) -> Result<(), String> {
+    let path = totals_path(app).ok_or_else(|| "无法定位每日流量统计目录".to_string())?;
+    let content = serde_json::to_vec(totals).map_err(|e| e.to_string())?;
+    crate::config::write_atomic(&path, &content)
 }
 
 pub fn start(app: &AppHandle) {
@@ -231,7 +236,9 @@ async fn run(app: AppHandle) {
                         history.pop_front();
                     }
                     if last_save.elapsed() >= Duration::from_secs(10) {
-                        save_totals(&app, &totals);
+                        if let Err(error) = save_totals(&app, &totals) {
+                            eprintln!("保存每日流量统计失败：{error}");
+                        }
                         last_save = Instant::now();
                     }
                     let snapshot = TrafficSnapshot {
@@ -244,7 +251,9 @@ async fn run(app: AppHandle) {
                     };
                     let _ = app.emit(EVENT, snapshot);
                 }
-                save_totals(&app, &totals);
+                if let Err(error) = save_totals(&app, &totals) {
+                    eprintln!("保存每日流量统计失败：{error}");
+                }
             }
             Err(_) => tokio::time::sleep(RETRY_DELAY).await,
         }

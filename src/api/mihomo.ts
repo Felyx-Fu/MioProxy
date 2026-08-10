@@ -6,16 +6,26 @@ export type CoreStatus = {
   configPath: string;
   mixedPort: number;
   mode: string;
+  recoveryMessage?: string | null;
 };
 
-export type CoreState = "stopped" | "starting" | "running" | "reloading" | "stopping" | "error";
+export type CoreState = "stopped" | "starting" | "recovering" | "running" | "reloading" | "stopping" | "error";
 export type ProxyState = "disabled" | "enabling" | "enabled" | "disabling" | "error";
+export type ProxyPathState = "unknown" | "healthy" | "degraded" | "unavailable";
 
 export type SystemProxyStatus = {
+  /** True only when MioProxy currently owns the Windows System Proxy. */
   enabled: boolean;
   coreRunning: boolean;
   mixedPort: number;
   proxyServer: string | null;
+  managed: boolean;
+  desiredEnabled: boolean;
+  actualState: "disabled" | "mioproxyEndpoint" | "externalEndpoint" | "unknown";
+  owner: "mioproxy" | "external" | "none" | "unknown";
+  externalDetected: boolean;
+  windowsState: "disabled" | "mioproxy" | "external";
+  stateConsistent: boolean;
 };
 
 export type StartupSettings = {
@@ -181,6 +191,10 @@ export type TunStatusSnapshot = {
   admin: boolean;
   profileId: string | null;
   snapshot: NetworkSnapshot | null;
+  desiredEnabled: boolean;
+  actualState: "disabled" | "mioproxyTun" | "externalTun" | "unknown";
+  owner: "mioproxy" | "external" | "none" | "unknown";
+  externalDetected: boolean;
 };
 
 export type ServiceConnectionStatus = {
@@ -195,6 +209,8 @@ export type ServiceConnectionStatus = {
   ownershipConflict: boolean;
   tunStatus: TunStatus | null;
   tunMessage: string | null;
+  desiredCoreRunning: boolean;
+  coreRecoveryMessage: string | null;
 };
 
 export type UpdatePhase = "preparing" | "installing" | "restarting" | "completed" | "failed";
@@ -275,4 +291,5 @@ export const mihomoApi = {
   coreUpdateStatus: () => invoke<CoreUpdateStatus>("mihomo_core_update_status"),
   coreUpdateCheck: () => invoke<CoreUpdateStatus>("mihomo_core_update_check"),
   coreUpdateInstall: () => invoke<CoreUpdateStatus>("mihomo_core_update_install"),
+  diagnosticBundleGenerate: () => invoke<string>("diagnostic_bundle_generate"),
 };

@@ -32,7 +32,18 @@ mod windows_service_host {
             return install(&args);
         }
         if has_flag(&args, "--uninstall") {
-            return uninstall();
+            return uninstall(false);
+        }
+        if has_flag(&args, "--uninstall-if-present") {
+            return uninstall(true);
+        }
+        if let Some(port) = diagnostic_port(&args)? {
+            let diagnostics = service::port_diagnostics(port)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&diagnostics).map_err(|error| error.to_string())?
+            );
+            return Ok(());
         }
         let data_dir = option(&args, "--data-dir")
             .map(PathBuf::from)
@@ -67,9 +78,30 @@ mod windows_service_host {
             .map(|pair| pair[1].clone())
     }
 
+    fn diagnostic_port(args: &[OsString]) -> Result<Option<u16>, String> {
+        let value = option(args, "--port-diagnostics").or_else(|| {
+            args.windows(2)
+                .find(|pair| pair[0] == "port-diagnostics")
+                .map(|pair| pair[1].clone())
+        });
+        value
+            .map(|value| {
+                value
+                    .to_string_lossy()
+                    .parse::<u16>()
+                    .map_err(|_| "port-diagnostics 需要 1 到 65535 的 TCP 端口".to_string())
+                    .and_then(|port| {
+                        (port != 0).then_some(port).ok_or_else(|| {
+                            "port-diagnostics 需要 1 到 65535 的 TCP 端口".to_string()
+                        })
+                    })
+            })
+            .transpose()
+    }
+
     #[cfg(test)]
     mod tests {
-        use super::has_flag;
+        use super::{diagnostic_port, has_flag};
         use std::ffi::OsString;
 
         #[test]
@@ -79,6 +111,19 @@ mod windows_service_host {
 
             assert!(has_flag(&service_args, "--service"));
             assert!(!has_flag(&gui_args, "--service"));
+        }
+
+        #[test]
+        fn parses_developer_port_diagnostics_command() {
+            assert_eq!(
+                diagnostic_port(&[OsString::from("port-diagnostics"), OsString::from("7890")])
+                    .unwrap(),
+                Some(7890)
+            );
+            assert!(
+                diagnostic_port(&[OsString::from("--port-diagnostics"), OsString::from("0")])
+                    .is_err()
+            );
         }
     }
 
@@ -231,15 +276,21 @@ mod windows_service_host {
         Ok(())
     }
 
-    fn uninstall() -> Result<(), String> {
+    fn uninstall(ignore_missing: bool) -> Result<(), String> {
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
             .map_err(|e| format!("打开 Windows Service Manager 失败：{e}"))?;
-        let service = manager
-            .open_service(
-                SERVICE_NAME,
-                ServiceAccess::STOP | ServiceAccess::QUERY_STATUS | ServiceAccess::DELETE,
-            )
-            .map_err(|e| format!("打开 MioProxy Service 失败：{e}"))?;
+        let service = match manager.open_service(
+            SERVICE_NAME,
+            ServiceAccess::STOP | ServiceAccess::QUERY_STATUS | ServiceAccess::DELETE,
+        ) {
+            Ok(service) => service,
+            Err(windows_service::Error::Winapi(error))
+                if ignore_missing && error.raw_os_error() == Some(1060) =>
+            {
+                return Ok(());
+            }
+            Err(error) => return Err(format!("打开 MioProxy Service 失败：{error}")),
+        };
         let status = service
             .query_status()
             .map_err(|e| format!("查询 MioProxy Service 状态失败：{e}"))?;

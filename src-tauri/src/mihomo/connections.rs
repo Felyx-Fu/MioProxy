@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tauri::AppHandle;
 
-use super::{api_delete, api_get, encode_path_segment};
+use super::{api_delete, api_get, controller::ensure_managed_core, encode_path_segment};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -75,14 +76,16 @@ pub async fn mihomo_connections() -> Result<ConnectionsResponse, String> {
 }
 
 #[tauri::command]
-pub async fn mihomo_close_connection(id: String) -> Result<(), String> {
+pub async fn mihomo_close_connection(app: AppHandle, id: String) -> Result<(), String> {
+    ensure_managed_core(&app).await?;
     api_delete(&format!("/connections/{}", encode_path_segment(&id)))
         .await
         .map(|_| ())
 }
 
 #[tauri::command]
-pub async fn mihomo_close_all_connections() -> Result<(), String> {
+pub async fn mihomo_close_all_connections(app: AppHandle) -> Result<(), String> {
+    ensure_managed_core(&app).await?;
     api_delete("/connections").await.map(|_| ())
 }
 

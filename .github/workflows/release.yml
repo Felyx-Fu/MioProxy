@@ -19,6 +19,22 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Verify release version is consistent
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $expected = $env:RELEASE_TAG.TrimStart('v')
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargoVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"$').Matches.Groups[1].Value
+          if (@($packageVersion, $tauriVersion, $cargoVersion) -contains $null -or @($packageVersion, $tauriVersion, $cargoVersion) -contains '') {
+            throw "Unable to read one or more release versions."
+          }
+          if ($packageVersion -ne $expected -or $tauriVersion -ne $expected -or $cargoVersion -ne $expected) {
+            throw "Release tag $expected does not match package=$packageVersion tauri=$tauriVersion cargo=$cargoVersion."
+          }
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -40,6 +56,9 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
             throw "TAURI_SIGNING_PRIVATE_KEY is not configured in GitHub Actions Secrets."
           }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
+            throw "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is not configured for the encrypted signing key."
+          }
 
       - name: Prepare official Mihomo sidecar
         env:
@@ -51,6 +70,7 @@ jobs:
           npm run build
           cargo check --manifest-path src-tauri/Cargo.toml
           cargo test --manifest-path src-tauri/Cargo.toml
+          cargo build --release --locked --manifest-path src-tauri/Cargo.toml --bin mioproxy --bin mioproxy-service
           cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
           cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
           git diff --check

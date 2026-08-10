@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -16,9 +17,18 @@ use super::{is_running, secret, CONTROLLER};
 const EVENT: &str = "mihomo-log-entry";
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
-#[derive(Default)]
 pub struct LogStreamState {
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    entries: Mutex<VecDeque<LogEntry>>,
+}
+
+impl Default for LogStreamState {
+    fn default() -> Self {
+        Self {
+            task: Mutex::new(None),
+            entries: Mutex::new(VecDeque::new()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -27,6 +37,98 @@ pub struct LogEntry {
     pub timestamp: u64,
     pub level: String,
     pub message: String,
+}
+
+const MAX_ENTRIES: usize = 3000;
+
+pub(crate) fn recent_entries(app: &AppHandle) -> Vec<LogEntry> {
+    app.state::<LogStreamState>()
+        .entries
+        .lock()
+        .map(|entries| entries.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn record_entry(app: &AppHandle, entry: &LogEntry) {
+    if let Ok(mut entries) = app.state::<LogStreamState>().entries.lock() {
+        entries.push_back(entry.clone());
+        while entries.len() > MAX_ENTRIES {
+            entries.pop_front();
+        }
+    }
+}
+
+pub(crate) fn redact_text(input: &str) -> String {
+    let mut redacted = input.to_string();
+    redact_authorization(&mut redacted);
+    for key in [
+        "token=",
+        "secret=",
+        "password=",
+        "passwd=",
+        "api-key=",
+        "private-key=",
+    ] {
+        redact_key_value(&mut redacted, key);
+    }
+    redact_bearer(&mut redacted);
+    redacted
+}
+
+fn redact_key_value(value: &mut String, key: &str) {
+    let mut offset = 0;
+    loop {
+        let lower = value.to_ascii_lowercase();
+        let Some(relative) = lower[offset..].find(key) else {
+            break;
+        };
+        let start = offset + relative + key.len();
+        let end = value[start..]
+            .find(|character: char| {
+                character.is_whitespace() || matches!(character, '&' | ';' | ',' | '"' | '\'')
+            })
+            .map(|relative| start + relative)
+            .unwrap_or(value.len());
+        value.replace_range(start..end, "***");
+        offset = start + 3;
+        if offset >= value.len() {
+            break;
+        }
+    }
+}
+
+fn redact_authorization(value: &mut String) {
+    let key = "authorization=";
+    let mut offset = 0;
+    loop {
+        let lower = value.to_ascii_lowercase();
+        let Some(relative) = lower[offset..].find(key) else {
+            break;
+        };
+        let start = offset + relative + key.len();
+        let end = value[start..]
+            .find(['&', ';', ',', '"', '\''])
+            .map(|relative| start + relative)
+            .unwrap_or(value.len());
+        value.replace_range(start..end, "***");
+        offset = start + 3;
+        if offset >= value.len() {
+            break;
+        }
+    }
+}
+
+fn redact_bearer(value: &mut String) {
+    let lower = value.to_ascii_lowercase();
+    let Some(relative) = lower.find("bearer ") else {
+        return;
+    };
+    let start = relative + "bearer ".len();
+    let end = value[start..]
+        .find(char::is_whitespace)
+        .map(|relative| start + relative)
+        .unwrap_or(value.len());
+    value.replace_range(start..end, "***");
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,19 +209,18 @@ async fn run(app: AppHandle) {
                         Ok(value) => value,
                         Err(_) => continue,
                     };
-                    let message = incoming.payload.trim().to_string();
+                    let message = redact_text(incoming.payload.trim());
                     if message.is_empty() {
                         continue;
                     }
                     let level = normalize_level(&incoming.level);
-                    let _ = app.emit(
-                        EVENT,
-                        LogEntry {
-                            timestamp: now_millis(),
-                            level,
-                            message,
-                        },
-                    );
+                    let entry = LogEntry {
+                        timestamp: now_millis(),
+                        level,
+                        message,
+                    };
+                    record_entry(&app, &entry);
+                    let _ = app.emit(EVENT, entry);
                 }
             }
             Err(_) => tokio::time::sleep(RETRY_DELAY).await,
@@ -129,7 +230,7 @@ async fn run(app: AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_level;
+    use super::{normalize_level, redact_text};
 
     #[test]
     fn normalizes_mihomo_log_levels_for_filters() {
@@ -137,5 +238,17 @@ mod tests {
         assert_eq!(normalize_level("error"), "ERROR");
         assert_eq!(normalize_level("debug"), "DEBUG");
         assert_eq!(normalize_level("info"), "INFO");
+    }
+
+    #[test]
+    fn redacts_sensitive_log_values() {
+        assert_eq!(
+            redact_text("token=abc123 password=hunter2 Authorization=Bearer secret-value"),
+            "token=*** password=*** Authorization=***"
+        );
+        assert_eq!(
+            redact_text("https://example.test/?sid=1&token=abc&x=2"),
+            "https://example.test/?sid=1&token=***&x=2"
+        );
     }
 }

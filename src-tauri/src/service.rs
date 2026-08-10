@@ -8,11 +8,17 @@ pub const SERVICE_PROTOCOL_VERSION: u32 = 1;
 pub const SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const TOKEN_FILE: &str = "service-token";
 const USER_SID_FILE: &str = "service-user-sid";
+const CORE_STATE_FILE: &str = "service-core-state.json";
+const CORE_STATE_FORMAT_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "camelCase")]
 pub enum ServiceCommand {
     Status,
+    /// Development and validation only. This is authenticated Service IPC, not a GUI command.
+    PortDiagnostics {
+        port: u16,
+    },
     Start,
     Stop,
     Reload,
@@ -65,6 +71,10 @@ pub struct ServiceStatusData {
     pub tun_message: Option<String>,
     pub tun_profile_id: Option<String>,
     pub tun_snapshot: Option<crate::tun::NetworkSnapshot>,
+    #[serde(default)]
+    pub desired_core_running: bool,
+    #[serde(default)]
+    pub core_recovery_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,6 +91,8 @@ pub struct ServiceConnectionStatus {
     pub ownership_conflict: bool,
     pub tun_status: Option<String>,
     pub tun_message: Option<String>,
+    pub desired_core_running: bool,
+    pub core_recovery_message: Option<String>,
 }
 
 pub(crate) fn token_path(data_dir: &std::path::Path) -> std::path::PathBuf {
@@ -114,6 +126,7 @@ mod windows_impl {
     };
 
     static REQUEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
+    const IPC_TIMEOUT: Duration = Duration::from_secs(5);
     use windows_service::{
         service::{ServiceAccess, ServiceExitCode, ServiceState},
         service_manager::{ServiceManager, ServiceManagerAccess},
@@ -123,64 +136,32 @@ mod windows_impl {
         Security::{
             Authorization::{
                 ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-                GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+                SDDL_REVISION_1,
             },
-            OWNER_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
+            GetTokenInformation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
         },
         Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH},
         System::{
-            Diagnostics::ToolHelp::{
-                CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-                TH32CS_SNAPPROCESS,
-            },
             JobObjects::{
                 AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
                 SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             },
             SystemInformation::GetTickCount64,
-            Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
+            Threading::{
+                GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_SET_QUOTA,
+                PROCESS_TERMINATE,
+            },
         },
     };
 
     #[cfg(not(test))]
     use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 
-    use crate::{config, mihomo};
+    use crate::{config, mihomo, outbound};
 
     fn is_admin() -> bool {
         unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() != 0 }
-    }
-
-    fn external_mihomo_pids(excluded_pid: Option<u32>) -> Vec<u32> {
-        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-        if snapshot == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
-            return Vec::new();
-        }
-
-        let mut entry = PROCESSENTRY32W {
-            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-            ..Default::default()
-        };
-        let mut pids = Vec::new();
-        let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
-        while has_entry {
-            let name_end = entry
-                .szExeFile
-                .iter()
-                .position(|character| *character == 0)
-                .unwrap_or(entry.szExeFile.len());
-            let name = String::from_utf16_lossy(&entry.szExeFile[..name_end]).to_ascii_lowercase();
-            let is_mihomo = name
-                .strip_suffix(".exe")
-                .is_some_and(|stem| stem == "mihomo" || stem.starts_with("mihomo-"));
-            if is_mihomo && excluded_pid != Some(entry.th32ProcessID) {
-                pids.push(entry.th32ProcessID);
-            }
-            has_entry = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
-        }
-        unsafe { CloseHandle(snapshot) };
-        pids
     }
 
     struct JobGuard {
@@ -276,36 +257,50 @@ mod windows_impl {
         Ok(sid)
     }
 
-    fn data_dir_owner_sid(data_dir: &Path) -> Result<String, String> {
-        let path = data_dir
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>();
-        let mut owner = std::ptr::null_mut();
-        let mut descriptor = std::ptr::null_mut();
-        let error = unsafe {
-            GetNamedSecurityInfoW(
-                path.as_ptr(),
-                SE_FILE_OBJECT,
-                OWNER_SECURITY_INFORMATION,
-                &mut owner,
+    fn current_process_user_sid() -> Result<String, String> {
+        let mut token = std::ptr::null_mut();
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err(format!(
+                "读取 Service 安装用户令牌失败：{}",
+                io::Error::last_os_error()
+            ));
+        }
+
+        let mut required_length = 0;
+        let queried = unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
                 std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                &mut descriptor,
+                0,
+                &mut required_length,
             )
         };
-        let result = if error != 0 {
-            Err(format!("读取数据目录所有者失败：Windows 错误 {error}"))
-        } else {
-            sid_to_string(owner, "数据目录所有者 SID")
-        };
-        if !descriptor.is_null() {
-            unsafe {
-                let _ = windows_sys::Win32::Foundation::LocalFree(descriptor as _);
-            }
+        if queried != 0 || required_length == 0 {
+            unsafe { CloseHandle(token) };
+            return Err("读取 Service 安装用户 SID 大小失败".to_string());
         }
+
+        let mut buffer = vec![0u8; required_length as usize];
+        let result = if unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr() as *mut std::ffi::c_void,
+                required_length,
+                &mut required_length,
+            )
+        } == 0
+        {
+            Err(format!(
+                "读取 Service 安装用户 SID 失败：{}",
+                io::Error::last_os_error()
+            ))
+        } else {
+            let token_user = unsafe { &*(buffer.as_ptr() as *const TOKEN_USER) };
+            sid_to_string(token_user.User.Sid, "Service 安装用户 SID")
+        };
+        unsafe { CloseHandle(token) };
         result
     }
 
@@ -327,7 +322,7 @@ mod windows_impl {
     ) -> Result<(), String> {
         let sid = match explicit_sid {
             Some(sid) => validate_sid(sid)?,
-            None => data_dir_owner_sid(data_dir)?,
+            None => current_process_user_sid()?,
         };
         write_atomic(&data_dir.join(USER_SID_FILE), sid.as_bytes())
             .map_err(|e| format!("保存 Service 安装用户身份失败：{e}"))
@@ -340,9 +335,10 @@ mod windows_impl {
     fn client_token(app: &AppHandle) -> Result<String, String> {
         let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
         let path = token_path(&data_dir);
-        fs::read_to_string(path)
+        config::read_text_file_at(&path, "读取 Service 令牌")?
             .map(|token| token.trim().to_string())
-            .map_err(|_| "MioProxy Service 令牌不存在，请先启动或安装 Service".to_string())
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| "MioProxy Service 令牌不存在，请先启动或安装 Service".to_string())
     }
 
     fn is_pipe_missing(error: &io::Error) -> bool {
@@ -350,7 +346,7 @@ mod windows_impl {
     }
 
     fn is_pipe_busy(error: &io::Error) -> bool {
-        error.raw_os_error() == Some(231)
+        matches!(error.raw_os_error(), Some(121 | 231))
     }
 
     fn pipe_name() -> String {
@@ -426,7 +422,9 @@ mod windows_impl {
         app: &AppHandle,
         command: ServiceCommand,
     ) -> Result<Option<ServiceResponse>, String> {
-        let _request = REQUEST_LOCK.lock().await;
+        let _request = tokio::time::timeout(IPC_TIMEOUT, REQUEST_LOCK.lock())
+            .await
+            .map_err(|_| "等待 MioProxy Service IPC 请求锁超时".to_string())?;
         let mut client = match open_client().await {
             Ok(client) => client,
             Err(error) if is_pipe_missing(&error) => {
@@ -448,19 +446,19 @@ mod windows_impl {
             command,
         };
         let line = serde_json::to_string(&request).map_err(|e| e.to_string())? + "\n";
-        client
-            .write_all(line.as_bytes())
+        tokio::time::timeout(IPC_TIMEOUT, client.write_all(line.as_bytes()))
             .await
+            .map_err(|_| "写入 Service 请求超时".to_string())?
             .map_err(|e| format!("写入 Service 请求失败：{e}"))?;
-        client
-            .flush()
+        tokio::time::timeout(IPC_TIMEOUT, client.flush())
             .await
+            .map_err(|_| "发送 Service 请求超时".to_string())?
             .map_err(|e| format!("发送 Service 请求失败：{e}"))?;
         let mut reader = BufReader::new(client);
         let mut response_line = String::new();
-        reader
-            .read_line(&mut response_line)
+        tokio::time::timeout(IPC_TIMEOUT, reader.read_line(&mut response_line))
             .await
+            .map_err(|_| "读取 Service 响应超时".to_string())?
             .map_err(|e| format!("读取 Service 响应失败：{e}"))?;
         let response = serde_json::from_str::<ServiceResponse>(&response_line)
             .map_err(|e| format!("Service 响应无效：{e}"))?;
@@ -496,7 +494,35 @@ mod windows_impl {
     }
 
     pub(crate) async fn service_status(app: AppHandle) -> Result<ServiceConnectionStatus, String> {
-        let response = match try_request(&app, ServiceCommand::Status).await {
+        // Health checks are deliberately short and non-disruptive. A service
+        // which is still starting must be represented as unavailable so the GUI
+        // can reconnect in the background, not stalled behind a full IPC timeout.
+        let response = match tokio::time::timeout(
+            Duration::from_millis(250),
+            try_request(&app, ServiceCommand::Status),
+        )
+        .await
+        {
+            Err(_) => {
+                return Ok(ServiceConnectionStatus {
+                    reachable: false,
+                    protocol_version: SERVICE_PROTOCOL_VERSION,
+                    service_version: None,
+                    version_mismatch: false,
+                    error: Some("MioProxy Service health check timed out".to_string()),
+                    admin: false,
+                    owns_core: false,
+                    core_running: false,
+                    ownership_conflict: false,
+                    tun_status: None,
+                    tun_message: None,
+                    desired_core_running: false,
+                    core_recovery_message: None,
+                });
+            }
+            Ok(response) => response,
+        };
+        let response = match response {
             Ok(response) => response,
             Err(error) if error.contains("版本不匹配") => {
                 return Ok(ServiceConnectionStatus {
@@ -504,6 +530,23 @@ mod windows_impl {
                     protocol_version: SERVICE_PROTOCOL_VERSION,
                     service_version: None,
                     version_mismatch: true,
+                    error: Some(error.clone()),
+                    admin: false,
+                    owns_core: false,
+                    core_running: false,
+                    ownership_conflict: false,
+                    tun_status: None,
+                    tun_message: None,
+                    desired_core_running: false,
+                    core_recovery_message: Some(error.clone()),
+                });
+            }
+            Err(error) => {
+                return Ok(ServiceConnectionStatus {
+                    reachable: false,
+                    protocol_version: SERVICE_PROTOCOL_VERSION,
+                    service_version: None,
+                    version_mismatch: false,
                     error: Some(error),
                     admin: false,
                     owns_core: false,
@@ -511,9 +554,10 @@ mod windows_impl {
                     ownership_conflict: false,
                     tun_status: None,
                     tun_message: None,
+                    desired_core_running: false,
+                    core_recovery_message: None,
                 });
             }
-            Err(error) => return Err(error),
         };
         let Some(response) = response else {
             return Ok(ServiceConnectionStatus {
@@ -528,6 +572,8 @@ mod windows_impl {
                 ownership_conflict: false,
                 tun_status: None,
                 tun_message: None,
+                desired_core_running: false,
+                core_recovery_message: None,
             });
         };
         let status: ServiceStatusData = data(response)?;
@@ -543,6 +589,8 @@ mod windows_impl {
             ownership_conflict: status.ownership_conflict,
             tun_status: Some(status.tun_status),
             tun_message: status.tun_message,
+            desired_core_running: status.desired_core_running,
+            core_recovery_message: status.core_recovery_message,
         })
     }
 
@@ -566,6 +614,10 @@ mod windows_impl {
             admin: status.admin,
             profile_id: status.tun_profile_id,
             snapshot: status.tun_snapshot,
+            desired_enabled: status.tun_status != "disabled",
+            actual_state: crate::tun::tun_state_for_status(tun_status).0,
+            owner: crate::tun::tun_state_for_status(tun_status).1,
+            external_detected: false,
         }))
     }
 
@@ -577,6 +629,15 @@ mod windows_impl {
             return Ok(None);
         };
         data(response).map(Some)
+    }
+
+    #[cfg(feature = "validation-fault-injection")]
+    pub(crate) async fn validation_crash_managed_core(app: AppHandle) -> Result<Value, String> {
+        let Some(response) = try_request(&app, ServiceCommand::ValidationCrashManagedCore).await?
+        else {
+            return Err("MioProxy Service IPC 不可用，无法注入受管 Mihomo 故障".to_string());
+        };
+        Ok(response.data.unwrap_or(Value::Null))
     }
 
     pub(crate) async fn request_core_update(
@@ -852,6 +913,10 @@ mod windows_impl {
                 admin: self.admin,
                 profile_id: self.profile_id,
                 snapshot: self.snapshot,
+                desired_enabled: status != crate::tun::TunStatus::Disabled,
+                actual_state: crate::tun::tun_state_for_status(status).0,
+                owner: crate::tun::tun_state_for_status(status).1,
+                external_detected: false,
             }
         }
     }
@@ -884,12 +949,42 @@ mod windows_impl {
         snapshot: crate::tun::NetworkSnapshot,
     }
 
+    #[derive(Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PersistedCoreState {
+        #[serde(default)]
+        format_version: u8,
+        desired_running: bool,
+    }
+
+    fn read_desired_core_state(data_dir: &Path) -> Result<bool, String> {
+        let path = data_dir.join(CORE_STATE_FILE);
+        let Some(content) = config::read_text_file_at(&path, "读取 Service Mihomo 期望状态")?
+        else {
+            // Core is a Service-owned prerequisite. A missing legacy state file
+            // therefore means the default desired state is Ready, not stopped.
+            return Ok(true);
+        };
+        let state = serde_json::from_str::<PersistedCoreState>(&content)
+            .map_err(|e| format!("Service Mihomo 期望状态损坏：{e}"))?;
+        // V0.9 makes Core Ready the normal product default. State files written
+        // before this format version came from the old primary Start/Stop UI, so
+        // they must not keep a newly upgraded Service permanently stopped.
+        if state.format_version < CORE_STATE_FORMAT_VERSION {
+            return Ok(true);
+        }
+        Ok(state.desired_running)
+    }
+
     struct ServiceRuntime {
         data_dir: PathBuf,
         mihomo_path: PathBuf,
         child: Mutex<Option<Child>>,
         job: JobGuard,
         tun: Mutex<ServiceTunState>,
+        desired_core_running: Mutex<bool>,
+        core_recovery_message: Mutex<Option<String>>,
+        outbound_compatibility: Mutex<outbound::OutboundCompatibility>,
         tun_transition: AsyncMutex<()>,
         core_update: Mutex<crate::core_update::CoreUpdateStatus>,
         core_update_transition: AsyncMutex<()>,
@@ -900,12 +995,19 @@ mod windows_impl {
             fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
             crate::core_update::recover_orphaned_backup(&mihomo_path)?;
             let _ = ensure_token(&data_dir)?;
+            let desired_core_running = read_desired_core_state(&data_dir).unwrap_or_else(|error| {
+                eprintln!("读取 Service Mihomo 期望状态失败：{error}");
+                false
+            });
             Ok(Self {
                 data_dir,
                 mihomo_path,
                 child: Mutex::new(None),
                 job: JobGuard::new()?,
                 tun: Mutex::new(ServiceTunState::default()),
+                desired_core_running: Mutex::new(desired_core_running),
+                core_recovery_message: Mutex::new(None),
+                outbound_compatibility: Mutex::new(outbound::resolve().unwrap_or_default()),
                 tun_transition: AsyncMutex::const_new(()),
                 core_update: Mutex::new(crate::core_update::CoreUpdateStatus::default()),
                 core_update_transition: AsyncMutex::const_new(()),
@@ -918,6 +1020,46 @@ mod windows_impl {
 
         fn service_tun_path(&self) -> PathBuf {
             self.data_dir.join("service-tun-state.json")
+        }
+
+        fn core_state_path(&self) -> PathBuf {
+            self.data_dir.join(CORE_STATE_FILE)
+        }
+
+        fn desired_core_running(&self) -> Result<bool, String> {
+            self.desired_core_running
+                .lock()
+                .map(|desired| *desired)
+                .map_err(|_| "Service Mihomo 期望状态锁异常".to_string())
+        }
+
+        fn set_desired_core_running(&self, desired: bool) -> Result<(), String> {
+            let mut current = self
+                .desired_core_running
+                .lock()
+                .map_err(|_| "Service Mihomo 期望状态锁异常")?;
+            *current = desired;
+            let state = PersistedCoreState {
+                format_version: CORE_STATE_FORMAT_VERSION,
+                desired_running: desired,
+            };
+            let bytes = serde_json::to_vec_pretty(&state).map_err(|e| e.to_string())?;
+            write_atomic(&self.core_state_path(), &bytes)
+        }
+
+        fn core_recovery_message(&self) -> Result<Option<String>, String> {
+            self.core_recovery_message
+                .lock()
+                .map(|message| message.clone())
+                .map_err(|_| "Service Mihomo 恢复状态锁异常".to_string())
+        }
+
+        fn set_core_recovery_message(&self, message: Option<String>) -> Result<(), String> {
+            *self
+                .core_recovery_message
+                .lock()
+                .map_err(|_| "Service Mihomo 恢复状态锁异常")? = message;
+            Ok(())
         }
 
         fn read_tun_persisted(&self) -> Result<Option<PersistedServiceTunState>, String> {
@@ -961,12 +1103,7 @@ mod windows_impl {
 
         fn clear_tun_persisted(&self) -> Result<(), String> {
             let path = self.service_tun_path();
-            match fs::symlink_metadata(&path) {
-                Ok(_) => fs::remove_file(path).map_err(|e| e.to_string())?,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.to_string()),
-            }
-            Ok(())
+            config::remove_file(&path, "删除 Service TUN 恢复状态")
         }
 
         fn has_tun_recovery(&self) -> bool {
@@ -1034,6 +1171,45 @@ mod windows_impl {
                 .is_some())
         }
 
+        fn managed_core_pid(&self) -> Result<Option<u32>, String> {
+            self.refresh_child()?;
+            Ok(self
+                .child
+                .lock()
+                .map_err(|_| "Service Mihomo 状态锁异常")?
+                .as_ref()
+                .map(Child::id))
+        }
+
+        fn managed_listener_ready(
+            &self,
+            mixed_port: u16,
+            managed_pid: u32,
+        ) -> Result<bool, String> {
+            Ok(
+                config::windows_tcp_listener_diagnostics(mixed_port, Some(managed_pid))?
+                    .iter()
+                    .any(|listener| {
+                        listener.owner == config::ListenerOwner::MioProxyManaged
+                            && listener.local_port == mixed_port
+                            && listener.state == "listen"
+                    }),
+            )
+        }
+
+        fn stop_owned_child_for_retry(&self) -> Result<(), String> {
+            if let Some(mut child) = self
+                .child
+                .lock()
+                .map_err(|_| "Service Mihomo 状态锁异常")?
+                .take()
+            {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            Ok(())
+        }
+
         fn default_config(&self) -> Result<(), String> {
             if self.config_path().exists() {
                 return Ok(());
@@ -1065,6 +1241,32 @@ rules:
             write_atomic(&self.config_path(), yaml.as_bytes())
         }
 
+        fn refresh_outbound_compatibility(&self) -> Result<bool, String> {
+            let current = outbound::resolve()?;
+            let mut previous = self
+                .outbound_compatibility
+                .lock()
+                .map_err(|_| "Service outbound compatibility 状态锁异常")?;
+            if *previous == current {
+                return Ok(false);
+            }
+            *previous = current;
+            Ok(true)
+        }
+
+        async fn reconcile_outbound_compatibility(&self) -> Result<(), String> {
+            if !self.refresh_outbound_compatibility()? {
+                return Ok(());
+            }
+            if !self.owns_core()? || !mihomo::is_running().await {
+                return Ok(());
+            }
+            if !config::restore_active_profile_config_at(&self.data_dir)? {
+                return Ok(());
+            }
+            self.reload().await.map(|_| ())
+        }
+
         fn runtime_config(&self) -> Result<(u16, String), String> {
             #[derive(Deserialize)]
             struct RuntimeConfig {
@@ -1087,13 +1289,20 @@ rules:
 
         async fn core_status(&self) -> Result<crate::mihomo::CoreStatus, String> {
             let running = mihomo::is_running().await;
-            let (mixed_port, mode) = self.runtime_config()?;
+            let (configured_mixed_port, mode) = self.runtime_config()?;
+            let mixed_port = if running {
+                config::actual_runtime_mixed_port_at(&self.data_dir)
+                    .unwrap_or(configured_mixed_port)
+            } else {
+                configured_mixed_port
+            };
             Ok(crate::mihomo::CoreStatus {
                 running,
                 controller: mihomo::CONTROLLER.to_string(),
                 config_path: self.config_path().display().to_string(),
                 mixed_port,
                 mode,
+                recovery_message: self.core_recovery_message()?,
             })
         }
 
@@ -1259,21 +1468,12 @@ rules:
             let tun_profile_id = tun_before.profile_id.clone();
             self.refresh_child()?;
             let was_running = self.owns_core()?;
-            if !was_running
-                && (!external_mihomo_pids(None).is_empty() || mihomo::is_running().await)
-            {
-                return Err("检测到非 Service 管理的 Mihomo，拒绝执行 Core 更新".to_string());
-            }
             if self.has_tun_recovery() {
                 self.disable_tun().await?;
             }
             if was_running {
                 self.stop().await?;
             }
-            if mihomo::is_running().await || !external_mihomo_pids(None).is_empty() {
-                return Err("Mihomo 未完全停止或检测到外部实例，拒绝替换 Core".to_string());
-            }
-
             self.set_core_update_status(crate::core_update::CoreUpdateStatus {
                 current_version: current.clone(),
                 available_version: Some(release.version.to_string()),
@@ -1372,7 +1572,7 @@ rules:
                 return Err(combined);
             }
             crate::core_update::finalize_core(&backup)?;
-            let _ = fs::remove_file(staged);
+            let _ = config::remove_file(&staged, "清理 Core staging 文件");
             let final_version = Self::running_core_version().await;
             self.set_core_update_status(crate::core_update::CoreUpdateStatus {
                 current_version: final_version,
@@ -1384,20 +1584,22 @@ rules:
         }
 
         async fn start(&self) -> Result<crate::mihomo::CoreStatus, String> {
-            if self.owns_core()? {
-                return self.core_status().await;
+            if let Some(managed_pid) = self.managed_core_pid()? {
+                let (mixed_port, _) = self.runtime_config()?;
+                if mihomo::is_running().await
+                    && self.managed_listener_ready(mixed_port, managed_pid)?
+                {
+                    return self.core_status().await;
+                }
+                self.stop_owned_child_for_retry()?;
             }
             if self.has_tun_recovery() {
                 self.disable_tun().await?;
             }
-            if let Some(pid) = external_mihomo_pids(None).into_iter().next() {
-                return Err(format!(
-                    "检测到已有 Mihomo 进程（PID {pid}），拒绝启动以避免双实例"
-                ));
+            if !self.has_tun_recovery() {
+                let _ = config::restore_active_profile_config_at(&self.data_dir)?;
             }
-            if mihomo::is_running().await {
-                return Err("检测到已有非 Service 管理的 Mihomo，拒绝启动以避免双实例".to_string());
-            }
+            let _ = self.refresh_outbound_compatibility();
             self.default_config()?;
             if !self.mihomo_path.exists() {
                 return Err(format!(
@@ -1405,40 +1607,67 @@ rules:
                     self.mihomo_path.display()
                 ));
             }
-            let mut command = Command::new(&self.mihomo_path);
-            command
-                .args(["-d", self.data_dir.to_string_lossy().as_ref()])
-                .args(["-f", self.config_path().to_string_lossy().as_ref()])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            let mut child = command
-                .spawn()
-                .map_err(|e| format!("Service 启动 Mihomo 失败：{e}"))?;
-            if let Err(error) = self.job.assign(child.id()) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
-            *self.child.lock().map_err(|_| "Service Mihomo 状态锁异常")? = Some(child);
-            for _ in 0..50 {
-                if mihomo::is_running().await {
-                    return self.core_status().await;
+            let mut minimum_mixed_port = None;
+            let mut last_error = "Mihomo 未通过启动健康检查".to_string();
+            for _ in 0..4 {
+                config::clear_actual_runtime_mixed_port_at(&self.data_dir)?;
+                let mixed_port = config::prepare_runtime_resources_from_at(
+                    &self.config_path(),
+                    mihomo::CONTROLLER,
+                    mihomo::secret(),
+                    minimum_mixed_port,
+                )?;
+                let mut command = Command::new(&self.mihomo_path);
+                command
+                    .args(["-d", self.data_dir.to_string_lossy().as_ref()])
+                    .args(["-f", self.config_path().to_string_lossy().as_ref()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                let mut child = command
+                    .spawn()
+                    .map_err(|e| format!("Service 启动 Mihomo 失败：{e}"))?;
+                let managed_pid = child.id();
+                if let Err(error) = self.job.assign(managed_pid) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
                 }
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                if let Err(error) = self.set_desired_core_running(true) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("保存 Service Mihomo 期望状态失败：{error}"));
+                }
+                let _ = self.set_core_recovery_message(None);
+                *self.child.lock().map_err(|_| "Service Mihomo 状态锁异常")? = Some(child);
+                for _ in 0..50 {
+                    if mihomo::is_running().await
+                        && self.managed_listener_ready(mixed_port, managed_pid)?
+                    {
+                        config::commit_actual_runtime_mixed_port_at(&self.data_dir, mixed_port)?;
+                        return self.core_status().await;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                self.stop_owned_child_for_retry()?;
+                last_error = format!("MioProxy mixed-port {mixed_port} 未通过健康检查");
+                minimum_mixed_port = mixed_port.checked_add(1);
             }
-            if let Some(mut child) = self
-                .child
-                .lock()
-                .map_err(|_| "Service Mihomo 状态锁异常")?
-                .take()
-            {
-                let _ = child.kill();
-                let _ = child.wait();
+            let _ = self.set_core_recovery_message(Some(last_error.clone()));
+            Err(last_error)
+        }
+
+        async fn ensure_desired_core_ready(&self) {
+            if !self.desired_core_running().unwrap_or(false) || self.owns_core().unwrap_or(false) {
+                return;
             }
-            Err("Service 启动 Mihomo 超时，已清理子进程".to_string())
+            if let Err(error) = self.start().await {
+                let _ = self.set_core_recovery_message(Some(error));
+            }
         }
 
         async fn stop(&self) -> Result<crate::mihomo::CoreStatus, String> {
+            self.set_desired_core_running(false)?;
+            self.set_core_recovery_message(None)?;
             let owns_core = self.owns_core()?;
             if self.has_tun_recovery() {
                 self.disable_tun().await?;
@@ -1455,8 +1684,8 @@ rules:
                         .map_err(|e| format!("Service 停止 Mihomo 失败：{e}"))?;
                     let _ = child.wait();
                 }
-            } else if !external_mihomo_pids(None).is_empty() || mihomo::is_running().await {
-                return Err("当前 Mihomo 不是 Service 管理，拒绝停止".to_string());
+            } else if mihomo::is_running().await {
+                return Err("当前 Mihomo 不是 MioProxy Service 管理，拒绝停止外部进程".to_string());
             }
             self.core_status().await
         }
@@ -1486,7 +1715,7 @@ rules:
             let candidate = config::candidate_path_at(&self.data_dir);
             write_atomic(&candidate, yaml.as_bytes())?;
             if !mihomo::is_running().await {
-                let _ = fs::remove_file(candidate);
+                let _ = config::remove_file(&candidate, "清理候选配置");
                 return Err("Mihomo 未运行，无法加载配置".to_string());
             }
             let result = mihomo::api_put(
@@ -1495,12 +1724,12 @@ rules:
             )
             .await;
             if let Err(error) = result {
-                let _ = fs::remove_file(&candidate);
+                let _ = config::remove_file(&candidate, "清理候选配置");
                 return Err(format!("Mihomo 配置校验失败：{error}"));
             }
             let stable = self.config_path();
             if let Err(error) = write_atomic(&stable, yaml.as_bytes()) {
-                let _ = fs::remove_file(&candidate);
+                let _ = config::remove_file(&candidate, "清理候选配置");
                 let rollback = mihomo::api_put(
                     "/configs?force=true",
                     json!({ "path": stable.display().to_string() }),
@@ -1513,7 +1742,8 @@ rules:
                     }
                 });
             }
-            let _ = fs::remove_file(candidate);
+            let _ = config::remove_file(&candidate, "清理候选配置");
+            config::set_active_profile_id_at(&self.data_dir, profile_id)?;
             Ok(crate::config::ConfigApplyResult {
                 profile_id: profile_id.to_string(),
                 profile_name,
@@ -1531,6 +1761,9 @@ rules:
             let _transition = self.tun_transition.lock().await;
             if !is_admin() {
                 return Err("MioProxy Service 没有管理员权限".to_string());
+            }
+            if let Some(message) = crate::tun::foreign_tun_conflict()? {
+                return Err(message);
             }
             if system_proxy_enabled {
                 return Err("TUN 与系统代理不能同时开启".to_string());
@@ -1832,26 +2065,25 @@ rules:
             let core = self.core_status().await?;
             let running = core.running;
             self.refresh_child()?;
-            let owned_pid = self
+            let owns_core = self
                 .child
                 .lock()
                 .map_err(|_| "Service Mihomo 状态锁异常")?
-                .as_ref()
-                .map(Child::id);
-            let owns_core = owned_pid.is_some();
+                .is_some();
             let tun = self.tun_data()?;
             Ok(ServiceStatusData {
                 core,
                 core_update: self.core_update_status()?,
                 running,
                 owns_core,
-                ownership_conflict: running && !owns_core
-                    || !external_mihomo_pids(owned_pid).is_empty(),
+                ownership_conflict: running && !owns_core,
                 admin: is_admin(),
                 tun_status: tun.status,
                 tun_message: tun.message,
                 tun_profile_id: tun.profile_id,
                 tun_snapshot: tun.snapshot,
+                desired_core_running: self.desired_core_running()?,
+                core_recovery_message: self.core_recovery_message()?,
             })
         }
 
@@ -1860,6 +2092,10 @@ rules:
                 ServiceCommand::Status => {
                     Ok(serde_json::to_value(self.status().await?).map_err(|e| e.to_string())?)
                 }
+                ServiceCommand::PortDiagnostics { port } => Ok(serde_json::to_value(
+                    config::windows_tcp_listener_diagnostics(port, self.managed_core_pid()?)?,
+                )
+                .map_err(|e| e.to_string())?),
                 ServiceCommand::Start => Ok(serde_json::to_value::<crate::mihomo::CoreStatus>(
                     self.start().await?,
                 )
@@ -1902,6 +2138,9 @@ rules:
 
         async fn shutdown(&self) -> Result<(), String> {
             let mut errors = Vec::new();
+            // SCM shutdown/restart (including an application upgrade) must not
+            // turn a Ready Core into a persisted user stop request.
+            let _ = self.set_core_recovery_message(None);
             if self.has_tun_recovery() {
                 if let Err(error) = self.disable_tun().await {
                     errors.push(format!("Service TUN 清理失败：{error}"));
@@ -1927,6 +2166,27 @@ rules:
             }
         }
 
+        async fn recover_after_managed_core_exit(
+            &self,
+            tun_was_running: bool,
+            tun_profile_id: Option<String>,
+        ) -> Result<(), String> {
+            self.start().await?;
+            if tun_was_running {
+                let profile_id = tun_profile_id.ok_or_else(|| {
+                    "受管 Mihomo 崩溃后缺少 TUN Profile，拒绝自动恢复".to_string()
+                })?;
+                let tun = self.tun_set(true, Some(profile_id), false).await?;
+                if tun.status != "running" {
+                    return Err(format!(
+                        "受管 Mihomo 已恢复，但 TUN 未恢复 Running（当前 {}）",
+                        tun.status
+                    ));
+                }
+            }
+            Ok(())
+        }
+
         async fn monitor(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
             let mut previous_tick = unsafe { GetTickCount64() };
             let mut was_active = false;
@@ -1940,20 +2200,58 @@ rules:
                 if *shutdown.borrow() {
                     return;
                 }
-                let _transition = self.tun_transition.lock().await;
+                let transition = self.tun_transition.lock().await;
                 let tun = match self.tun_data() {
                     Ok(tun) if tun.status != "disabled" && self.has_tun_recovery() => tun,
                     _ => {
+                        drop(transition);
+                        if self.desired_core_running().unwrap_or(false)
+                            && !self.owns_core().unwrap_or(false)
+                        {
+                            if let Err(error) =
+                                self.recover_after_managed_core_exit(false, None).await
+                            {
+                                let _ = self.set_core_recovery_message(Some(error));
+                            }
+                        }
+                        if let Err(error) = self.reconcile_outbound_compatibility().await {
+                            eprintln!("outbound compatibility reconcile failed: {error}");
+                        }
                         was_active = false;
                         continue;
                     }
                 };
-                if !self.owns_core().unwrap_or(false) || !mihomo::is_running().await {
-                    let _ = self.disable_tun_inner().await;
+                let core_missing =
+                    !self.owns_core().unwrap_or(false) || !mihomo::is_running().await;
+                if core_missing {
+                    let desired = self.desired_core_running().unwrap_or(false);
+                    let tun_was_running = tun.status == "running";
+                    let tun_profile_id = tun.profile_id.clone();
+                    let cleanup = self.disable_tun_inner().await;
+                    drop(transition);
+                    if let Err(error) = cleanup {
+                        let _ = self.set_core_recovery_message(Some(error));
+                        was_active = false;
+                        continue;
+                    }
+                    if desired {
+                        match self
+                            .recover_after_managed_core_exit(tun_was_running, tun_profile_id)
+                            .await
+                        {
+                            Ok(()) => {
+                                let _ = self.set_core_recovery_message(None);
+                            }
+                            Err(error) => {
+                                let _ = self.set_core_recovery_message(Some(error));
+                            }
+                        }
+                    }
                     was_active = false;
                     continue;
                 }
                 if tun.status != "running" {
+                    drop(transition);
                     continue;
                 }
                 if !was_active {
@@ -1964,6 +2262,7 @@ rules:
                 let wake_gap = now.saturating_sub(previous_tick) > 30_000;
                 previous_tick = now;
                 let Ok(snapshot) = crate::tun::capture_snapshot().await else {
+                    drop(transition);
                     continue;
                 };
                 let changed = wake_gap
@@ -1977,9 +2276,11 @@ rules:
                         })
                         .unwrap_or(true);
                 if !changed {
+                    drop(transition);
                     continue;
                 }
                 let Some(profile_id) = tun.profile_id.clone() else {
+                    drop(transition);
                     continue;
                 };
                 if let Ok(mut current) = self.tun.lock() {
@@ -2011,6 +2312,7 @@ rules:
                         }
                     }
                 }
+                drop(transition);
             }
         }
     }
@@ -2295,6 +2597,7 @@ rules:
         if let Err(error) = runtime.recover().await {
             runtime.set_recovery_error(error)?;
         }
+        runtime.ensure_desired_core_ready().await;
         let monitor = tokio::spawn(runtime.clone().monitor(shutdown.clone()));
         let mut first = true;
         let shutdown_result = loop {
@@ -2333,10 +2636,90 @@ rules:
         run_service_daemon(data_dir, mihomo_path, receiver).await
     }
 
+    /// Developer/validation helper. The normal product UI never calls this.
+    pub fn port_diagnostics(port: u16) -> Result<Value, String> {
+        serde_json::to_value(config::windows_tcp_listener_diagnostics(port, None)?)
+            .map_err(|error| error.to_string())
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use std::{
+            fs,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        #[test]
+        fn missing_core_state_defaults_to_ready() {
+            let data_dir = std::env::temp_dir().join(format!(
+                "mioproxy-service-core-state-test-{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&data_dir).unwrap();
+            assert!(read_desired_core_state(&data_dir).unwrap());
+            let _ = fs::remove_dir_all(data_dir);
+        }
+
+        #[test]
+        fn migrates_legacy_stopped_core_state_to_ready() {
+            let data_dir = std::env::temp_dir().join(format!(
+                "mioproxy-service-core-state-migration-test-{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&data_dir).unwrap();
+            fs::write(
+                data_dir.join(CORE_STATE_FILE),
+                r#"{"desiredRunning":false}"#,
+            )
+            .unwrap();
+            assert!(read_desired_core_state(&data_dir).unwrap());
+            let _ = fs::remove_dir_all(data_dir);
+        }
+
+        #[test]
+        fn migrates_pre_shutdown_fix_stop_state_to_ready() {
+            let data_dir = std::env::temp_dir().join(format!(
+                "mioproxy-service-core-state-v1-test-{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&data_dir).unwrap();
+            fs::write(
+                data_dir.join(CORE_STATE_FILE),
+                r#"{"formatVersion":1,"desiredRunning":false}"#,
+            )
+            .unwrap();
+            assert!(read_desired_core_state(&data_dir).unwrap());
+            let _ = fs::remove_dir_all(data_dir);
+        }
+
+        #[test]
+        fn keeps_versioned_advanced_stop_state() {
+            let data_dir = std::env::temp_dir().join(format!(
+                "mioproxy-service-core-state-advanced-stop-test-{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&data_dir).unwrap();
+            fs::write(
+                data_dir.join(CORE_STATE_FILE),
+                r#"{"formatVersion":2,"desiredRunning":false}"#,
+            )
+            .unwrap();
+            assert!(!read_desired_core_state(&data_dir).unwrap());
+            let _ = fs::remove_dir_all(data_dir);
+        }
 
         #[test]
         fn serializes_service_command_fields_in_camel_case() {
@@ -2351,6 +2734,14 @@ rules:
             assert_eq!(value["systemProxyEnabled"], false);
             assert!(value.get("profile_id").is_none());
             assert!(value.get("system_proxy_enabled").is_none());
+        }
+
+        #[test]
+        fn serializes_port_diagnostics_as_a_non_ui_service_command() {
+            let value =
+                serde_json::to_value(ServiceCommand::PortDiagnostics { port: 7890 }).unwrap();
+            assert_eq!(value["command"], "portDiagnostics");
+            assert_eq!(value["port"], 7890);
         }
 
         #[cfg(feature = "validation-fault-injection")]
@@ -2476,6 +2867,38 @@ rules:
                 .error
                 .as_deref()
                 .is_some_and(|error| error.contains("GUI 与 Service 版本不匹配")));
+
+            let mut token_client = None;
+            for _ in 0..50 {
+                if let Ok(next) = ClientOptions::new().open(&test_pipe) {
+                    token_client = Some(next);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let mut token_client =
+                token_client.expect("Service did not accept an invalid token client");
+            let token_request = ServiceRequest {
+                protocol_version: SERVICE_PROTOCOL_VERSION,
+                client_version: SERVICE_VERSION.to_string(),
+                token: "invalid-service-token".to_string(),
+                command: ServiceCommand::Status,
+            };
+            token_client
+                .write_all((serde_json::to_string(&token_request).unwrap() + "\n").as_bytes())
+                .await
+                .unwrap();
+            token_client.flush().await.unwrap();
+            let mut token_reader = BufReader::new(token_client);
+            let mut token_line = String::new();
+            token_reader.read_line(&mut token_line).await.unwrap();
+            let token_response: ServiceResponse = serde_json::from_str(&token_line).unwrap();
+            assert!(!token_response.ok);
+            assert!(token_response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("Service 令牌无效")));
+
             let _ = sender.send(true);
             daemon.await.unwrap().unwrap();
             std::env::remove_var("MIOPROXY_TEST_PIPE_NAME");
@@ -2486,7 +2909,8 @@ rules:
 
 #[cfg(windows)]
 pub use windows_impl::{
-    ensure_install_token, ensure_install_user_sid, run_service_console, run_service_daemon,
+    ensure_install_token, ensure_install_user_sid, port_diagnostics, run_service_console,
+    run_service_daemon,
 };
 
 #[cfg(windows)]
@@ -2585,6 +3009,8 @@ pub async fn service_status_command(_app: AppHandle) -> Result<ServiceConnection
         ownership_conflict: false,
         tun_status: None,
         tun_message: None,
+        desired_core_running: false,
+        core_recovery_message: None,
     })
 }
 
@@ -2592,4 +3018,16 @@ pub async fn service_status_command(_app: AppHandle) -> Result<ServiceConnection
 #[tauri::command]
 pub async fn service_status_command(app: AppHandle) -> Result<ServiceConnectionStatus, String> {
     windows_impl::service_status(app).await
+}
+
+#[cfg(all(windows, feature = "validation-fault-injection"))]
+#[tauri::command]
+pub async fn validation_crash_managed_core(app: AppHandle) -> Result<Value, String> {
+    windows_impl::validation_crash_managed_core(app).await
+}
+
+#[cfg(all(not(windows), feature = "validation-fault-injection"))]
+#[tauri::command]
+pub async fn validation_crash_managed_core(_app: AppHandle) -> Result<Value, String> {
+    Err("受管 Mihomo 故障注入仅支持 Windows Service 验收构建".to_string())
 }

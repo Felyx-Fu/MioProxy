@@ -24,7 +24,9 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use super::{logs, traffic};
 
-pub(crate) const CONTROLLER: &str = "127.0.0.1:9090";
+// Keep the controller in MioProxy's own localhost namespace. 7890/9090 are
+// common defaults used by other Mihomo clients and are not identity markers.
+pub(crate) const CONTROLLER: &str = "127.0.0.1:19090";
 const CONTROLLER_SECRET_FILE: &str = "controller-secret";
 const LEGACY_CONTROLLER_SECRET: &str = "mioproxy-v01-local";
 const DEFAULT_DELAY_URL: &str = "https://www.gstatic.com/generate_204";
@@ -91,9 +93,11 @@ pub(crate) fn initialize_secret(data_dir: &Path) -> Result<(), String> {
                     if let Err(error) = file
                         .write_all(candidate.as_bytes())
                         .and_then(|_| file.flush())
+                        .and_then(|_| file.sync_all())
                     {
                         drop(file);
-                        let cleanup = fs::remove_file(&path);
+                        let cleanup =
+                            crate::config::remove_file(&path, "清理不完整 Mihomo Controller 令牌");
                         return Err(match cleanup {
                             Ok(()) => format!("保存 Mihomo Controller 令牌失败：{error}"),
                             Err(cleanup_error) => format!(
@@ -173,6 +177,8 @@ pub struct CoreStatus {
     pub config_path: String,
     pub mixed_port: u16,
     pub mode: String,
+    #[serde(default)]
+    pub recovery_message: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -194,7 +200,7 @@ fn ensure_default_config(app: &AppHandle) -> Result<std::path::PathBuf, String> 
     let (dir, config) = runtime_paths(app)?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    if !config.exists() {
+    if crate::config::read_text_file_at(&config, "读取 Mihomo 配置")?.is_none() {
         let yaml = format!(
             r#"mixed-port: 7890
 allow-lan: false
@@ -219,7 +225,7 @@ rules:
             controller = CONTROLLER,
             secret = secret(),
         );
-        fs::write(&config, yaml).map_err(|e| e.to_string())?;
+        crate::config::write_atomic(&config, yaml.as_bytes())?;
     }
 
     Ok(config)
@@ -274,7 +280,7 @@ pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String>
 
 async fn migrate_legacy_controller_session(app: &AppHandle) -> Result<bool, String> {
     let (_, config) = runtime_paths(app)?;
-    if !config.exists() {
+    if crate::config::read_text_file_at(&config, "读取 Mihomo 配置")?.is_none() {
         return Ok(false);
     }
     let payload = serde_json::json!({ "path": config.display().to_string() });
@@ -338,12 +344,27 @@ pub(crate) fn owns_core<R: Runtime>(app: &AppHandle<R>) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) async fn ensure_managed_core(app: &AppHandle) -> Result<(), String> {
+    if owns_core(app) && is_running().await {
+        return Ok(());
+    }
+    if let Some(status) = crate::service::request_service_status(app).await? {
+        if status.owns_core && status.core.running {
+            return Ok(());
+        }
+        return Err("当前 Mihomo 未由 MioProxy 管理，拒绝执行控制操作".to_string());
+    }
+    if is_running().await {
+        return Err("检测到非 MioProxy 管理的 Mihomo，拒绝执行控制操作".to_string());
+    }
+    Err("Mihomo 尚未启动".to_string())
+}
+
 pub(crate) fn mixed_port(app: &AppHandle) -> Result<u16, String> {
     let (_, config) = runtime_paths(app)?;
-    if !config.exists() {
+    let Some(content) = crate::config::read_text_file_at(&config, "读取 Mihomo 配置")? else {
         return Ok(7890);
-    }
-    let content = fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    };
     let runtime = serde_yaml::from_str::<RuntimeConfig>(&content)
         .map_err(|e| format!("读取 Mihomo mixed-port 失败：{e}"))?;
     Ok(runtime.mixed_port.unwrap_or(7890))
@@ -351,10 +372,9 @@ pub(crate) fn mixed_port(app: &AppHandle) -> Result<u16, String> {
 
 fn mode(app: &AppHandle) -> Result<String, String> {
     let (_, config) = runtime_paths(app)?;
-    if !config.exists() {
+    let Some(content) = crate::config::read_text_file_at(&config, "读取 Mihomo 配置")? else {
         return Ok("rule".to_string());
-    }
-    let content = fs::read_to_string(&config).map_err(|e| e.to_string())?;
+    };
     let runtime = serde_yaml::from_str::<RuntimeConfig>(&content)
         .map_err(|e| format!("读取 Mihomo mode 失败：{e}"))?;
     Ok(runtime.mode.unwrap_or_else(|| "rule".to_string()))
@@ -368,6 +388,7 @@ fn status_for(app: &AppHandle, running: bool) -> Result<CoreStatus, String> {
         config_path: config.display().to_string(),
         mixed_port: mixed_port(app)?,
         mode: mode(app)?,
+        recovery_message: None,
     })
 }
 
@@ -381,6 +402,7 @@ pub async fn mihomo_start(
     if let Some(status) =
         crate::service::request_core(&app, crate::service::ServiceCommand::Start).await?
     {
+        crate::diagnostics::record_event(&app, "info", "mihomo", "Service Mihomo start requested");
         traffic::start(&app);
         logs::start(&app);
         crate::tray::update_current_node(&app).await;
@@ -396,7 +418,15 @@ pub(crate) async fn start_owned_for_lifecycle(app: &AppHandle) -> Result<CoreSta
 }
 
 async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatus, String> {
+    let child_owned = state
+        .child
+        .lock()
+        .map_err(|_| "CoreState 锁异常")?
+        .is_some();
     if is_running().await {
+        if !child_owned {
+            return Err("检测到非 MioProxy 管理的 Mihomo，拒绝接管或复用".to_string());
+        }
         traffic::start(app);
         logs::start(app);
         crate::tray::update_current_node(app).await;
@@ -427,6 +457,7 @@ async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatu
     }
 
     let config = ensure_default_config(app)?;
+    crate::config::prepare_runtime_resources_at(&config, CONTROLLER, secret())?;
     let dir = config.parent().ok_or("无法确定配置目录")?.to_path_buf();
     let command = app
         .shell()
@@ -444,6 +475,7 @@ async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatu
         .map_err(|e| format!("Mihomo 启动失败：{e}"))?;
     state.stop_requested.store(false, Ordering::SeqCst);
     *state.child.lock().map_err(|_| "CoreState 锁异常")? = Some(child);
+    crate::diagnostics::record_event(app, "info", "mihomo", "GUI Mihomo started");
     traffic::start(app);
     logs::start(app);
 
@@ -476,7 +508,20 @@ async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatu
                     if !stop_requested
                         && (payload.code.is_some_and(|code| code != 0) || payload.signal.is_some())
                     {
+                        crate::diagnostics::record_event(
+                            &emitter,
+                            "error",
+                            "mihomo",
+                            "Mihomo exited abnormally",
+                        );
                         let _ = emitter.emit("mihomo-crashed", ());
+                    } else {
+                        crate::diagnostics::record_event(
+                            &emitter,
+                            "info",
+                            "mihomo",
+                            "Mihomo stopped",
+                        );
                     }
                     let _ = emitter.emit("mihomo-stopped", ());
                 }
@@ -516,11 +561,26 @@ pub async fn mihomo_stop(
         if let Some(status) =
             crate::service::request_core(&app, crate::service::ServiceCommand::Stop).await?
         {
+            crate::diagnostics::record_event(
+                &app,
+                "info",
+                "mihomo",
+                "Service Mihomo stop requested",
+            );
             traffic::stop(&app);
             logs::stop(&app);
             crate::system_proxy::restore_for_lifecycle(&app).await?;
             crate::tray::update_current_node(&app).await;
             return Ok(status);
+        }
+        if is_running().await {
+            crate::diagnostics::record_event(
+                &app,
+                "warn",
+                "mihomo",
+                "Refused to stop an external Mihomo process",
+            );
+            return Err("当前 Mihomo 不是 MioProxy 管理，拒绝停止外部进程".to_string());
         }
     }
     traffic::stop(&app);
@@ -530,6 +590,7 @@ pub async fn mihomo_stop(
     if let Some(child) = state.child.lock().map_err(|_| "CoreState 锁异常")?.take() {
         child.kill().map_err(|e| format!("停止 Mihomo 失败：{e}"))?;
     }
+    crate::diagnostics::record_event(&app, "info", "mihomo", "GUI Mihomo stop requested");
     crate::system_proxy::restore_for_lifecycle(&app).await?;
     crate::tray::update_current_node(&app).await;
     status_for(&app, false)
@@ -591,7 +652,8 @@ pub async fn mihomo_rule_providers() -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn mihomo_rule_provider_update(name: String) -> Result<Value, String> {
+pub async fn mihomo_rule_provider_update(app: AppHandle, name: String) -> Result<Value, String> {
+    ensure_managed_core(&app).await?;
     api_put(
         &format!("/providers/rules/{}", encode_path_segment(&name)),
         Value::Null,
@@ -615,9 +677,10 @@ pub async fn mihomo_reload(app: AppHandle) -> Result<Value, String> {
         return Ok(result);
     }
     let (_, config) = runtime_paths(&app)?;
-    if !config.exists() {
+    if crate::config::read_text_file_at(&config, "读取 Mihomo 配置")?.is_none() {
         return Err("运行配置不存在，请先启动内核".to_string());
     }
+    ensure_managed_core(&app).await?;
     api_put(
         "/configs?force=true",
         serde_json::json!({ "path": config.display().to_string() }),
@@ -631,6 +694,7 @@ pub async fn mihomo_select_proxy(
     group: String,
     proxy: String,
 ) -> Result<Value, String> {
+    ensure_managed_core(&app).await?;
     let result = api_put(
         &format!("/proxies/{}", encode_path_segment(&group)),
         serde_json::json!({ "name": proxy }),
