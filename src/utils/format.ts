@@ -12,7 +12,8 @@ export function formatBytes(value: number | null | undefined): string {
 }
 
 export function formatRate(value: number | null | undefined): string {
-  return `${formatBytes(value)}/s`;
+  const formatted = formatBytes(value);
+  return formatted === "—" ? "—" : `${formatted}/s`;
 }
 
 export function formatDate(value: number | null | undefined): string {
