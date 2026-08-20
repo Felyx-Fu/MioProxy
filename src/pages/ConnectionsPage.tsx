@@ -3,6 +3,7 @@ import { KeyboardEvent, MouseEvent, useEffect, useMemo, useState } from "react";
 import type { ConnectionsResponse, MihomoConnection } from "../api/mihomo";
 import { ConfirmDialog } from "../components/Feedback";
 import { ContextMenu } from "../components/ContextMenu";
+import { useI18n } from "../i18n/I18nProvider";
 import { formatBytes } from "../utils/format";
 
 type SortKey = "host" | "process" | "network" | "rule" | "chain" | "upload" | "download";
@@ -27,22 +28,23 @@ function connectionChain(connection: MihomoConnection) {
 }
 
 function ConnectionDetails({ connection, busy, onDismiss, onCloseConnection }: { connection: MihomoConnection; busy: boolean; onDismiss: () => void; onCloseConnection: () => void }) {
+  const { t, locale } = useI18n();
   return (
-    <aside className="connection-detail surface-panel" aria-label="Connection details">
-      <div className="section-title-row"><div><h2>Connection details</h2><p>{processName(connection)}</p></div><button className="icon-button" type="button" onClick={onDismiss} aria-label="Close inspector" title="Close inspector"><X size={15} /></button></div>
+    <aside className="connection-detail surface-panel" aria-label={t("connections.details.label")}>
+      <div className="section-title-row"><div><h2>{t("connections.details.title")}</h2><p>{processName(connection)}</p></div><button className="icon-button" type="button" onClick={onDismiss} aria-label={t("connections.action.closeInspector")} title={t("connections.action.closeInspector")}><X size={15} /></button></div>
       <dl className="detail-list">
-        <div><dt>Host</dt><dd>{connectionTarget(connection)}</dd></div>
-        <div><dt>Source</dt><dd>{connection.metadata.sourceIp || "—"}{connection.metadata.sourcePort ? `:${connection.metadata.sourcePort}` : ""}</dd></div>
-        <div><dt>Process</dt><dd>{processName(connection)}</dd></div>
-        <div><dt>Process path</dt><dd className="break-all">{connection.metadata.processPath || "—"}</dd></div>
-        <div><dt>Network</dt><dd>{connection.metadata.network || "—"}</dd></div>
-        <div><dt>Rule</dt><dd>{connection.rule || "—"}{connection.rulePayload ? ` · ${connection.rulePayload}` : ""}</dd></div>
-        <div><dt>Chain</dt><dd>{connectionChain(connection)}</dd></div>
-        <div><dt>Started</dt><dd>{connection.start ? new Date(connection.start).toLocaleString() : "—"}</dd></div>
-        <div><dt>Upload</dt><dd>{formatBytes(connection.upload)}</dd></div>
-        <div><dt>Download</dt><dd>{formatBytes(connection.download)}</dd></div>
+        <div><dt>{t("connections.field.host")}</dt><dd>{connectionTarget(connection)}</dd></div>
+        <div><dt>{t("connections.field.source")}</dt><dd>{connection.metadata.sourceIp || "—"}{connection.metadata.sourcePort ? `:${connection.metadata.sourcePort}` : ""}</dd></div>
+        <div><dt>{t("connections.field.process")}</dt><dd>{processName(connection)}</dd></div>
+        <div><dt>{t("connections.field.processPath")}</dt><dd className="break-all">{connection.metadata.processPath || "—"}</dd></div>
+        <div><dt>{t("connections.field.network")}</dt><dd>{connection.metadata.network || "—"}</dd></div>
+        <div><dt>{t("connections.field.rule")}</dt><dd>{connection.rule || "—"}{connection.rulePayload ? ` · ${connection.rulePayload}` : ""}</dd></div>
+        <div><dt>{t("connections.field.chain")}</dt><dd>{connectionChain(connection)}</dd></div>
+        <div><dt>{t("connections.field.started")}</dt><dd>{connection.start ? new Date(connection.start).toLocaleString(locale) : "—"}</dd></div>
+        <div><dt>{t("connections.field.upload")}</dt><dd>{formatBytes(connection.upload)}</dd></div>
+        <div><dt>{t("connections.field.download")}</dt><dd>{formatBytes(connection.download)}</dd></div>
       </dl>
-      <button className="danger-button connection-close-action" type="button" onClick={onCloseConnection} disabled={busy}><ShieldClose size={15} />Close network connection</button>
+      <button className="danger-button connection-close-action" type="button" onClick={onCloseConnection} disabled={busy}><ShieldClose size={15} />{t("connections.action.closeConnection")}</button>
     </aside>
   );
 }
@@ -53,6 +55,7 @@ export function ConnectionsPage({ state, onRefresh, onClose, onCloseAll }: {
   onClose: (id: string) => Promise<void>;
   onCloseAll: () => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [networkFilter, setNetworkFilter] = useState("all");
   const [sortKey, setSortKey] = useState<SortKey>("download");
@@ -165,22 +168,22 @@ export function ConnectionsPage({ state, onRefresh, onClose, onCloseAll }: {
 
   return (
     <section className="page-stack connections-page">
-      <header className="page-header compact-header"><div><h1>Connections</h1><p>{state.data ? `${liveConnections.length} active · ↓ ${formatBytes(state.data.downloadTotal)} · ↑ ${formatBytes(state.data.uploadTotal)}` : "Waiting for active connection data"}</p></div></header>
+      <header className="page-header compact-header"><div><h1>{t("connections.title")}</h1><p>{state.data ? t("connections.summary.active", { count: liveConnections.length, download: formatBytes(state.data.downloadTotal), upload: formatBytes(state.data.uploadTotal) }) : t("connections.summary.waiting")}</p></div></header>
       {(state.error || commandError) && <div className="info-bar error" role="alert"><span>{commandError ?? state.error}</span></div>}
 
       <div className="compact-toolbar surface-panel connection-toolbar">
-        <label className="search-box"><Search size={15} /><input data-page-search value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search connections…" aria-label="Search connections" /></label>
-        <label className="select-field"><select value={networkFilter} onChange={(event) => setNetworkFilter(event.target.value)} aria-label="Network filter"><option value="all">All networks</option>{networks.map((network) => <option key={network}>{network}</option>)}</select></label>
-        <button className="toolbar-button" type="button" onClick={togglePaused}>{paused ? <Play size={15} /> : <Pause size={15} />}{paused ? "Resume live" : "Pause"}</button>
-        <button className="icon-button" type="button" onClick={() => void onRefresh()} disabled={state.loading} aria-label="Refresh connections" title="Refresh"><RefreshCw size={15} className={state.loading ? "spin" : ""} /></button>
-        <button className="danger-button compact-action" type="button" onClick={() => setConfirmingAll(true)} disabled={!liveConnections.length || busyId !== null}><ShieldClose size={15} />Close all</button>
+        <label className="search-box"><Search size={15} /><input data-page-search value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("connections.search.placeholder")} aria-label={t("connections.search.label")} /></label>
+        <label className="select-field"><select value={networkFilter} onChange={(event) => setNetworkFilter(event.target.value)} aria-label={t("connections.filter.label")}><option value="all">{t("connections.filter.all")}</option>{networks.map((network) => <option key={network}>{network}</option>)}</select></label>
+        <button className="toolbar-button" type="button" onClick={togglePaused}>{paused ? <Play size={15} /> : <Pause size={15} />}{t(paused ? "connections.action.resume" : "connections.action.pause")}</button>
+        <button className="icon-button" type="button" onClick={() => void onRefresh()} disabled={state.loading} aria-label={t("connections.action.refresh")} title={t("connections.action.refresh")}><RefreshCw size={15} className={state.loading ? "spin" : ""} /></button>
+        <button className="danger-button compact-action" type="button" onClick={() => setConfirmingAll(true)} disabled={!liveConnections.length || busyId !== null}><ShieldClose size={15} />{t("connections.action.closeAll")}</button>
       </div>
 
       <div className="connections-workspace">
         <div className="surface-panel compact-table-wrap connection-table-wrap">
           {rendered.length ? (
             <table className="compact-table connection-table">
-              <thead><tr>{([['host', 'Host'], ['process', 'Process'], ['network', 'Network'], ['rule', 'Rule'], ['chain', 'Chain'], ['upload', 'Upload'], ['download', 'Download']] as Array<[SortKey, string]>).map(([key, label]) => <th key={key}><button type="button" onClick={() => changeSort(key)}>{label}{sortKey === key ? sortDescending ? " ↓" : " ↑" : ""}</button></th>)}</tr></thead>
+              <thead><tr>{([['host', t("connections.field.host")], ['process', t("connections.field.process")], ['network', t("connections.field.network")], ['rule', t("connections.field.rule")], ['chain', t("connections.field.chain")], ['upload', t("connections.field.upload")], ['download', t("connections.field.download")]] as Array<[SortKey, string]>).map(([key, label]) => <th key={key}><button type="button" onClick={() => changeSort(key)}>{label}{sortKey === key ? sortDescending ? " ↓" : " ↑" : ""}</button></th>)}</tr></thead>
               <tbody tabIndex={0} onKeyDown={tableKeyboard}>
                 {rendered.map((connection, index) => (
                   <tr id={`connection-row-${index}`} key={connection.id} tabIndex={-1} className={selected?.id === connection.id ? "selected-row" : ""} onClick={() => setSelectedId(connection.id)} onContextMenu={(event) => openContextMenu(event, connection)}>
@@ -195,18 +198,18 @@ export function ConnectionsPage({ state, onRefresh, onClose, onCloseAll }: {
                 ))}
               </tbody>
             </table>
-          ) : <div className="table-empty"><Unplug size={20} /><strong>{liveConnections.length ? "No connections match the current filter" : "No active connections"}</strong><span>{liveConnections.length ? "Clear the search or change the network filter." : "Connections appear after Core is ready and applications create network requests."}</span></div>}
-          {visible.length > rendered.length && <div className="table-limit-note">Showing the first 250 of {visible.length} matching connections.</div>}
+          ) : <div className="table-empty"><Unplug size={20} /><strong>{t(liveConnections.length ? "connections.empty.filterTitle" : "connections.empty.noActiveTitle")}</strong><span>{t(liveConnections.length ? "connections.empty.filterDescription" : "connections.empty.noActiveDescription")}</span></div>}
+          {visible.length > rendered.length && <div className="table-limit-note">{t("connections.limit", { count: visible.length })}</div>}
         </div>
         {selected
           ? <ConnectionDetails connection={selected} busy={busyId !== null} onDismiss={() => setSelectedId(null)} onCloseConnection={() => void closeConnection(selected)} />
-          : <aside className="connection-detail connection-detail-empty surface-panel" aria-label="Connection details"><div className="table-empty"><Eye size={20} /><strong>No connection selected</strong><span>Select a row to inspect its route and traffic details.</span></div></aside>}
+          : <aside className="connection-detail connection-detail-empty surface-panel" aria-label={t("connections.details.label")}><div className="table-empty"><Eye size={20} /><strong>{t("connections.empty.noSelectedTitle")}</strong><span>{t("connections.empty.noSelectedDescription")}</span></div></aside>}
       </div>
 
-      {confirmingAll && <ConfirmDialog title="Close all active connections?" message={`This will close ${liveConnections.length} active connections. Applications may immediately reconnect.`} confirmLabel="Close all" danger onCancel={() => setConfirmingAll(false)} onConfirm={() => void closeAll()} />}
+      {confirmingAll && <ConfirmDialog title={t("connections.confirm.title")} message={t("connections.confirm.message", { count: liveConnections.length })} confirmLabel={t("connections.action.closeAll")} danger onCancel={() => setConfirmingAll(false)} onConfirm={() => void closeAll()} />}
       {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} actions={[
-        { label: "Inspect", icon: <Eye size={14} />, onSelect: () => setSelectedId(contextMenu.connection.id) },
-        { label: "Close connection", icon: <X size={14} />, danger: true, disabled: busyId !== null, onSelect: () => void closeConnection(contextMenu.connection) },
+        { label: t("connections.context.inspect"), icon: <Eye size={14} />, onSelect: () => setSelectedId(contextMenu.connection.id) },
+        { label: t("connections.context.close"), icon: <X size={14} />, danger: true, disabled: busyId !== null, onSelect: () => void closeConnection(contextMenu.connection) },
       ]} />}
     </section>
   );

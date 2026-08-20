@@ -199,6 +199,7 @@ export type TunStatusSnapshot = {
 };
 
 export type ServiceConnectionStatus = {
+  state: "running" | "stopped" | "starting" | "reconnecting" | "error";
   reachable: boolean;
   protocolVersion: number;
   serviceVersion: string | null;

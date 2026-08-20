@@ -16,9 +16,13 @@ export function formatRate(value: number | null | undefined): string {
   return formatted === "—" ? "—" : `${formatted}/s`;
 }
 
-export function formatDate(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "尚未更新";
-  return new Date(value * 1000).toLocaleString("zh-CN", {
+export function formatDate(
+  value: number | null | undefined,
+  locale = "zh-CN",
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "-";
+
+  return new Date(value * 1000).toLocaleString(locale, {
     month: "numeric",
     day: "numeric",
     hour: "2-digit",
