@@ -35,6 +35,8 @@ const ACTIVE_BASE_FILE: &str = "active-profile-base.yaml";
 const CANDIDATE_FILE: &str = "config.candidate.yaml";
 const RUNTIME_LISTENER_FILE: &str = "runtime-listener-state.json";
 const ACTIVE_PROFILE_FILE: &str = "active-profile.json";
+const RUNTIME_FAILURE_DIAGNOSTICS_DIR: &str = "diagnostics";
+const LAST_RUNTIME_FAILURE_DIR: &str = "last-runtime-reload-failure";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,6 +104,51 @@ pub(crate) struct BuiltConfig {
     pub override_active: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeValueDescriptor {
+    present: bool,
+    value_type: &'static str,
+    item_count: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeSectionDiff {
+    last_known_good: RuntimeValueDescriptor,
+    candidate: RuntimeValueDescriptor,
+    unchanged: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeBooleanDiff {
+    last_known_good: Option<bool>,
+    candidate: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeSensitiveFieldDiff {
+    last_known_good_present: bool,
+    candidate_present: bool,
+    unchanged: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FailedRuntimeSummary {
+    schema_version: u8,
+    stage: String,
+    error: String,
+    last_known_good_present: bool,
+    last_known_good_yaml_valid: bool,
+    candidate_yaml_valid: bool,
+    sections: std::collections::BTreeMap<&'static str, RuntimeSectionDiff>,
+    tun_enable: RuntimeBooleanDiff,
+    secret: RuntimeSensitiveFieldDiff,
+}
+
 fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     app.path().app_data_dir().map_err(|e| e.to_string())
 }
@@ -143,6 +190,154 @@ fn timestamp() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn runtime_value_descriptor(value: Option<&Value>) -> RuntimeValueDescriptor {
+    let (present, value_type, item_count) = match value {
+        None => (false, "missing", None),
+        Some(Value::Null) => (true, "null", None),
+        Some(Value::Bool(_)) => (true, "boolean", None),
+        Some(Value::Number(_)) => (true, "number", None),
+        Some(Value::String(_)) => (true, "string", None),
+        Some(Value::Sequence(items)) => (true, "sequence", Some(items.len())),
+        Some(Value::Mapping(items)) => (true, "mapping", Some(items.len())),
+        Some(Value::Tagged(_)) => (true, "tagged", None),
+    };
+    RuntimeValueDescriptor {
+        present,
+        value_type,
+        item_count,
+    }
+}
+
+fn runtime_section<'a>(root: Option<&'a Value>, key: &str) -> Option<&'a Value> {
+    root.and_then(Value::as_mapping)
+        .and_then(|mapping| mapping_value(mapping, key))
+}
+
+fn runtime_section_diff(
+    last_known_good: Option<&Value>,
+    candidate: Option<&Value>,
+    key: &str,
+) -> RuntimeSectionDiff {
+    let last_known_good = runtime_section(last_known_good, key);
+    let candidate = runtime_section(candidate, key);
+    RuntimeSectionDiff {
+        last_known_good: runtime_value_descriptor(last_known_good),
+        candidate: runtime_value_descriptor(candidate),
+        unchanged: last_known_good == candidate,
+    }
+}
+
+fn tun_enable(root: Option<&Value>) -> Option<bool> {
+    runtime_section(root, "tun")
+        .and_then(Value::as_mapping)
+        .and_then(|mapping| mapping_value(mapping, "enable"))
+        .and_then(Value::as_bool)
+}
+
+fn safe_diagnostic_stage(stage: &str) -> String {
+    match stage {
+        "local-validation"
+        | "controller-reload"
+        | "controller-communication"
+        | "read-back-verification" => stage.to_string(),
+        "controller-read-back" => "read-back-verification".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn sanitize_diagnostic_error(error: &str) -> String {
+    crate::mihomo::logs::redact_controller_response(error)
+}
+
+fn failed_runtime_summary(
+    last_known_good_yaml: Option<&str>,
+    candidate_yaml: &str,
+    stage: &str,
+    error: &str,
+) -> FailedRuntimeSummary {
+    let last_known_good =
+        last_known_good_yaml.and_then(|yaml| serde_yaml::from_str::<Value>(yaml).ok());
+    let candidate = serde_yaml::from_str::<Value>(candidate_yaml).ok();
+    let mut sections = std::collections::BTreeMap::new();
+    for key in [
+        "tun",
+        "dns",
+        "rules",
+        "proxies",
+        "proxy-groups",
+        "proxy-providers",
+        "interface-name",
+        "routing-mark",
+        "listeners",
+        "mixed-port",
+        "external-controller",
+    ] {
+        sections.insert(
+            key,
+            runtime_section_diff(last_known_good.as_ref(), candidate.as_ref(), key),
+        );
+    }
+    let last_known_good_secret = runtime_section(last_known_good.as_ref(), "secret");
+    let candidate_secret = runtime_section(candidate.as_ref(), "secret");
+    FailedRuntimeSummary {
+        schema_version: 1,
+        stage: safe_diagnostic_stage(stage),
+        error: sanitize_diagnostic_error(error),
+        last_known_good_present: last_known_good_yaml.is_some(),
+        last_known_good_yaml_valid: last_known_good.is_some(),
+        candidate_yaml_valid: candidate.is_some(),
+        sections,
+        tun_enable: RuntimeBooleanDiff {
+            last_known_good: tun_enable(last_known_good.as_ref()),
+            candidate: tun_enable(candidate.as_ref()),
+        },
+        secret: RuntimeSensitiveFieldDiff {
+            last_known_good_present: last_known_good_secret.is_some(),
+            candidate_present: candidate_secret.is_some(),
+            unchanged: last_known_good_secret == candidate_secret,
+        },
+    }
+}
+
+pub(crate) fn preserve_failed_runtime_diagnostics_at(
+    data_dir: &Path,
+    candidate_yaml: &str,
+    stage: &str,
+    error: &str,
+) -> Result<(), String> {
+    let diagnostics_dir = data_dir.join(RUNTIME_FAILURE_DIAGNOSTICS_DIR);
+    fs::create_dir_all(&diagnostics_dir)
+        .map_err(|error| format!("创建 Runtime 诊断目录失败：{error}"))?;
+    ensure_not_reparse(&diagnostics_dir)?;
+    let artifact_dir = diagnostics_dir.join(LAST_RUNTIME_FAILURE_DIR);
+    fs::create_dir_all(&artifact_dir)
+        .map_err(|error| format!("创建 Runtime 失败诊断目录失败：{error}"))?;
+    ensure_not_reparse(&artifact_dir)?;
+
+    let candidate_path = artifact_dir.join("candidate.yaml");
+    write_atomic(&candidate_path, candidate_yaml.as_bytes())?;
+
+    let last_known_good_yaml =
+        read_text_file_at(&config_path_at(data_dir), "读取 Last Known Good Runtime")?;
+    if let Some(yaml) = last_known_good_yaml.as_deref() {
+        write_atomic(&artifact_dir.join("last-known-good.yaml"), yaml.as_bytes())?;
+    } else {
+        remove_file(
+            &artifact_dir.join("last-known-good.yaml"),
+            "清理旧 Last Known Good Runtime 诊断",
+        )?;
+    }
+    let summary = failed_runtime_summary(
+        last_known_good_yaml.as_deref(),
+        candidate_yaml,
+        stage,
+        error,
+    );
+    let summary_json = serde_json::to_vec_pretty(&summary)
+        .map_err(|error| format!("生成 Runtime 失败诊断摘要失败：{error}"))?;
+    write_atomic(&artifact_dir.join("summary.json"), &summary_json)
 }
 
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1446,12 +1641,13 @@ mod tests {
     };
 
     use super::{
-        active_profile_id_at, actual_runtime_mixed_port_at, apply_auto_outbound_compatibility_with,
-        build_value_at, clear_actual_runtime_mixed_port_at, commit_actual_runtime_mixed_port_at,
-        commit_runtime_state_at, listener_owner, merge_values, port_is_available,
-        prepare_runtime_resources_at, restore_active_runtime_config_at, runtime_mixed_port_at,
-        scan_available_port, select_available_port, set_active_profile_id_at, set_tun_enabled_at,
-        validate_config, ListenerOwner,
+        active_profile_id_at, active_runtime_value_at, actual_runtime_mixed_port_at,
+        apply_auto_outbound_compatibility_with, build_value_at, clear_actual_runtime_mixed_port_at,
+        commit_actual_runtime_mixed_port_at, commit_runtime_state_at, listener_owner, merge_values,
+        port_is_available, prepare_runtime_resources_at, preserve_failed_runtime_diagnostics_at,
+        restore_active_runtime_config_at, runtime_mixed_port_at, scan_available_port,
+        select_available_port, set_active_profile_id_at, set_tun_enabled_at, validate_config,
+        ListenerOwner,
     };
     #[cfg(windows)]
     use super::{windows_tcp_listener_diagnostics, windows_tcp_listener_uses_port};
@@ -1750,7 +1946,188 @@ mod tests {
     }
 
     #[test]
-    fn downloaded_source_update_does_not_change_active_runtime() {
+    fn preserves_failed_runtime_artifacts_without_leaking_summary_secrets() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "mioproxy-runtime-diagnostics-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(data_dir.join("profiles")).unwrap();
+        let source_path = data_dir.join("profiles/profile.yaml");
+        let source = "mixed-port: 7890\nrules: [MATCH,DIRECT]\n";
+        let override_path = data_dir.join("local-override.yaml");
+        let local_override = "dns:\n  nameserver: [system]\n";
+        fs::write(&source_path, source).unwrap();
+        fs::write(&override_path, local_override).unwrap();
+
+        let last_known_good = r#"mixed-port: 7890
+external-controller: 127.0.0.1:19090
+secret: controller-secret-value
+tun:
+  enable: true
+dns:
+  enable: true
+  nameserver: [system]
+rules: [MATCH,DIRECT]
+proxies:
+  - name: node
+    type: vless
+    server: node.example.invalid
+    port: 443
+    uuid: 11111111-2222-3333-4444-555555555555
+    password: proxy-password-value
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [node]
+proxy-providers:
+  airport:
+    type: http
+    url: https://subscription.example.invalid/private?token=subscription-token-value
+listeners: []
+"#;
+        let candidate = last_known_good.replacen("enable: true", "enable: false", 1);
+        fs::write(data_dir.join("config.yaml"), last_known_good).unwrap();
+        let error = serde_json::json!({
+            "message": "reload rejected for https://controller.example.invalid/private",
+            "token": "body-token-value",
+            "nested": {
+                "uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "password": "body-password-value",
+                "secret": "body-secret-value"
+            }
+        })
+        .to_string();
+
+        preserve_failed_runtime_diagnostics_at(&data_dir, &candidate, "controller-reload", &error)
+            .unwrap();
+
+        let diagnostics_dir = data_dir.join("diagnostics");
+        let artifact_dir = diagnostics_dir.join("last-runtime-reload-failure");
+
+        assert_eq!(
+            fs::read_to_string(data_dir.join("config.yaml")).unwrap(),
+            last_known_good
+        );
+        assert_eq!(fs::read_to_string(&source_path).unwrap(), source);
+        assert_eq!(fs::read_to_string(&override_path).unwrap(), local_override);
+        assert_eq!(
+            fs::read_to_string(artifact_dir.join("candidate.yaml")).unwrap(),
+            candidate
+        );
+        assert_eq!(
+            fs::read_to_string(artifact_dir.join("last-known-good.yaml")).unwrap(),
+            last_known_good
+        );
+        assert!(artifact_dir.starts_with(data_dir.join("diagnostics")));
+        let summary_text = fs::read_to_string(artifact_dir.join("summary.json")).unwrap();
+        for sensitive in [
+            "controller-secret-value",
+            "proxy-password-value",
+            "subscription-token-value",
+            "https://subscription.example.invalid/private",
+            "body-token-value",
+            "body-password-value",
+            "body-secret-value",
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "https://controller.example.invalid/private",
+        ] {
+            assert!(!summary_text.contains(sensitive), "leaked {sensitive}");
+        }
+        let summary: serde_json::Value = serde_json::from_str(&summary_text).unwrap();
+        assert_eq!(summary["stage"], "controller-reload");
+        assert!(summary["error"]
+            .as_str()
+            .unwrap()
+            .contains("reload rejected for ***"));
+        assert_eq!(summary["tunEnable"]["lastKnownGood"], true);
+        assert_eq!(summary["tunEnable"]["candidate"], false);
+        for unchanged in [
+            "dns",
+            "rules",
+            "proxies",
+            "proxy-groups",
+            "proxy-providers",
+            "interface-name",
+            "routing-mark",
+            "listeners",
+            "mixed-port",
+            "external-controller",
+        ] {
+            assert_eq!(summary["sections"][unchanged]["unchanged"], true);
+        }
+        assert_eq!(summary["secret"]["lastKnownGoodPresent"], true);
+        assert_eq!(summary["secret"]["candidatePresent"], true);
+        assert_eq!(summary["secret"]["unchanged"], true);
+
+        let second_last_known_good = last_known_good
+            .replace("controller-secret-value", "second-controller-secret")
+            .replace("proxy-password-value", "second-proxy-password");
+        let second_candidate = second_last_known_good.replacen("enable: true", "enable: false", 1);
+        fs::write(data_dir.join("config.yaml"), &second_last_known_good).unwrap();
+        preserve_failed_runtime_diagnostics_at(
+            &data_dir,
+            &second_candidate,
+            "read-back-verification",
+            "second rejection",
+        )
+        .unwrap();
+        assert_eq!(fs::read_dir(&diagnostics_dir).unwrap().count(), 1);
+        assert_eq!(
+            fs::read_to_string(artifact_dir.join("candidate.yaml")).unwrap(),
+            second_candidate
+        );
+        assert_eq!(
+            fs::read_to_string(artifact_dir.join("last-known-good.yaml")).unwrap(),
+            second_last_known_good
+        );
+        let second_summary = fs::read_to_string(artifact_dir.join("summary.json")).unwrap();
+        assert!(!second_summary.contains("controller-secret-value"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&second_summary).unwrap()["stage"],
+            "read-back-verification"
+        );
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_a_reparse_diagnostics_root_before_writing_artifacts() {
+        let base = std::env::temp_dir().join(format!(
+            "mioproxy-runtime-diagnostics-reparse-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let data_dir = base.join("data");
+        let target = base.join("outside");
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        if std::os::windows::fs::symlink_dir(&target, data_dir.join("diagnostics")).is_err() {
+            let _ = fs::remove_dir_all(base);
+            return;
+        }
+
+        let error = preserve_failed_runtime_diagnostics_at(
+            &data_dir,
+            "tun:\n  enable: false\n",
+            "controller-reload",
+            "rejected",
+        )
+        .unwrap_err();
+        assert!(error.contains("Reparse Point"));
+        assert!(!target.join("last-runtime-reload-failure").exists());
+
+        let _ = fs::remove_dir(data_dir.join("diagnostics"));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn tun_off_candidate_uses_committed_active_base_not_updated_source() {
         let data_dir = std::env::temp_dir().join(format!(
             "mioproxy-active-generation-test-{}",
             SystemTime::now()
@@ -1761,35 +2138,78 @@ mod tests {
         let profiles_dir = data_dir.join("profiles");
         fs::create_dir_all(&profiles_dir).unwrap();
         let source_path = profiles_dir.join("profile.yaml");
-        fs::write(
-            &source_path,
-            "mixed-port: 7890\nrules: [DOMAIN,old.example,DIRECT]\n",
-        )
+        let source = r#"mixed-port: 7890
+tun:
+  enable: false
+dns:
+  enable: true
+  nameserver: [system]
+proxies:
+  - { name: node, type: socks5, server: 127.0.0.1, port: 1080 }
+proxy-groups:
+  - { name: PROXY, type: select, proxies: [node] }
+rules: ['DOMAIN,old.example,PROXY', 'MATCH,DIRECT']
+"#;
+        fs::write(&source_path, source).unwrap();
+        let registry_path = data_dir.join("profiles.json");
+        let registry = serde_json::to_vec(&serde_json::json!([{
+            "id": "profile-1",
+            "name": "Pinned",
+            "url": "https://example.invalid/profile",
+            "filePath": source_path,
+        }]))
         .unwrap();
-        fs::write(
-            data_dir.join("profiles.json"),
-            serde_json::to_vec(&serde_json::json!([{
-                "id": "profile-1",
-                "name": "Pinned",
-                "url": "https://example.invalid/profile",
-                "filePath": source_path,
-            }]))
-            .unwrap(),
-        )
-        .unwrap();
+        fs::write(&registry_path, &registry).unwrap();
+        let override_path = data_dir.join("local-override.yaml");
+        let local_override = "dns:\n  nameserver: [system]\n";
+        fs::write(&override_path, local_override).unwrap();
+
+        set_tun_enabled_at(&data_dir, true).unwrap();
         let built = build_value_at(&data_dir, "profile-1").unwrap();
+        let starting_runtime = built.value.clone();
+        assert_eq!(starting_runtime["tun"]["enable"].as_bool(), Some(true));
         let yaml = serde_yaml::to_string(&built.value).unwrap();
         commit_runtime_state_at(&data_dir, "profile-1", &built.base_value, &yaml).unwrap();
+        let stable_before_off = fs::read(data_dir.join("config.yaml")).unwrap();
+        let active_pointer_before_off = fs::read(data_dir.join("active-profile.json")).unwrap();
 
-        fs::write(
-            &source_path,
-            "mixed-port: 7890\nrules: [DOMAIN,new.example,PROXY]\n",
-        )
-        .unwrap();
-        restore_active_runtime_config_at(&data_dir).unwrap();
-        let runtime = fs::read_to_string(data_dir.join("config.yaml")).unwrap();
-        assert!(runtime.contains("old.example"));
-        assert!(!runtime.contains("new.example"));
+        let downloaded_source = source.replace("old.example", "new.example");
+        fs::write(&source_path, &downloaded_source).unwrap();
+        set_tun_enabled_at(&data_dir, false).unwrap();
+        let candidate = active_runtime_value_at(&data_dir).unwrap().unwrap();
+
+        assert_eq!(candidate["tun"]["enable"].as_bool(), Some(false));
+        for key in [
+            "dns",
+            "proxies",
+            "proxy-groups",
+            "rules",
+            "proxy-providers",
+            "interface-name",
+            "routing-mark",
+            "listeners",
+            "mixed-port",
+            "external-controller",
+        ] {
+            assert_eq!(candidate[key], starting_runtime[key], "changed {key}");
+        }
+        assert_eq!(candidate["secret"].as_str(), Some(mihomo::secret()));
+        assert!(candidate["rules"].as_sequence().unwrap()[0]
+            .as_str()
+            .unwrap()
+            .contains("old.example"));
+        validate_config(&candidate).unwrap();
+        assert_eq!(fs::read_to_string(&source_path).unwrap(), downloaded_source);
+        assert_eq!(fs::read_to_string(&override_path).unwrap(), local_override);
+        assert_eq!(fs::read(&registry_path).unwrap(), registry);
+        assert_eq!(
+            fs::read(data_dir.join("config.yaml")).unwrap(),
+            stable_before_off
+        );
+        assert_eq!(
+            fs::read(data_dir.join("active-profile.json")).unwrap(),
+            active_pointer_before_off
+        );
         let _ = fs::remove_dir_all(data_dir);
     }
 

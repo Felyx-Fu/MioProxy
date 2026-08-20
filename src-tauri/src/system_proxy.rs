@@ -375,6 +375,143 @@ fn managed_core_ready(managed: bool, running: bool) -> bool {
     managed && running
 }
 
+fn can_enable_without_takeover(
+    actual: ProxyActualState,
+    has_mioproxy_snapshot: bool,
+    current_still_owned: bool,
+) -> bool {
+    owner(actual, has_mioproxy_snapshot, current_still_owned) != ProxyOwner::External
+}
+
+fn windows_settings_equal(left: &ProxySnapshot, right: &ProxySnapshot) -> bool {
+    left.proxy_enable == right.proxy_enable
+        && left.proxy_server == right.proxy_server
+        && left.proxy_override == right.proxy_override
+        && left.auto_config_url == right.auto_config_url
+        && left.auto_detect == right.auto_detect
+}
+
+fn enable_write_still_owned(
+    current: &ProxySnapshot,
+    original: &ProxySnapshot,
+    mixed_port: u16,
+    managed_listener_pid: u32,
+    listener_pids: &[Option<u32>],
+) -> bool {
+    let expected_override = original
+        .proxy_override
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("<local>");
+    current.proxy_enable == Some(1)
+        && endpoint_matches(current, mixed_port)
+        && current.proxy_override.as_deref() == Some(expected_override)
+        && current.auto_config_url.is_none()
+        && current.auto_detect.is_none()
+        && current_still_mioproxy_owned(
+            current,
+            mixed_port,
+            Some(managed_listener_pid),
+            listener_pids,
+            ProxyExpectation::Enabled,
+        )
+}
+
+fn enable_write_matches_known_step(
+    current: &ProxySnapshot,
+    before_enable: &ProxySnapshot,
+    written_from: &ProxySnapshot,
+    mixed_port: u16,
+) -> bool {
+    let mut expected = before_enable.clone();
+    expected.managed_listener_pid = None;
+
+    expected.proxy_enable = Some(1);
+    if windows_settings_equal(current, &expected) {
+        return true;
+    }
+    expected.proxy_server = Some(format!("127.0.0.1:{mixed_port}"));
+    if windows_settings_equal(current, &expected) {
+        return true;
+    }
+    expected.proxy_override = Some(
+        written_from
+            .proxy_override
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("<local>")
+            .to_string(),
+    );
+    if windows_settings_equal(current, &expected) {
+        return true;
+    }
+    expected.auto_config_url = None;
+    if windows_settings_equal(current, &expected) {
+        return true;
+    }
+    expected.auto_detect = None;
+    windows_settings_equal(current, &expected)
+}
+
+fn enable_write_step_still_owned(
+    current: &ProxySnapshot,
+    before_enable: &ProxySnapshot,
+    written_from: &ProxySnapshot,
+    mixed_port: u16,
+    managed_listener_pid: u32,
+    listener_pids: &[Option<u32>],
+) -> bool {
+    enable_write_still_owned(
+        current,
+        written_from,
+        mixed_port,
+        managed_listener_pid,
+        listener_pids,
+    ) || (enable_write_matches_known_step(current, before_enable, written_from, mixed_port)
+        && (listener_pids.is_empty() || listeners_belong_to(listener_pids, managed_listener_pid)))
+}
+
+fn restore_failed_enable_if_still_owned(
+    before_enable: &ProxySnapshot,
+    written_from: &ProxySnapshot,
+    mixed_port: u16,
+    managed_listener_pid: u32,
+) -> Result<bool, String> {
+    let observed = read_snapshot()?;
+    if windows_settings_equal(&observed, before_enable) {
+        return Ok(true);
+    }
+    let observed_listeners = listener_pids(mixed_port)?;
+    if !enable_write_step_still_owned(
+        &observed,
+        before_enable,
+        written_from,
+        mixed_port,
+        managed_listener_pid,
+        &observed_listeners,
+    ) {
+        return Ok(false);
+    }
+
+    // Re-read after listener inspection so an external handoff is not overwritten by rollback.
+    let confirmed = read_snapshot()?;
+    let confirmed_listeners = listener_pids(mixed_port)?;
+    if !windows_settings_equal(&confirmed, &observed)
+        || !enable_write_step_still_owned(
+            &confirmed,
+            before_enable,
+            written_from,
+            mixed_port,
+            managed_listener_pid,
+            &confirmed_listeners,
+        )
+    {
+        return Ok(false);
+    }
+    write_snapshot(before_enable)?;
+    Ok(true)
+}
+
 async fn managed_core_and_listener(
     app: &AppHandle,
     mixed_port: u16,
@@ -741,7 +878,6 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
     crate::ensure_mutations_allowed(&app)?;
     let _transition = crate::tun::lock_transitions().await;
     if enabled {
-        let current = read_snapshot()?;
         let mixed_port = mihomo::mixed_port(&app)?;
         let listeners = listener_pids(mixed_port)?;
         let (managed, core_running, managed_listener_pid) =
@@ -753,15 +889,30 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
         }
         let managed_listener_pid = managed_listener_pid
             .ok_or_else(|| "无法确认 MioProxy mixed-port 监听 PID，拒绝开启系统代理".to_string())?;
+        // Read and validate Windows ownership only after the final await so an external
+        // client cannot take over during Core verification and then be overwritten.
+        let current = read_snapshot()?;
         let existing = managed_snapshot(&app)?;
-        if let Some(mut snapshot) = existing.clone() {
-            if current_still_mioproxy_owned(
+        let current_still_owned = existing.is_some()
+            && current_still_mioproxy_owned(
                 &current,
                 mixed_port,
                 Some(managed_listener_pid),
                 &listeners,
                 ProxyExpectation::Enabled,
-            ) {
+            );
+        if !can_enable_without_takeover(
+            actual_state(&current, mixed_port),
+            existing.is_some(),
+            current_still_owned,
+        ) {
+            return Err(
+                "检测到外部 System Proxy 所有权，拒绝覆盖；请先在拥有该代理的应用中关闭它"
+                    .to_string(),
+            );
+        }
+        if let Some(mut snapshot) = existing.clone() {
+            if current_still_owned {
                 if snapshot.managed_listener_pid != Some(managed_listener_pid) {
                     snapshot.managed_listener_pid = Some(managed_listener_pid);
                     store_managed_snapshot(&app, snapshot)?;
@@ -786,16 +937,55 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
         };
         snapshot.managed_listener_pid = Some(managed_listener_pid);
         persist_snapshot(&app, &snapshot)?;
-        if let Err(error) = write_mioproxy_settings(mixed_port, &snapshot) {
-            let restore_error = write_snapshot(&current).err();
+        let before_write = match read_snapshot() {
+            Ok(before_write) => before_write,
+            Err(error) => {
+                let clear_error = if recovering_disabled {
+                    None
+                } else {
+                    forget_managed_snapshot(&app).err()
+                };
+                let mut details =
+                    format!("写入前无法重新确认 Windows System Proxy 所有权，拒绝开启：{error}");
+                if let Some(clear_error) = clear_error {
+                    details.push_str(&format!("；清理代理恢复快照失败：{clear_error}"));
+                }
+                return Err(details);
+            }
+        };
+        if !windows_settings_equal(&before_write, &current) {
             let clear_error = if recovering_disabled {
                 None
             } else {
                 forget_managed_snapshot(&app).err()
             };
+            let mut details = "检测到外部 System Proxy 在写入前发生变化，拒绝覆盖".to_string();
+            if let Some(clear_error) = clear_error {
+                details.push_str(&format!("；清理代理恢复快照失败：{clear_error}"));
+            }
+            return Err(details);
+        }
+        if let Err(error) = write_mioproxy_settings(mixed_port, &snapshot) {
+            let restore_result = restore_failed_enable_if_still_owned(
+                &current,
+                &snapshot,
+                mixed_port,
+                managed_listener_pid,
+            );
+            let clear_error = if recovering_disabled || !matches!(&restore_result, Ok(true)) {
+                None
+            } else {
+                forget_managed_snapshot(&app).err()
+            };
             let mut details = format!("开启系统代理失败：{error}");
-            if let Some(restore_error) = restore_error {
-                details.push_str(&format!("；恢复 Windows 原始代理也失败：{restore_error}"));
+            match restore_result {
+                Ok(false) => details.push_str(
+                    "；检测到所有权已变化，为避免覆盖外部 System Proxy，未自动回滚 Windows 设置；已保留恢复快照",
+                ),
+                Err(restore_error) => details.push_str(&format!(
+                    "；无法安全确认并恢复 Windows 原始代理：{restore_error}；已保留恢复快照"
+                )),
+                Ok(true) => {}
             }
             if let Some(clear_error) = clear_error {
                 details.push_str(&format!("；清理代理恢复快照失败：{clear_error}"));
@@ -818,15 +1008,28 @@ pub async fn set_enabled(app: AppHandle, enabled: bool) -> Result<SystemProxySta
             })
         })();
         if let Err(verification_error) = verification {
-            let restore_error = write_snapshot(&current).err();
-            let clear_error = if recovering_disabled {
+            let restore_result = restore_failed_enable_if_still_owned(
+                &current,
+                &snapshot,
+                mixed_port,
+                managed_listener_pid,
+            );
+            let clear_error = if recovering_disabled || !matches!(&restore_result, Ok(true)) {
                 None
             } else {
                 forget_managed_snapshot(&app).err()
             };
             let mut details = format!("开启系统代理失败：{verification_error}");
-            if let Some(error) = restore_error {
-                details.push_str(&format!("；恢复 Windows 原始代理也失败：{error}"));
+            match restore_result {
+                Ok(false) => details.push_str(
+                    "；检测到所有权已变化，为避免覆盖外部 System Proxy，未自动回滚 Windows 设置；已保留恢复快照",
+                ),
+                Err(error) => {
+                    details.push_str(&format!(
+                        "；无法安全确认并恢复 Windows 原始代理：{error}；已保留恢复快照"
+                    ))
+                }
+                Ok(true) => {}
             }
             if let Some(error) = clear_error {
                 details.push_str(&format!("；清理代理恢复快照失败：{error}"));
@@ -896,9 +1099,11 @@ pub async fn system_proxy_set_enabled(
 #[cfg(test)]
 mod tests {
     use super::{
-        actual_state, can_disable_for_update, can_restore_after_update, is_mioproxy_owned,
-        is_mioproxy_proxy, managed_core_ready, owner, should_restore_lifecycle_snapshot,
-        windows_state, ProxyActualState, ProxyOwner, ProxySnapshot, ProxyWindowsState,
+        actual_state, can_disable_for_update, can_enable_without_takeover,
+        can_restore_after_update, enable_write_matches_known_step, enable_write_still_owned,
+        is_mioproxy_owned, is_mioproxy_proxy, managed_core_ready, owner,
+        should_restore_lifecycle_snapshot, windows_settings_equal, windows_state, ProxyActualState,
+        ProxyOwner, ProxySnapshot, ProxyWindowsState,
     };
 
     fn snapshot(proxy_enable: Option<u32>, proxy_server: Option<&str>) -> ProxySnapshot {
@@ -1019,6 +1224,130 @@ mod tests {
         assert_eq!(actual, ProxyActualState::ExternalEndpoint);
         assert_eq!(owner, ProxyOwner::External);
         assert!(!is_mioproxy_owned(owner));
+    }
+
+    #[test]
+    fn enabling_never_overwrites_external_proxy_ownership() {
+        assert!(!can_enable_without_takeover(
+            ProxyActualState::ExternalEndpoint,
+            false,
+            false
+        ));
+        assert!(!can_enable_without_takeover(
+            ProxyActualState::MioProxyEndpoint,
+            false,
+            false
+        ));
+        assert!(can_enable_without_takeover(
+            ProxyActualState::MioProxyEndpoint,
+            true,
+            true
+        ));
+        assert!(can_enable_without_takeover(
+            ProxyActualState::Disabled,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn enabling_rechecks_all_windows_settings_before_write() {
+        let original = snapshot(Some(0), Some("old.proxy:8080"));
+        let mut changed = original.clone();
+        assert!(windows_settings_equal(&original, &changed));
+        changed.auto_config_url = Some("http://external/proxy.pac".to_string());
+        assert!(!windows_settings_equal(&original, &changed));
+    }
+
+    #[test]
+    fn failed_enable_rolls_back_only_while_the_write_is_still_owned() {
+        let original = snapshot(Some(0), Some("old.proxy:8080"));
+        let mut written = snapshot(Some(1), Some("127.0.0.1:7890"));
+        written.proxy_override = Some("<local>".to_string());
+        assert!(enable_write_still_owned(
+            &written,
+            &original,
+            7890,
+            42,
+            &[Some(42)]
+        ));
+
+        let mut external = written.clone();
+        external.proxy_override = Some("external-bypass".to_string());
+        assert!(!enable_write_still_owned(
+            &external,
+            &original,
+            7890,
+            42,
+            &[Some(42)]
+        ));
+        assert!(!enable_write_still_owned(
+            &written,
+            &original,
+            7890,
+            42,
+            &[Some(99)]
+        ));
+    }
+
+    #[test]
+    fn failed_enable_recognizes_only_stable_prefixes_of_its_registry_write() {
+        let mut original = snapshot(Some(0), Some("old.proxy:8080"));
+        original.proxy_override = Some("old-bypass".to_string());
+        original.auto_config_url = Some("http://old/proxy.pac".to_string());
+        original.auto_detect = Some(1);
+
+        let mut after_enable = original.clone();
+        after_enable.proxy_enable = Some(1);
+        assert!(enable_write_matches_known_step(
+            &after_enable,
+            &original,
+            &original,
+            7890
+        ));
+
+        let mut after_server = after_enable.clone();
+        after_server.proxy_server = Some("127.0.0.1:7890".to_string());
+        assert!(enable_write_matches_known_step(
+            &after_server,
+            &original,
+            &original,
+            7890
+        ));
+
+        let mut external = after_server;
+        external.proxy_override = Some("external-bypass".to_string());
+        assert!(!enable_write_matches_known_step(
+            &external, &original, &original, 7890
+        ));
+    }
+
+    #[test]
+    fn failed_update_recovery_matches_prefixes_from_the_actual_disabled_state() {
+        let mut before_enable = snapshot(Some(0), Some("127.0.0.1:7890"));
+        before_enable.proxy_override = Some("<local>".to_string());
+        let mut saved_original = snapshot(Some(0), Some("old.proxy:8080"));
+        saved_original.proxy_override = Some("old-bypass".to_string());
+        saved_original.auto_config_url = Some("http://old/proxy.pac".to_string());
+        saved_original.auto_detect = Some(1);
+
+        let mut after_enable = before_enable.clone();
+        after_enable.proxy_enable = Some(1);
+        assert!(enable_write_matches_known_step(
+            &after_enable,
+            &before_enable,
+            &saved_original,
+            7890
+        ));
+
+        let mut after_override = after_enable;
+        after_override.proxy_override = Some("old-bypass".to_string());
+        assert!(enable_write_matches_known_step(
+            &after_override,
+            &before_enable,
+            &saved_original,
+            7890
+        ));
     }
 
     #[test]

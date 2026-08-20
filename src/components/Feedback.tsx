@@ -1,5 +1,5 @@
 import { AlertTriangle, Check, Info, X } from "lucide-react";
-import { useEffect } from "react";
+import { KeyboardEvent, useEffect, useRef } from "react";
 
 export type ToastTone = "success" | "error" | "info";
 
@@ -48,14 +48,43 @@ export function ConfirmDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    cancelRef.current?.focus();
+    return () => previouslyFocused?.focus();
+  }, []);
+
+  function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled)") ?? [])];
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
-      <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+      <section ref={dialogRef} className="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" onKeyDown={handleKeyDown}>
         <div className="dialog-icon"><AlertTriangle size={20} /></div>
         <h2 id="dialog-title">{title}</h2>
         <p>{message}</p>
         <div className="dialog-actions">
-          <button className="secondary-button" type="button" onClick={onCancel}>取消</button>
+          <button ref={cancelRef} className="secondary-button" type="button" onClick={onCancel}>取消</button>
           <button className={danger ? "danger-button" : "primary-button"} type="button" onClick={onConfirm}>{confirmLabel}</button>
         </div>
       </section>

@@ -1,81 +1,128 @@
-import { Eye, RefreshCw, Search, ShieldClose, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Eye, Pause, Play, RefreshCw, Search, ShieldClose, Unplug, X } from "lucide-react";
+import { KeyboardEvent, MouseEvent, useEffect, useMemo, useState } from "react";
 import type { ConnectionsResponse, MihomoConnection } from "../api/mihomo";
 import { ConfirmDialog } from "../components/Feedback";
+import { ContextMenu } from "../components/ContextMenu";
 import { formatBytes } from "../utils/format";
+
+type SortKey = "host" | "process" | "network" | "rule" | "chain" | "upload" | "download";
 
 function processName(connection: MihomoConnection) {
   if (connection.metadata.process) return connection.metadata.process;
   const path = connection.metadata.processPath;
-  return path ? path.split(/[\\/]/).pop() ?? path : "未知应用";
+  return path ? path.split(/[\\/]/).pop() ?? path : "—";
+}
+
+function connectionHost(connection: MihomoConnection) {
+  return connection.metadata.host || connection.metadata.destinationIp || "—";
 }
 
 function connectionTarget(connection: MihomoConnection) {
-  const host = connection.metadata.host || connection.metadata.destinationIp || "未知目标";
+  const host = connectionHost(connection);
   return connection.metadata.destinationPort ? `${host}:${connection.metadata.destinationPort}` : host;
 }
 
-function connectionNode(connection: MihomoConnection) {
-  return connection.chains.at(-1) ?? "DIRECT";
+function connectionChain(connection: MihomoConnection) {
+  return connection.chains.length ? connection.chains.join(" → ") : "—";
 }
 
-function unique(values: string[]) {
-  return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b));
-}
-
-function ConnectionDetails({ connection, onClose }: { connection: MihomoConnection; onClose: () => void }) {
+function ConnectionDetails({ connection, busy, onDismiss, onCloseConnection }: { connection: MihomoConnection; busy: boolean; onDismiss: () => void; onCloseConnection: () => void }) {
   return (
-    <aside className="connection-detail">
-      <div className="detail-heading"><div><span>CONNECTION DETAIL</span><strong>{processName(connection)}</strong></div><button className="icon-button" onClick={onClose} aria-label="关闭详情"><X size={17} /></button></div>
-      <dl>
-        <div><dt>目标</dt><dd>{connectionTarget(connection)}</dd></div>
-        <div><dt>网络</dt><dd>{connection.metadata.network || "—"}</dd></div>
-        <div><dt>规则</dt><dd>{connection.rule || "—"}{connection.rulePayload ? ` · ${connection.rulePayload}` : ""}</dd></div>
-        <div><dt>节点链路</dt><dd>{connection.chains.join(" → ") || "DIRECT"}</dd></div>
-        <div><dt>上传 / 下载</dt><dd>{formatBytes(connection.upload)} / {formatBytes(connection.download)}</dd></div>
-        <div><dt>进程路径</dt><dd className="break-all">{connection.metadata.processPath || "—"}</dd></div>
-        <div><dt>连接 ID</dt><dd className="break-all">{connection.id}</dd></div>
+    <aside className="connection-detail surface-panel" aria-label="Connection details">
+      <div className="section-title-row"><div><h2>Connection details</h2><p>{processName(connection)}</p></div><button className="icon-button" type="button" onClick={onDismiss} aria-label="Close inspector" title="Close inspector"><X size={15} /></button></div>
+      <dl className="detail-list">
+        <div><dt>Host</dt><dd>{connectionTarget(connection)}</dd></div>
+        <div><dt>Source</dt><dd>{connection.metadata.sourceIp || "—"}{connection.metadata.sourcePort ? `:${connection.metadata.sourcePort}` : ""}</dd></div>
+        <div><dt>Process</dt><dd>{processName(connection)}</dd></div>
+        <div><dt>Process path</dt><dd className="break-all">{connection.metadata.processPath || "—"}</dd></div>
+        <div><dt>Network</dt><dd>{connection.metadata.network || "—"}</dd></div>
+        <div><dt>Rule</dt><dd>{connection.rule || "—"}{connection.rulePayload ? ` · ${connection.rulePayload}` : ""}</dd></div>
+        <div><dt>Chain</dt><dd>{connectionChain(connection)}</dd></div>
+        <div><dt>Started</dt><dd>{connection.start ? new Date(connection.start).toLocaleString() : "—"}</dd></div>
+        <div><dt>Upload</dt><dd>{formatBytes(connection.upload)}</dd></div>
+        <div><dt>Download</dt><dd>{formatBytes(connection.download)}</dd></div>
       </dl>
+      <button className="danger-button connection-close-action" type="button" onClick={onCloseConnection} disabled={busy}><ShieldClose size={15} />Close network connection</button>
     </aside>
   );
 }
 
-export function ConnectionsPage({
-  state,
-  onRefresh,
-  onClose,
-  onCloseAll,
-}: {
+export function ConnectionsPage({ state, onRefresh, onClose, onCloseAll }: {
   state: { data: ConnectionsResponse | null; loading: boolean; error: string | null };
   onRefresh: () => Promise<void>;
   onClose: (id: string) => Promise<void>;
   onCloseAll: () => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
-  const [appFilter, setAppFilter] = useState("all");
-  const [nodeFilter, setNodeFilter] = useState("all");
-  const [ruleFilter, setRuleFilter] = useState("all");
-  const [selected, setSelected] = useState<MihomoConnection | null>(null);
+  const [networkFilter, setNetworkFilter] = useState("all");
+  const [sortKey, setSortKey] = useState<SortKey>("download");
+  const [sortDescending, setSortDescending] = useState(true);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmingAll, setConfirmingAll] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [pausedSnapshot, setPausedSnapshot] = useState<MihomoConnection[]>([]);
+  const [commandError, setCommandError] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; connection: MihomoConnection } | null>(null);
 
-  const connections = state.data?.connections ?? [];
-  const apps = useMemo(() => unique(connections.map(processName)), [connections]);
-  const nodes = useMemo(() => unique(connections.map(connectionNode)), [connections]);
-  const rules = useMemo(() => unique(connections.map((connection) => connection.rule || "DIRECT")), [connections]);
-  const visible = useMemo(() => connections.filter((connection) => {
-    const haystack = `${processName(connection)} ${connectionTarget(connection)} ${connection.rule} ${connectionNode(connection)}`.toLowerCase();
-    return (!query || haystack.includes(query.toLowerCase()))
-      && (appFilter === "all" || processName(connection) === appFilter)
-      && (nodeFilter === "all" || connectionNode(connection) === nodeFilter)
-      && (ruleFilter === "all" || (connection.rule || "DIRECT") === ruleFilter);
-  }), [appFilter, connections, nodeFilter, query, ruleFilter]);
+  const liveConnections = state.data?.connections ?? [];
+  const connections = paused ? pausedSnapshot : liveConnections;
+  const networks = useMemo(() => [...new Set(liveConnections.map((connection) => connection.metadata.network).filter(Boolean))].sort(), [liveConnections]);
+  const visible = useMemo(() => {
+    const filtered = connections.filter((connection) => {
+      const haystack = `${processName(connection)} ${connectionTarget(connection)} ${connection.rule} ${connectionChain(connection)}`.toLowerCase();
+      return (!query.trim() || haystack.includes(query.trim().toLowerCase())) && (networkFilter === "all" || connection.metadata.network === networkFilter);
+    });
+    const value = (connection: MihomoConnection): string | number => {
+      if (sortKey === "host") return connectionHost(connection);
+      if (sortKey === "process") return processName(connection);
+      if (sortKey === "network") return connection.metadata.network || "";
+      if (sortKey === "rule") return connection.rule || "";
+      if (sortKey === "chain") return connectionChain(connection);
+      return connection[sortKey];
+    };
+    return [...filtered].sort((a, b) => {
+      const left = value(a);
+      const right = value(b);
+      const compared = typeof left === "number" && typeof right === "number" ? left - right : String(left).localeCompare(String(right));
+      return sortDescending ? -compared : compared;
+    });
+  }, [connections, networkFilter, query, sortDescending, sortKey]);
+  const rendered = visible.slice(0, 250);
+  const selected = connections.find((connection) => connection.id === selectedId) ?? null;
+
+  useEffect(() => {
+    if (!selectedId || contextMenu) return;
+    function closeInspector(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") setSelectedId(null);
+    }
+    window.addEventListener("keydown", closeInspector);
+    return () => window.removeEventListener("keydown", closeInspector);
+  }, [contextMenu, selectedId]);
+
+  function changeSort(next: SortKey) {
+    if (sortKey === next) setSortDescending((current) => !current);
+    else {
+      setSortKey(next);
+      setSortDescending(next === "upload" || next === "download");
+    }
+  }
+
+  function togglePaused() {
+    setPaused((current) => {
+      if (!current) setPausedSnapshot(liveConnections);
+      return !current;
+    });
+  }
 
   async function closeConnection(connection: MihomoConnection) {
     setBusyId(connection.id);
+    setCommandError(null);
     try {
       await onClose(connection.id);
-      if (selected?.id === connection.id) setSelected(null);
+      if (selectedId === connection.id) setSelectedId(null);
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusyId(null);
     }
@@ -83,47 +130,84 @@ export function ConnectionsPage({
 
   async function closeAll() {
     setBusyId("all");
+    setCommandError(null);
     try {
       await onCloseAll();
-      setSelected(null);
+      setSelectedId(null);
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusyId(null);
       setConfirmingAll(false);
     }
   }
 
-  const rendered = visible.slice(0, 250);
+  function tableKeyboard(event: KeyboardEvent<HTMLTableSectionElement>) {
+    if (!rendered.length) return;
+    const index = selected ? Math.max(0, rendered.findIndex((item) => item.id === selected.id)) : -1;
+    if (event.key === "Delete" && selected) {
+      event.preventDefault();
+      void closeConnection(selected);
+      return;
+    }
+    const next = event.key === "ArrowDown" ? Math.min(rendered.length - 1, index + 1) : event.key === "ArrowUp" ? Math.max(0, index - 1) : event.key === "Home" ? 0 : event.key === "End" ? rendered.length - 1 : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    setSelectedId(rendered[next].id);
+    document.getElementById(`connection-row-${next}`)?.focus();
+  }
+
+  function openContextMenu(event: MouseEvent, connection: MihomoConnection) {
+    event.preventDefault();
+    setSelectedId(connection.id);
+    setContextMenu({ x: event.clientX, y: event.clientY, connection });
+  }
 
   return (
     <section className="page-stack connections-page">
-      <header className="page-header">
-        <div><p className="eyebrow">CONNECTIONS / LIVE</p><h1>连接</h1><p>通过 Mihomo <code>/connections</code> 观察、筛选和关闭活动连接。</p></div>
-        <div className="header-actions"><button className="secondary-button" onClick={() => void onRefresh()} disabled={state.loading}><RefreshCw size={17} className={state.loading ? "spin" : ""} />刷新</button><button className="danger-button" onClick={() => setConfirmingAll(true)} disabled={!connections.length || busyId !== null}><ShieldClose size={17} />关闭全部</button></div>
-      </header>
+      <header className="page-header compact-header"><div><h1>Connections</h1><p>{state.data ? `${liveConnections.length} active · ↓ ${formatBytes(state.data.downloadTotal)} · ↑ ${formatBytes(state.data.uploadTotal)}` : "Waiting for active connection data"}</p></div></header>
+      {(state.error || commandError) && <div className="info-bar error" role="alert"><span>{commandError ?? state.error}</span></div>}
 
-      {state.error && <div className="error-banner">{state.error}</div>}
-
-      <div className="connection-toolbar">
-        <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索应用、目标、规则或节点" /></label>
-        <select value={appFilter} onChange={(event) => setAppFilter(event.target.value)}><option value="all">所有应用</option>{apps.map((value) => <option key={value}>{value}</option>)}</select>
-        <select value={nodeFilter} onChange={(event) => setNodeFilter(event.target.value)}><option value="all">所有节点</option>{nodes.map((value) => <option key={value}>{value}</option>)}</select>
-        <select value={ruleFilter} onChange={(event) => setRuleFilter(event.target.value)}><option value="all">所有规则</option>{rules.map((value) => <option key={value}>{value}</option>)}</select>
+      <div className="compact-toolbar surface-panel connection-toolbar">
+        <label className="search-box"><Search size={15} /><input data-page-search value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search connections…" aria-label="Search connections" /></label>
+        <label className="select-field"><select value={networkFilter} onChange={(event) => setNetworkFilter(event.target.value)} aria-label="Network filter"><option value="all">All networks</option>{networks.map((network) => <option key={network}>{network}</option>)}</select></label>
+        <button className="toolbar-button" type="button" onClick={togglePaused}>{paused ? <Play size={15} /> : <Pause size={15} />}{paused ? "Resume live" : "Pause"}</button>
+        <button className="icon-button" type="button" onClick={() => void onRefresh()} disabled={state.loading} aria-label="Refresh connections" title="Refresh"><RefreshCw size={15} className={state.loading ? "spin" : ""} /></button>
+        <button className="danger-button compact-action" type="button" onClick={() => setConfirmingAll(true)} disabled={!liveConnections.length || busyId !== null}><ShieldClose size={15} />Close all</button>
       </div>
 
-      <div className="connection-count"><span>{rendered.length}{rendered.length < visible.length ? ` / ${visible.length}` : ""} visible / {connections.length} active</span><small>↓ {formatBytes(state.data?.downloadTotal)} · ↑ {formatBytes(state.data?.uploadTotal)}{visible.length > rendered.length ? " · 已限制渲染 250 行" : ""}</small></div>
+      <div className="connections-workspace">
+        <div className="surface-panel compact-table-wrap connection-table-wrap">
+          {rendered.length ? (
+            <table className="compact-table connection-table">
+              <thead><tr>{([['host', 'Host'], ['process', 'Process'], ['network', 'Network'], ['rule', 'Rule'], ['chain', 'Chain'], ['upload', 'Upload'], ['download', 'Download']] as Array<[SortKey, string]>).map(([key, label]) => <th key={key}><button type="button" onClick={() => changeSort(key)}>{label}{sortKey === key ? sortDescending ? " ↓" : " ↑" : ""}</button></th>)}</tr></thead>
+              <tbody tabIndex={0} onKeyDown={tableKeyboard}>
+                {rendered.map((connection, index) => (
+                  <tr id={`connection-row-${index}`} key={connection.id} tabIndex={-1} className={selected?.id === connection.id ? "selected-row" : ""} onClick={() => setSelectedId(connection.id)} onContextMenu={(event) => openContextMenu(event, connection)}>
+                    <td title={connectionTarget(connection)}>{connectionHost(connection)}</td>
+                    <td title={connection.metadata.processPath || undefined}>{processName(connection)}</td>
+                    <td>{connection.metadata.network || "—"}</td>
+                    <td title={connection.rulePayload || undefined}>{connection.rule || "—"}</td>
+                    <td title={connectionChain(connection)}>{connectionChain(connection)}</td>
+                    <td>{formatBytes(connection.upload)}</td>
+                    <td>{formatBytes(connection.download)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : <div className="table-empty"><Unplug size={20} /><strong>{liveConnections.length ? "No connections match the current filter" : "No active connections"}</strong><span>{liveConnections.length ? "Clear the search or change the network filter." : "Connections appear after Core is ready and applications create network requests."}</span></div>}
+          {visible.length > rendered.length && <div className="table-limit-note">Showing the first 250 of {visible.length} matching connections.</div>}
+        </div>
+        {selected
+          ? <ConnectionDetails connection={selected} busy={busyId !== null} onDismiss={() => setSelectedId(null)} onCloseConnection={() => void closeConnection(selected)} />
+          : <aside className="connection-detail connection-detail-empty surface-panel" aria-label="Connection details"><div className="table-empty"><Eye size={20} /><strong>No connection selected</strong><span>Select a row to inspect its route and traffic details.</span></div></aside>}
+      </div>
 
-      {visible.length === 0 ? <div className="empty-card"><NetworkIcon /><strong>{connections.length ? "没有匹配的连接" : "暂无活动连接"}</strong><p>{connections.length ? "调整搜索或筛选条件。" : "Core Ready 并产生网络请求后，活动连接会实时出现在这里。"}</p></div> : (
-        <div className="connection-table-wrap"><table className="connection-table"><thead><tr><th>应用</th><th>目标</th><th>规则</th><th>节点</th><th>流量</th><th /></tr></thead><tbody>{rendered.map((connection) => <tr key={connection.id}>
-          <td><strong>{processName(connection)}</strong><small>{connection.metadata.network || "TCP"}</small></td><td><span className="target-cell">{connectionTarget(connection)}</span><small>{connection.metadata.sourceIp || "—"}</small></td><td><span className="rule-badge">{connection.rule || "DIRECT"}</span><small>{connection.rulePayload || "匹配规则"}</small></td><td><span className={connectionNode(connection) === "DIRECT" ? "node-cell direct" : "node-cell"}>{connectionNode(connection)}</span><small>{connection.chains.length > 1 ? `${connection.chains.length} hops` : "direct path"}</small></td><td><strong>{formatBytes(connection.download + connection.upload)}</strong><small>↓ {formatBytes(connection.download)} · ↑ {formatBytes(connection.upload)}</small></td><td><div className="row-actions"><button className="icon-button" onClick={() => setSelected(connection)} aria-label="查看详情"><Eye size={16} /></button><button className="icon-button danger" onClick={() => void closeConnection(connection)} disabled={busyId !== null} aria-label="关闭连接"><X size={16} /></button></div></td>
-        </tr>)}</tbody></table></div>
-      )}
-
-      {selected && <ConnectionDetails connection={selected} onClose={() => setSelected(null)} />}
-      {confirmingAll && <ConfirmDialog title="关闭全部活动连接？" message={`当前有 ${connections.length} 个活动连接，关闭后应用会重新建立需要的网络请求。`} confirmLabel="关闭全部" danger onCancel={() => setConfirmingAll(false)} onConfirm={() => void closeAll()} />}
+      {confirmingAll && <ConfirmDialog title="Close all active connections?" message={`This will close ${liveConnections.length} active connections. Applications may immediately reconnect.`} confirmLabel="Close all" danger onCancel={() => setConfirmingAll(false)} onConfirm={() => void closeAll()} />}
+      {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} actions={[
+        { label: "Inspect", icon: <Eye size={14} />, onSelect: () => setSelectedId(contextMenu.connection.id) },
+        { label: "Close connection", icon: <X size={14} />, danger: true, disabled: busyId !== null, onSelect: () => void closeConnection(contextMenu.connection) },
+      ]} />}
     </section>
   );
-}
-
-function NetworkIcon() {
-  return <span className="empty-icon">⌁</span>;
 }

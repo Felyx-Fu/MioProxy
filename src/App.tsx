@@ -1,10 +1,12 @@
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Update, type DownloadEvent } from "@tauri-apps/plugin-updater";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { mihomoApi, type CoreState, type CoreStatus, type CoreUpdateStatus, type MihomoVersion, type Profile, type ProxiesResponse, type ProxyPathState, type ProxyState, type ServiceConnectionStatus, type StartupSettings, type SystemProxyStatus, type UpdatePreferences, type UpdateStatus } from "./api/mihomo";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { mihomoApi, type CoreState, type CoreStatus, type CoreUpdateStatus, type MihomoVersion, type Profile, type ProxiesResponse, type ProxyPathState, type ProxyState, type ServiceConnectionStatus, type StartupSettings, type SystemProxyStatus, type TunStatusSnapshot, type UpdatePreferences, type UpdateStatus } from "./api/mihomo";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { ToastHost, type ToastMessage, type ToastTone } from "./components/Feedback";
+import { PreviewTitleBar } from "./components/PreviewTitleBar";
+import { RuntimeStatusBar } from "./components/RuntimeStatusBar";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { LogsPage } from "./pages/LogsPage";
@@ -17,6 +19,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { TunPage } from "./pages/TunPage";
 import { useConnections } from "./hooks/useConnections";
 import { useTraffic } from "./hooks/useTraffic";
+import { useLogs } from "./hooks/useLogs";
 
 export default function App() {
   const [page, setPage] = useState<Page>("home");
@@ -27,6 +30,7 @@ export default function App() {
   const [activeProxyGroup, setActiveProxyGroup] = useState("PROXY");
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const [appliedProfileSession, setAppliedProfileSession] = useState<{ id: string; name: string } | null>(null);
   const [proxyStatus, setProxyStatus] = useState<SystemProxyStatus | null>(null);
   const [proxyState, setProxyState] = useState<ProxyState>("disabled");
   const [proxyPathState, setProxyPathState] = useState<ProxyPathState>("unknown");
@@ -37,6 +41,7 @@ export default function App() {
   const [proxyLoading, setProxyLoading] = useState(false);
   const [proxyBusy, setProxyBusy] = useState<string | null>(null);
   const [delayByProxy, setDelayByProxy] = useState<Record<string, number>>({});
+  const [delayStatusByProxy, setDelayStatusByProxy] = useState<Record<string, "available" | "unavailable">>({});
   const [error, setError] = useState<string | null>(null);
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -54,14 +59,21 @@ export default function App() {
   const [diagnosticPath, setDiagnosticPath] = useState<string | null>(null);
   const [serviceConnection, setServiceConnection] = useState<ServiceConnectionStatus | null>(null);
   const [serviceReconnectVisible, setServiceReconnectVisible] = useState(false);
+  const [tunSnapshot, setTunSnapshot] = useState<TunStatusSnapshot | null>(null);
+  const [tunBusy, setTunBusy] = useState(false);
+  const [tunError, setTunError] = useState<string | null>(null);
   const toastId = useRef(0);
   const serviceWasUnavailable = useRef(false);
   const serviceOutageStartedAt = useRef<number | null>(null);
   const serviceNoticeTimer = useRef<number | null>(null);
   const coreCrashPending = useRef(false);
+  const tunActionInFlight = useRef(false);
+  const tunRefreshInFlight = useRef<Promise<void> | null>(null);
+  const proxyRequestInFlight = useRef(false);
   const coreReady = coreState === "ready";
   const traffic = useTraffic();
   const connections = useConnections(coreReady);
+  const logs = useLogs();
 
   const dismissToast = useCallback((id: number) => {
     setToasts((current) => current.filter((toast) => toast.id !== id));
@@ -103,7 +115,6 @@ export default function App() {
     setProxyLoading(true);
     try {
       setProxies(await mihomoApi.proxies());
-      setError(null);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -131,6 +142,24 @@ export default function App() {
     }
   }, []);
 
+  const refreshTun = useCallback((clearError = true) => {
+    if (tunActionInFlight.current) return Promise.resolve();
+    if (tunRefreshInFlight.current) return tunRefreshInFlight.current;
+    const request = (async () => {
+      try {
+        setTunSnapshot(await mihomoApi.tunStatus());
+        if (clearError) setTunError(null);
+      } catch (e) {
+        const message = errorMessage(e);
+        if (!isServiceIpcFailure(message)) setTunError(message);
+      } finally {
+        tunRefreshInFlight.current = null;
+      }
+    })();
+    tunRefreshInFlight.current = request;
+    return request;
+  }, []);
+
   const refreshServiceConnection = useCallback(async () => {
     try {
       const next = await mihomoApi.serviceStatus();
@@ -154,21 +183,23 @@ export default function App() {
         void refreshStatus();
         void refreshSystemProxy();
         void refreshProxies();
+        void refreshTun();
       }
     } catch {
       serviceWasUnavailable.current = true;
     }
-  }, [refreshProxies, refreshStatus, refreshSystemProxy]);
+  }, [refreshProxies, refreshStatus, refreshSystemProxy, refreshTun]);
 
   useEffect(() => {
     void refreshStatus();
     void refreshSystemProxy();
+    void refreshTun();
     void refreshStartup();
     void refreshServiceConnection();
     void mihomoApi.updatePreferencesStatus().then(setUpdatePreferences).catch((e) => setUpdateError(errorMessage(e)));
     void mihomoApi.updateStatus().then(setUpdateStatus).catch((e) => setUpdateError(errorMessage(e)));
     void mihomoApi.coreUpdateStatus().then(setCoreUpdate).catch(() => undefined);
-  }, [refreshServiceConnection, refreshStatus, refreshStartup, refreshSystemProxy]);
+  }, [refreshServiceConnection, refreshStatus, refreshStartup, refreshSystemProxy, refreshTun]);
 
   const downloadUpdate = useCallback(async (update: Update, silent = false) => {
     setUpdateDownloading(true);
@@ -294,9 +325,10 @@ export default function App() {
       void refreshStatus();
       void refreshSystemProxy();
       void refreshServiceConnection();
+      void refreshTun();
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [refreshServiceConnection, refreshStatus, refreshSystemProxy]);
+  }, [refreshServiceConnection, refreshStatus, refreshSystemProxy, refreshTun]);
 
   useEffect(() => {
     if (serviceConnection?.reachable || !serviceConnection?.error) return;
@@ -322,6 +354,12 @@ export default function App() {
       setError(errorMessage(e));
     });
   }, []);
+
+  useLayoutEffect(() => {
+    setSelectedProfileId((current) => current && profiles.some((profile) => profile.id === current)
+      ? current
+      : profiles[0]?.id ?? null);
+  }, [profiles]);
 
   useEffect(() => {
     let active = true;
@@ -390,9 +428,13 @@ export default function App() {
     void mihomoApi.proxyDelay(currentNode).then((result) => {
       if (!active) return;
       setDelayByProxy((current) => ({ ...current, [currentNode]: result.delay }));
+      setDelayStatusByProxy((current) => ({ ...current, [currentNode]: "available" }));
       setProxyPathState("healthy");
     }).catch(() => {
-      if (active) setProxyPathState("unavailable");
+      if (active) {
+        setDelayStatusByProxy((current) => ({ ...current, [currentNode]: "unavailable" }));
+        setProxyPathState("unavailable");
+      }
     });
     return () => { active = false; };
   }, [coreReady, currentNode]);
@@ -432,6 +474,8 @@ export default function App() {
     try {
       await mihomoApi.profileApply(id);
       setSelectedProfileId(id);
+      const applied = profiles.find((profile) => profile.id === id);
+      if (applied) setAppliedProfileSession({ id: applied.id, name: applied.name });
       await refreshStatus();
       pushToast("success", "Profile 已通过 Mihomo 校验并加载");
     } catch (e) {
@@ -448,9 +492,7 @@ export default function App() {
     setError(null);
     try {
       await mihomoApi.profileRemove(id);
-      const nextProfiles = profiles.filter((item) => item.id !== id);
-      setProfiles(nextProfiles);
-      setSelectedProfileId((selected) => selected === id ? nextProfiles[0]?.id ?? null : selected);
+      setProfiles((current) => current.filter((item) => item.id !== id));
       pushToast("success", "Profile 已删除");
     } catch (e) {
       const message = errorMessage(e);
@@ -462,6 +504,8 @@ export default function App() {
   }
 
   async function selectProxy(group: string, proxy: string) {
+    if (proxyRequestInFlight.current) return;
+    proxyRequestInFlight.current = true;
     setProxyBusy(`${group}:${proxy}`);
     setError(null);
     try {
@@ -475,20 +519,26 @@ export default function App() {
       setError(message);
       pushToast("error", message);
     } finally {
+      proxyRequestInFlight.current = false;
       setProxyBusy(null);
     }
   }
 
   async function testProxyDelay(proxy: string) {
+    if (proxyRequestInFlight.current) return;
+    proxyRequestInFlight.current = true;
     setProxyBusy(`delay:${proxy}`);
     setError(null);
     try {
       const result = await mihomoApi.proxyDelay(proxy);
       setDelayByProxy((current) => ({ ...current, [proxy]: result.delay }));
+      setDelayStatusByProxy((current) => ({ ...current, [proxy]: "available" }));
       if (proxy === currentNode) setProxyPathState("healthy");
     } catch (e) {
+      setDelayStatusByProxy((current) => ({ ...current, [proxy]: "unavailable" }));
       if (proxy === currentNode) setProxyPathState("unavailable");
     } finally {
+      proxyRequestInFlight.current = false;
       setProxyBusy(null);
     }
   }
@@ -550,6 +600,10 @@ export default function App() {
     try {
       const current = await mihomoApi.systemProxyStatus();
       setProxyStatus(current);
+      if (current.owner === "external" || current.actualState === "externalEndpoint" || current.externalDetected) {
+        pushToast("info", "检测到外部系统代理；MioProxy 未接管，也不会从此控件覆盖它。");
+        return;
+      }
       await setSystemProxyEnabled(!current.enabled);
     } catch (e) {
       const message = errorMessage(e);
@@ -557,6 +611,44 @@ export default function App() {
       setError(message);
       pushToast("error", `读取系统代理状态失败：${message}`);
     }
+  }
+
+  async function requestTunTransition() {
+    if (tunActionInFlight.current || tunBusy) return;
+    tunActionInFlight.current = true;
+    setTunBusy(true);
+    setTunError(null);
+    let failed = false;
+    try {
+      const pendingRefresh = tunRefreshInFlight.current;
+      if (pendingRefresh) await pendingRefresh;
+      const current = await mihomoApi.tunStatus();
+      setTunSnapshot(current);
+      if (current.owner === "external" || current.actualState === "externalTun" || current.externalDetected) {
+        pushToast("info", "检测到外部 TUN；MioProxy 未接管，也不会从此控件覆盖它。");
+        return;
+      }
+      const currentlyOwned = current.owner === "mioproxy" && current.actualState === "mioproxyTun";
+      const enabled = !(currentlyOwned || current.desiredEnabled);
+      const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
+      if (enabled && (!selectedProfile || !selectedProfile.filePath)) {
+        setTunError("请先选择并下载一个 Profile，再启用 TUN。");
+        return;
+      }
+      setTunSnapshot({ ...current, status: enabled ? "starting" : "stopping", message: null, desiredEnabled: enabled });
+      const next = await mihomoApi.tunSetEnabled(enabled, enabled ? selectedProfile!.id : current.profileId);
+      setTunSnapshot(next);
+      pushToast("success", next.status === "running" ? "TUN 已开启" : "TUN 已关闭并完成恢复");
+    } catch (e) {
+      failed = true;
+      const message = errorMessage(e);
+      setTunError(message);
+      pushToast("error", `TUN 切换失败：${message}`);
+    } finally {
+      tunActionInFlight.current = false;
+      setTunBusy(false);
+    }
+    if (failed) await refreshTun(false);
   }
 
   async function toggleUpdatePreference(field: keyof UpdatePreferences, enabled: boolean) {
@@ -579,21 +671,56 @@ export default function App() {
     }
   }
 
+  useEffect(() => {
+    const pages: Page[] = ["home", "proxies", "profiles", "connections", "rules", "logs"];
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey && !event.shiftKey && !event.altKey) {
+        if (/^[1-6]$/.test(event.key)) {
+          event.preventDefault();
+          setPage(pages[Number(event.key) - 1]);
+          return;
+        }
+        if (event.key === ",") {
+          event.preventDefault();
+          setPage("settings");
+          return;
+        }
+        if (event.key.toLowerCase() === "f") {
+          const search = document.querySelector<HTMLInputElement>("[data-page-search]");
+          if (search) {
+            event.preventDefault();
+            search.focus();
+            search.select();
+          }
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
+  const connectionCount = connections.data ? connections.data.connections.length : null;
+
   return (
-    <div className="app-shell">
-      <Sidebar page={page} onChange={setPage} />
-      <main className="content">
-        {page === "home" && <DashboardPage status={status} coreState={coreState} version={version} proxyStatus={proxyStatus} proxyState={proxyState} traffic={traffic.snapshot} connectionCount={connections.data?.connections.length ?? 0} currentNode={currentNode} delay={currentNode ? delayByProxy[currentNode] ?? null : null} proxyPathState={proxyPathState} memory={connections.data?.memory ?? null} error={error} onRequestProxyTransition={() => void requestSystemProxyTransition()} />}
-        {page === "connections" && <ConnectionsPage state={connections} onRefresh={connections.refresh} onClose={connections.closeConnection} onCloseAll={connections.closeAllConnections} />}
-        {page === "logs" && <LogsPage />}
-        {page === "profiles" && <ProfilesPage profiles={profiles} selectedId={selectedProfileId} busyId={profileBusyId} error={error} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} />}
-        {page === "proxies" && <ProxiesPage data={proxies} loading={proxyLoading} busyProxy={proxyBusy} delayByProxy={delayByProxy} profilesLoaded={profilesLoaded} profileCount={profiles.length} onRefresh={refreshProxies} onSelect={selectProxy} onDelay={testProxyDelay} />}
-        {page === "rules" && <RulesPage running={coreReady} />}
-        {page === "dns" && <DnsPage profileId={selectedProfileId} />}
-        {page === "overrides" && <OverridesPage profileId={selectedProfileId} />}
-        {page === "tun" && <TunPage profileId={selectedProfileId} coreRunning={coreReady} systemProxyEnabled={Boolean(proxyStatus?.enabled)} />}
-        {page === "settings" && <SettingsPage status={status} coreState={coreState} proxyStatus={proxyStatus} proxyState={proxyState} serviceConnection={serviceReconnectVisible ? serviceConnection : null} startup={startup} updatePreferences={updatePreferences} busy={settingsBusy} onRequestProxyTransition={requestSystemProxyTransition} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} onToggleUpdatePreference={toggleUpdatePreference} appUpdate={{ ...updateStatus, checking: updateChecking, downloading: updateDownloading, installing: updateInstalling, downloaded: updateDownloaded, progress: updateProgress, availableVersion: availableUpdate?.version ?? null, releaseNotes: availableUpdate?.body ?? null, error: updateError }} onCheckForUpdate={() => void checkForUpdate()} onInstallUpdate={() => void installUpdate()} coreUpdate={coreUpdate} coreUpdateBusy={coreUpdateBusy} onCheckCoreUpdate={() => void checkCoreUpdate()} onInstallCoreUpdate={() => void installCoreUpdate()} diagnosticBusy={diagnosticBusy} diagnosticPath={diagnosticPath} onGenerateDiagnosticBundle={() => void generateDiagnosticBundle()} />}
-      </main>
+    <div className="app-frame">
+      <PreviewTitleBar />
+      <div className="app-shell">
+        <Sidebar page={page} onChange={setPage} />
+        <main className="content" id="main-content">
+          {page === "home" && <DashboardPage status={status} coreState={coreState} version={version} proxyStatus={proxyStatus} proxyState={proxyState} tunStatus={tunSnapshot} tunBusy={tunBusy} traffic={traffic.snapshot} connectionCount={connectionCount} currentNode={currentNode} delay={currentNode ? delayByProxy[currentNode] ?? null : null} proxyPathState={proxyPathState} memory={connections.data?.memory ?? null} selectedProfile={selectedProfile} appliedProfileName={appliedProfileSession?.name ?? null} error={error} tunError={tunError} onRequestProxyTransition={() => void requestSystemProxyTransition()} onRequestTunTransition={() => void requestTunTransition()} onNavigate={setPage} />}
+          {page === "connections" && <ConnectionsPage state={connections} onRefresh={connections.refresh} onClose={connections.closeConnection} onCloseAll={connections.closeAllConnections} />}
+          {page === "logs" && <LogsPage state={logs} />}
+          {page === "profiles" && <ProfilesPage profiles={profiles} selectedId={selectedProfileId} appliedId={appliedProfileSession?.id ?? null} busyId={profileBusyId} error={error} onSelect={setSelectedProfileId} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} onNavigate={setPage} />}
+          {page === "proxies" && <ProxiesPage data={proxies} loading={proxyLoading} busyProxy={proxyBusy} delayByProxy={delayByProxy} delayStatusByProxy={delayStatusByProxy} profilesLoaded={profilesLoaded} profileCount={profiles.length} onRefresh={refreshProxies} onSelect={selectProxy} onDelay={testProxyDelay} />}
+          {page === "rules" && <RulesPage running={coreReady} />}
+          {page === "dns" && <DnsPage profileId={selectedProfileId} />}
+          {page === "overrides" && <OverridesPage profileId={selectedProfileId} />}
+          {page === "tun" && <TunPage profileId={selectedProfileId} coreRunning={coreReady} systemProxyEnabled={Boolean(proxyStatus?.enabled)} snapshot={tunSnapshot} loading={tunBusy} error={tunError} onRequestTransition={() => void requestTunTransition()} onNavigate={setPage} />}
+          {page === "settings" && <SettingsPage status={status} coreState={coreState} proxyStatus={proxyStatus} proxyState={proxyState} tunStatus={tunSnapshot} tunBusy={tunBusy} serviceConnection={serviceReconnectVisible || serviceConnection?.reachable ? serviceConnection : null} startup={startup} updatePreferences={updatePreferences} busy={settingsBusy} onRequestProxyTransition={() => void requestSystemProxyTransition()} onRequestTunTransition={() => void requestTunTransition()} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} onToggleUpdatePreference={toggleUpdatePreference} appUpdate={{ ...updateStatus, checking: updateChecking, downloading: updateDownloading, installing: updateInstalling, downloaded: updateDownloaded, progress: updateProgress, availableVersion: availableUpdate?.version ?? null, releaseNotes: availableUpdate?.body ?? null, error: updateError }} onCheckForUpdate={() => void checkForUpdate()} onInstallUpdate={() => void installUpdate()} coreUpdate={coreUpdate} coreUpdateBusy={coreUpdateBusy} onCheckCoreUpdate={() => void checkCoreUpdate()} onInstallCoreUpdate={() => void installCoreUpdate()} diagnosticBusy={diagnosticBusy} diagnosticPath={diagnosticPath} onGenerateDiagnosticBundle={() => void generateDiagnosticBundle()} onNavigate={setPage} />}
+        </main>
+        <RuntimeStatusBar status={status} coreState={coreState} selectedProfileName={selectedProfile?.name ?? null} appliedProfileName={appliedProfileSession?.name ?? null} currentNode={currentNode} traffic={traffic.snapshot} connectionCount={connectionCount} proxyStatus={proxyStatus} tunStatus={tunSnapshot} onNavigate={setPage} />
+      </div>
       <ToastHost toasts={toasts} onDismiss={dismissToast} />
     </div>
   );

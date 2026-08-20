@@ -116,7 +116,7 @@ mod windows_impl {
     #[cfg(not(test))]
     use std::os::windows::io::AsRawHandle;
 
-    use serde::Deserialize;
+    use serde::{Deserialize, Deserializer};
     use serde_json::json;
     use tokio::{
         io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -968,11 +968,49 @@ mod windows_impl {
     #[derive(Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct PersistedServiceTunState {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_previous_override"
+        )]
         previous_override: Option<String>,
         profile_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         snapshot: Option<crate::tun::NetworkSnapshot>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum TunRuntimeRestorePath<'a> {
+        ActiveRuntime,
+        LegacyOverride(&'a str),
+    }
+
+    fn normalize_previous_override(previous_override: Option<String>) -> Option<String> {
+        previous_override.filter(|content| !content.trim().is_empty())
+    }
+
+    fn deserialize_previous_override<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<String>::deserialize(deserializer).map(normalize_previous_override)
+    }
+
+    fn tun_runtime_restore_path(previous_override: Option<&str>) -> TunRuntimeRestorePath<'_> {
+        match previous_override {
+            Some(content) if !content.trim().is_empty() => {
+                TunRuntimeRestorePath::LegacyOverride(content)
+            }
+            _ => TunRuntimeRestorePath::ActiveRuntime,
+        }
+    }
+
+    fn controller_reload_diagnostic_stage(error: &str) -> &'static str {
+        if error.starts_with("Mihomo Controller 拒绝请求") {
+            "controller-reload"
+        } else {
+            "controller-communication"
+        }
     }
 
     #[derive(Serialize, Deserialize)]
@@ -1147,7 +1185,7 @@ mod windows_impl {
         fn write_tun_persisted(&self) -> Result<(), String> {
             let tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
             let state = PersistedServiceTunState {
-                previous_override: tun.previous_override.clone(),
+                previous_override: normalize_previous_override(tun.previous_override.clone()),
                 profile_id: tun
                     .profile_id
                     .clone()
@@ -1928,20 +1966,34 @@ rules:
             if !self.owned_core_ready().await? {
                 return Err("Service Core 尚未 Ready，拒绝重载 Runtime 配置".to_string());
             }
-            let value = config::active_runtime_value_at(&self.data_dir)?
-                .ok_or_else(|| "没有可用于 TUN 的活动 Runtime 基线".to_string())?;
+            let value = config::active_runtime_value_at(&self.data_dir)
+                .map_err(|error| format!("本地 Runtime 生成/校验阶段失败：{error}"))?
+                .ok_or_else(|| {
+                    "本地 Runtime 生成/校验阶段失败：没有活动 Runtime 基线".to_string()
+                })?;
             if config::tun_enabled_in_value(&value) != expected_tun {
                 return Err(format!(
-                    "生成的 Runtime TUN 状态不一致：期望 {expected_tun}"
+                    "本地 Runtime 生成/校验阶段失败：TUN 状态不一致，期望 {expected_tun}"
                 ));
             }
             let yaml = serde_yaml::to_string(&value)
-                .map_err(|error| format!("生成活动 Runtime 配置失败：{error}"))?;
+                .map_err(|error| format!("本地 Runtime YAML 生成阶段失败：{error}"))?;
             let candidate = config::candidate_path_at(&self.data_dir);
             let stable = self.config_path();
             let previous_stable = config::read_text_file_at(&stable, "读取当前 Runtime 配置")?
                 .ok_or_else(|| "当前 Runtime 配置不存在，拒绝无回滚点重载".to_string())?;
-            write_atomic(&candidate, yaml.as_bytes())?;
+            write_atomic(&candidate, yaml.as_bytes())
+                .map_err(|error| format!("保存 Runtime 候选配置失败：{error}"))?;
+            let diagnostics_note =
+                |stage: &str, error: &str| match config::preserve_failed_runtime_diagnostics_at(
+                    &self.data_dir,
+                    &yaml,
+                    stage,
+                    error,
+                ) {
+                    Ok(()) => "；Runtime 诊断已保存".to_string(),
+                    Err(_) => "；Runtime 诊断保存失败".to_string(),
+                };
             let load = match mihomo::api_put(
                 "/configs?force=true",
                 json!({ "path": candidate.display().to_string() }),
@@ -1949,10 +2001,17 @@ rules:
             .await
             {
                 Ok(_) => match config::verify_controller_runtime(Some(expected_tun)).await {
-                    Ok(()) => write_atomic(&stable, yaml.as_bytes()),
-                    Err(error) => Err(error),
+                    Ok(()) => write_atomic(&stable, yaml.as_bytes())
+                        .map_err(|error| format!("提交稳定 Runtime 阶段失败：{error}")),
+                    Err(error) => {
+                        let note = diagnostics_note("read-back-verification", &error);
+                        Err(format!("Controller 回读验证阶段失败：{error}{note}"))
+                    }
                 },
-                Err(error) => Err(error),
+                Err(error) => {
+                    let note = diagnostics_note(controller_reload_diagnostic_stage(&error), &error);
+                    Err(format!("Mihomo /configs 重载阶段失败：{error}{note}"))
+                }
             };
             if let Err(error) = load {
                 let stable_restore = write_atomic(&stable, previous_stable.as_bytes());
@@ -2141,10 +2200,12 @@ rules:
             let persisted = self.read_tun_persisted()?;
             let (previous, profile_id, has_session) = {
                 let in_memory = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
-                let previous = persisted
-                    .as_ref()
-                    .map(|state| state.previous_override.clone())
-                    .unwrap_or_else(|| in_memory.previous_override.clone());
+                let previous = normalize_previous_override(
+                    persisted
+                        .as_ref()
+                        .map(|state| state.previous_override.clone())
+                        .unwrap_or_else(|| in_memory.previous_override.clone()),
+                );
                 let profile_id = persisted
                     .as_ref()
                     .map(|state| state.profile_id.clone())
@@ -2155,6 +2216,7 @@ rules:
                     persisted.is_some() || in_memory.profile_id.is_some(),
                 )
             };
+            let restore_path = tun_runtime_restore_path(previous.as_deref());
             if !has_session {
                 config::set_tun_enabled_at(&self.data_dir, false)?;
                 if self.owned_core_ready().await? {
@@ -2179,7 +2241,7 @@ rules:
                 tun.status = crate::tun::TunStatus::Stopping;
                 tun.message = None;
             }
-            if let Some(previous) = previous.as_deref() {
+            if let TunRuntimeRestorePath::LegacyOverride(previous) = restore_path {
                 if let Err(error) = config::restore_override_content_at(&self.data_dir, previous) {
                     let message = format!("迁移旧 TUN 会话的 Override 快照失败：{error}");
                     if let Ok(mut tun) = self.tun.lock() {
@@ -2197,44 +2259,49 @@ rules:
                 }
                 return Err(message);
             }
-            let Some(profile_id) = profile_id else {
-                let message = "停止 TUN 缺少 Profile".to_string();
-                if let Ok(mut tun) = self.tun.lock() {
-                    tun.status = crate::tun::TunStatus::Error;
-                    tun.message = Some(message.clone());
-                }
-                return Err(message);
-            };
             let core_ready = self.owned_core_ready().await?;
             if self.managed_core_pid()?.is_some() && !core_ready {
-                let message = "停止 TUN 时 Service Core 未处于 Ready".to_string();
+                let message = "TUN 关闭失败：Service Core 未处于 Ready".to_string();
                 if let Ok(mut tun) = self.tun.lock() {
                     tun.status = crate::tun::TunStatus::Error;
                     tun.message = Some(message.clone());
                 }
                 return Err(message);
             }
-            let restore = if previous.is_some() && core_ready {
-                // Legacy sessions wrote TUN into local-override.yaml. Rebuild
-                // their active base exactly once after restoring that snapshot.
-                self.apply_profile(&profile_id).await.map(|_| ())
-            } else if previous.is_some() {
-                let built = config::build_value_at(&self.data_dir, &profile_id)?;
-                let yaml = serde_yaml::to_string(&built.value)
-                    .map_err(|error| format!("生成旧 TUN 恢复配置失败：{error}"))?;
-                config::commit_runtime_state_at(
-                    &self.data_dir,
-                    &profile_id,
-                    &built.base_value,
-                    &yaml,
-                )
-            } else if core_ready {
-                self.apply_active_runtime(false).await
-            } else {
-                config::restore_active_runtime_config_at(&self.data_dir).map(|_| ())
+            let restore = match (restore_path, core_ready) {
+                (TunRuntimeRestorePath::LegacyOverride(_), true) => {
+                    match profile_id.as_deref() {
+                        Some(profile_id) => {
+                            // Legacy sessions wrote TUN into local-override.yaml. Rebuild
+                            // their active base exactly once after restoring that snapshot.
+                            self.apply_profile(profile_id).await.map(|_| ())
+                        }
+                        None => Err("旧 TUN 会话缺少 Profile".to_string()),
+                    }
+                }
+                (TunRuntimeRestorePath::LegacyOverride(_), false) => match profile_id.as_deref() {
+                    Some(profile_id) => (|| {
+                        let built = config::build_value_at(&self.data_dir, profile_id)?;
+                        let yaml = serde_yaml::to_string(&built.value)
+                            .map_err(|error| format!("生成旧 TUN 恢复配置失败：{error}"))?;
+                        config::commit_runtime_state_at(
+                            &self.data_dir,
+                            profile_id,
+                            &built.base_value,
+                            &yaml,
+                        )
+                    })(),
+                    None => Err("旧 TUN 会话缺少 Profile".to_string()),
+                },
+                (TunRuntimeRestorePath::ActiveRuntime, true) => {
+                    self.apply_active_runtime(false).await
+                }
+                (TunRuntimeRestorePath::ActiveRuntime, false) => {
+                    config::restore_active_runtime_config_at(&self.data_dir).map(|_| ())
+                }
             };
             if let Err(error) = restore {
-                let message = format!("停止 TUN 后恢复配置失败：{error}");
+                let message = format!("TUN 关闭失败：{error}");
                 if let Ok(mut tun) = self.tun.lock() {
                     tun.status = crate::tun::TunStatus::Error;
                     tun.message = Some(message.clone());
@@ -2243,7 +2310,7 @@ rules:
             }
             if core_ready {
                 if let Err(error) = config::verify_controller_runtime(Some(false)).await {
-                    let message = format!("停止 TUN 后 Controller 回读失败：{error}");
+                    let message = format!("TUN 关闭失败：Controller 回读验证失败：{error}");
                     if let Ok(mut tun) = self.tun.lock() {
                         tun.status = crate::tun::TunStatus::Error;
                         tun.message = Some(message.clone());
@@ -2251,7 +2318,7 @@ rules:
                     return Err(message);
                 }
                 if !self.owned_core_ready().await? {
-                    let message = "停止 TUN 后 Service Core 未保持 Ready".to_string();
+                    let message = "TUN 关闭失败：Service Core 未保持 Ready".to_string();
                     if let Ok(mut tun) = self.tun.lock() {
                         tun.status = crate::tun::TunStatus::Error;
                         tun.message = Some(message.clone());
@@ -2292,9 +2359,10 @@ rules:
             let Some(persisted) = self.read_tun_persisted()? else {
                 return Ok(None);
             };
-            let legacy_restore = match persisted.previous_override.as_deref() {
-                Some(previous) => config::restore_override_content_at(&self.data_dir, previous)
-                    .and_then(|_| {
+            let restore_path = tun_runtime_restore_path(persisted.previous_override.as_deref());
+            let legacy_restore = match restore_path {
+                TunRuntimeRestorePath::LegacyOverride(previous) => {
+                    config::restore_override_content_at(&self.data_dir, previous).and_then(|_| {
                         config::set_tun_enabled_at(&self.data_dir, false)?;
                         let built = config::build_value_at(&self.data_dir, &persisted.profile_id)?;
                         let yaml = serde_yaml::to_string(&built.value)
@@ -2305,10 +2373,13 @@ rules:
                             &built.base_value,
                             &yaml,
                         )
-                    }),
-                None => config::set_tun_enabled_at(&self.data_dir, false).and_then(|_| {
-                    config::restore_active_runtime_config_at(&self.data_dir).map(|_| ())
-                }),
+                    })
+                }
+                TunRuntimeRestorePath::ActiveRuntime => {
+                    config::set_tun_enabled_at(&self.data_dir, false).and_then(|_| {
+                        config::restore_active_runtime_config_at(&self.data_dir).map(|_| ())
+                    })
+                }
             };
             let result = legacy_restore;
             match result {
@@ -2326,7 +2397,8 @@ rules:
                     let mut tun = self.tun.lock().map_err(|_| "Service TUN 状态锁异常")?;
                     tun.status = crate::tun::TunStatus::Error;
                     tun.message = Some(format!("Service TUN 启动恢复失败：{error}"));
-                    tun.previous_override = persisted.previous_override;
+                    tun.previous_override =
+                        normalize_previous_override(persisted.previous_override);
                     tun.profile_id = Some(persisted.profile_id);
                     tun.snapshot = persisted.snapshot;
                     Ok(tun.message.clone())
@@ -2992,6 +3064,60 @@ rules:
         }
 
         #[test]
+        fn empty_previous_override_marker_migrates_to_active_runtime() {
+            for previous_override in ["", "  \r\n\t"] {
+                let content = serde_json::json!({
+                    "previousOverride": previous_override,
+                    "profileId": "profile-1",
+                });
+                let state = serde_json::from_value::<PersistedServiceTunState>(content).unwrap();
+
+                assert!(state.previous_override.is_none());
+                assert_eq!(
+                    tun_runtime_restore_path(state.previous_override.as_deref()),
+                    TunRuntimeRestorePath::ActiveRuntime
+                );
+            }
+        }
+
+        #[test]
+        fn non_empty_previous_override_keeps_legacy_restore_path() {
+            let previous_override = "rules:\n  - MATCH,DIRECT\n";
+            let state = serde_json::from_value::<PersistedServiceTunState>(serde_json::json!({
+                "previousOverride": previous_override,
+                "profileId": "profile-1",
+            }))
+            .unwrap();
+
+            assert_eq!(state.previous_override.as_deref(), Some(previous_override));
+            assert_eq!(
+                tun_runtime_restore_path(state.previous_override.as_deref()),
+                TunRuntimeRestorePath::LegacyOverride(previous_override)
+            );
+        }
+
+        #[test]
+        fn controller_reload_diagnostics_distinguish_rejection_from_communication() {
+            assert_eq!(
+                controller_reload_diagnostic_stage(
+                    "Mihomo Controller 拒绝请求（HTTP 400 Bad Request）：invalid config"
+                ),
+                "controller-reload"
+            );
+            for error in [
+                "Mihomo Controller 请求构建失败：invalid URL",
+                "Mihomo Controller 通信失败：connection refused",
+                "读取 Mihomo Controller 响应失败：connection reset",
+                "解析 Mihomo Controller 响应失败：invalid JSON",
+            ] {
+                assert_eq!(
+                    controller_reload_diagnostic_stage(error),
+                    "controller-communication"
+                );
+            }
+        }
+
+        #[test]
         fn serializes_service_command_fields_in_camel_case() {
             let value = serde_json::to_value(ServiceCommand::TunSetEnabled {
                 enabled: true,
@@ -3037,6 +3163,13 @@ rules:
                     .unwrap()
                     .as_nanos()
             );
+            fs::create_dir_all(&data_dir).unwrap();
+            let stopped_core = serde_json::to_vec(&PersistedCoreState {
+                format_version: CORE_STATE_FORMAT_VERSION,
+                desired_running: false,
+            })
+            .unwrap();
+            fs::write(data_dir.join(CORE_STATE_FILE), stopped_core).unwrap();
             std::env::set_var("MIOPROXY_TEST_PIPE_NAME", &test_pipe);
             let (sender, receiver) = watch::channel(false);
             let daemon = tokio::spawn(run_service_daemon(
@@ -3054,6 +3187,12 @@ rules:
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            if client.is_none() && daemon.is_finished() {
+                panic!(
+                    "Service daemon exited before pipe readiness: {:?}",
+                    daemon.await
+                );
             }
             let (mut client, token) = client.expect("Service named pipe did not become ready");
             let request = ServiceRequest {

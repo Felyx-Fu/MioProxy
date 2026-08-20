@@ -270,23 +270,63 @@ async fn api_get_with_timeout(path: &str, timeout: Duration) -> Result<Value, St
 
 async fn api_put_with_secret(path: &str, payload: Value, bearer: &str) -> Result<Value, String> {
     let url = format!("http://{CONTROLLER}{path}");
-    let response = Client::builder()
+    let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
-        .map_err(|e| e.to_string())?
+        .map_err(|error| {
+            format!(
+                "Mihomo Controller 请求构建失败：{}",
+                logs::redact_controller_response(&error.to_string())
+            )
+        })?;
+    let request = client
         .put(url)
         .bearer_auth(bearer)
         .json(&payload)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?;
-    let body = response.text().await.map_err(|e| e.to_string())?;
+        .build()
+        .map_err(|error| {
+            format!(
+                "Mihomo Controller 请求构建失败：{}",
+                logs::redact_controller_response(&error.to_string())
+            )
+        })?;
+    let response = client.execute(request).await.map_err(|error| {
+        format!(
+            "Mihomo Controller 通信失败：{}",
+            logs::redact_controller_response(&error.to_string())
+        )
+    })?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| {
+        format!(
+            "读取 Mihomo Controller 响应失败：{}",
+            logs::redact_controller_response(&error.to_string())
+        )
+    })?;
+    if !status.is_success() {
+        let reason = status.canonical_reason().unwrap_or("Unknown Status");
+        let safe_body = logs::redact_controller_response(&body);
+        let detail = if safe_body.trim().is_empty() {
+            "响应体为空"
+        } else {
+            safe_body.trim()
+        };
+        return Err(format!(
+            "Mihomo Controller 拒绝请求（HTTP {} {}）：{detail}",
+            status.as_u16(),
+            reason
+        ));
+    }
     if body.trim().is_empty() {
         return Ok(Value::Null);
     }
-    serde_json::from_str(&body).map_err(|e| e.to_string())
+    serde_json::from_str(&body).map_err(|error| {
+        format!(
+            "解析 Mihomo Controller 响应失败：{}；响应：{}",
+            logs::redact_controller_response(&error.to_string()),
+            logs::redact_controller_response(&body)
+        )
+    })
 }
 
 pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String> {

@@ -1,44 +1,47 @@
-import { Activity, Braces, FileText, Globe2, Home, Network, Radio, Route, Settings2, Shield, Waypoints, Workflow } from "lucide-react";
+import { FileText, Gauge, Network, Radio, Settings2, SlidersHorizontal, Workflow } from "lucide-react";
 
 export type Page = "home" | "connections" | "logs" | "profiles" | "proxies" | "rules" | "dns" | "overrides" | "tun" | "settings";
 
-const items: Array<{ id: Page; label: string; icon: typeof Home }> = [
-  { id: "home", label: "Dashboard", icon: Home },
-  { id: "connections", label: "连接", icon: Radio },
-  { id: "logs", label: "日志", icon: FileText },
-  { id: "profiles", label: "订阅", icon: Globe2 },
-  { id: "proxies", label: "节点", icon: Network },
-  { id: "rules", label: "规则", icon: Workflow },
-  { id: "dns", label: "DNS", icon: Waypoints },
-  { id: "overrides", label: "Override", icon: Braces },
-  { id: "tun", label: "TUN", icon: Route },
-  { id: "settings", label: "设置", icon: Settings2 },
+const primaryItems: Array<{ id: Page; label: string; icon: typeof Gauge; shortcut: string }> = [
+  { id: "home", label: "Overview", icon: Gauge, shortcut: "Ctrl+1" },
+  { id: "proxies", label: "Proxies", icon: Network, shortcut: "Ctrl+2" },
+  { id: "profiles", label: "Profiles", icon: SlidersHorizontal, shortcut: "Ctrl+3" },
+  { id: "connections", label: "Connections", icon: Radio, shortcut: "Ctrl+4" },
+  { id: "rules", label: "Rules", icon: Workflow, shortcut: "Ctrl+5" },
+  { id: "logs", label: "Logs", icon: FileText, shortcut: "Ctrl+6" },
 ];
 
 export function Sidebar({ page, onChange }: { page: Page; onChange: (page: Page) => void }) {
-  return (
-    <aside className="sidebar">
-      <div className="brand">
-        <div className="brand-mark"><Shield size={19} /></div>
-        <div>
-          <strong>MioProxy</strong>
-          <span>Network Client</span>
-        </div>
-      </div>
+  const primaryPage = primaryItems.some((item) => item.id === page) ? page : null;
 
-      <nav>
-        {items.map(({ id, label, icon: Icon }) => (
-          <button key={id} className={page === id ? "nav-item active" : "nav-item"} onClick={() => onChange(id)}>
-            <Icon size={18} />
+  return (
+    <aside className="sidebar" aria-label="Main navigation">
+      <nav className="sidebar-nav">
+        {primaryItems.map(({ id, label, icon: Icon, shortcut }) => (
+          <button
+            key={id}
+            type="button"
+            className={primaryPage === id ? "nav-item active" : "nav-item"}
+            onClick={() => onChange(id)}
+            aria-current={primaryPage === id ? "page" : undefined}
+            title={`${label} (${shortcut})`}
+          >
+            <Icon size={16} strokeWidth={1.8} />
             <span>{label}</span>
           </button>
         ))}
       </nav>
 
-      <div className="sidebar-foot">
-        <Activity size={16} />
-        <span>V0.6 Config Layer</span>
-      </div>
+      <button
+        type="button"
+        className={page === "settings" || page === "dns" || page === "tun" || page === "overrides" ? "nav-item nav-settings active" : "nav-item nav-settings"}
+        onClick={() => onChange("settings")}
+        aria-current={page === "settings" ? "page" : undefined}
+        title="Settings (Ctrl+,)"
+      >
+        <Settings2 size={16} strokeWidth={1.8} />
+        <span>Settings</span>
+      </button>
     </aside>
   );
 }
