@@ -31,6 +31,7 @@ pub fn should_start_minimized() -> bool {
 pub fn apply_start_minimized(app: &AppHandle) {
     if should_start_minimized() {
         if let Some(window) = app.get_webview_window("main") {
+            let _ = window.set_skip_taskbar(true);
             let _ = window.hide();
         }
     }

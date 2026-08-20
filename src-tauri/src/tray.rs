@@ -118,9 +118,11 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
 fn toggle_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
+            let _ = window.set_skip_taskbar(true);
             let _ = window.hide();
         } else {
             let _ = window.unminimize();
+            let _ = window.set_skip_taskbar(false);
             let _ = window.show();
             let _ = window.set_focus();
         }
