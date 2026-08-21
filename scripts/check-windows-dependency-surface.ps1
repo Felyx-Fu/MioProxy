@@ -11,7 +11,7 @@ if ([string]::IsNullOrWhiteSpace($ManifestPath)) {
     $ManifestPath = Join-Path $scriptDirectory '..\src-tauri\Cargo.toml'
 }
 
-$tree = & cargo tree --manifest-path $ManifestPath --locked --target $Target 2>&1
+$tree = & cargo tree --quiet --manifest-path $ManifestPath --locked --target $Target 2>&1
 if ($LASTEXITCODE -ne 0) {
     throw "Unable to inspect the locked dependency tree for target $Target."
 }
