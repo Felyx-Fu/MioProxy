@@ -246,6 +246,17 @@ function Invoke-HealthProbe([ValidateSet('tun', 'proxy')][string]$Path, [int]$Mi
     }
 }
 
+function Invoke-BothPathHealth([int]$MixedPort) {
+    $paths = @(
+        (Invoke-HealthProbe 'tun' $MixedPort),
+        (Invoke-HealthProbe 'proxy' $MixedPort)
+    )
+    [pscustomobject]@{
+        Paths = $paths
+        Passed = (@($paths | Where-Object { -not $_.Passed }).Count -eq 0)
+    }
+}
+
 function Assert-BothOn($Observation, [string]$Context) {
     if (-not $Observation.CoreReady) { throw "${Context}: managed Core is not Ready." }
     if ($Observation.Proxy.State -ne 'mioproxy') { throw "${Context}: System Proxy ownership is '$($Observation.Proxy.State)', not MioProxy." }
@@ -281,9 +292,9 @@ try {
     Assert-BothOn $baseline 'Precondition'
     if ([string]::IsNullOrWhiteSpace($baseline.TunProfileId)) { throw 'Precondition: running MioProxy TUN has no recoverable Profile id.' }
 
-    $bothOnHealth = Invoke-HealthProbe 'tun' $baseline.MixedPort
+    $bothOnHealth = Invoke-BothPathHealth $baseline.MixedPort
     $result.Tests += [pscustomobject]@{ Name = 'both-on'; Observation = Get-ObservationSummary $baseline; Health = $bothOnHealth }
-    if (-not $bothOnHealth.Passed) { throw 'Both-on domestic/foreign HTTPS or DNS probe failed.' }
+    if (-not $bothOnHealth.Passed) { throw 'Both-on forced-TUN or explicit managed-proxy domestic/foreign HTTPS or DNS probe failed.' }
 
     Write-Host 'Disable MioProxy System Proxy in the GUI now. Keep MioProxy TUN ON and do not touch any external proxy/TUN. Press Enter when complete.' -ForegroundColor Yellow
     [void](Read-Host)
@@ -308,9 +319,9 @@ try {
     [void](Assert-NoForeignTun 'Before TUN restore')
     [void](Invoke-ServiceCommand @{ command = 'tunSetEnabled'; enabled = $true; profileId = $baseline.TunProfileId; systemProxyEnabled = $true })
     $final = Wait-ForObservation 'both-on final restore' { param($o) $o.Proxy.State -eq 'mioproxy' -and $o.TunOwned -and $o.ForeignTun.Count -eq 0 }
-    $finalHealth = Invoke-HealthProbe 'tun' $final.MixedPort
+    $finalHealth = Invoke-BothPathHealth $final.MixedPort
     $result.Tests += [pscustomobject]@{ Name = 'final-both-on'; Observation = Get-ObservationSummary $final; Health = $finalHealth }
-    if (-not $finalHealth.Passed) { throw 'Final both-on domestic/foreign HTTPS or DNS probe failed.' }
+    if (-not $finalHealth.Passed) { throw 'Final both-on forced-TUN or explicit managed-proxy domestic/foreign HTTPS or DNS probe failed.' }
     $result.FinalStateRestored = $final.Proxy.State -eq $baseline.Proxy.State -and $final.TunState -eq $baseline.TunState -and $final.Network.Hash -eq $baseline.Network.Hash
     if (-not $result.FinalStateRestored) { throw 'Final managed network state does not match the initial state.' }
     $baselineExternalPids = (@($baseline.ExternalMihomoPids | Sort-Object) -join ',')

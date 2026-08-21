@@ -63,6 +63,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run mihomo:setup
 
+      - name: Verify pinned Mihomo packaging and source availability
+        shell: pwsh
+        run: |
+          & powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/verify-mihomo-packaging.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Verify Windows dependency surface
         shell: pwsh
         run: |

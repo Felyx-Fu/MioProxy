@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "project": "MetaCubeX/mihomo",
+  "tag": "v1.19.30",
+  "version": "1.19.30",
+  "asset": "mihomo-windows-amd64-compatible-v1.19.30.zip",
+  "assetUrl": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.30/mihomo-windows-amd64-compatible-v1.19.30.zip",
+  "releaseUrl": "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.30",
+  "sourceUrl": "https://github.com/MetaCubeX/mihomo/archive/refs/tags/v1.19.30.tar.gz",
+  "sha256": "289fde5e29d37a5b3326480590d8b3551c5bf7f8737290355c19bce74d57a563"
+}

@@ -45,16 +45,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: npm run mihomo:setup
 
-      - name: Verify third-party packaging notice
+      - name: Verify pinned Mihomo packaging and source availability
         shell: pwsh
         run: |
-          if (-not (Test-Path -LiteralPath src-tauri/binaries/THIRD_PARTY_NOTICES.txt)) {
-            throw "Mihomo third-party notice is missing from the packaged resource directory."
-          }
-          $config = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
-          if (@($config.bundle.resources) -notcontains 'binaries') {
-            throw "Tauri resources no longer include the binaries directory."
-          }
+          & powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/verify-mihomo-packaging.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify Windows dependency surface
         shell: pwsh

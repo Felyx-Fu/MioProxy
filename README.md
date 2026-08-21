@@ -50,9 +50,11 @@ npm run service:build
 npm run tauri dev
 ```
 
-`mihomo:setup` downloads the latest stable Windows amd64-compatible Mihomo
-release, verifies its published SHA-256 digest, and places the sidecar at
-`src-tauri/binaries/mihomo-x86_64-pc-windows-msvc.exe`.
+`mihomo:setup` resolves the repository-pinned Mihomo release in
+`config/mihomo-release.json`, verifies the upstream SHA-256 digest, and places
+the exact sidecar at `src-tauri/binaries/mihomo-x86_64-pc-windows-msvc.exe`.
+The current pinned release is Mihomo v1.19.30; the packaged notice records its
+asset, digest, release page, and source archive.
 
 ## Runtime defaults
 
@@ -136,8 +138,9 @@ All five release version sources must agree: `package.json`, `package-lock.json`
 
 Mihomo is GPL-3.0 software distributed as an independent sidecar. The
 repository notice is [THIRD_PARTY.md](THIRD_PARTY.md), and the packaged resource
-notice is `binaries/THIRD_PARTY_NOTICES.txt`. It contains the upstream source,
-release and license links required for redistribution information. MioProxy's
+notice is `binaries/THIRD_PARTY_NOTICES.txt`. It contains the pinned upstream
+version, digest, source, release, and license links required for redistribution
+information. MioProxy's
 own source remains private/unlicensed until a separate licensing decision is
 made.
 

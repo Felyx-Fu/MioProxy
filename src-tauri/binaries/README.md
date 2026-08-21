@@ -6,9 +6,11 @@ Run from the project root on Windows:
 npm run mihomo:setup
 ```
 
-The setup script downloads the latest stable `mihomo-windows-amd64-compatible` release and places it here as:
+The setup script resolves the repository-pinned Mihomo release in
+`config/mihomo-release.json`, verifies the upstream SHA-256 digest, and places
+the exact Windows asset here as:
 
-`mihomo-x86_64-pc-windows-msvc.exe`
+`mihomo-x86_64-pc-windows-msvc.exe` (currently Mihomo v1.19.30)
 
 That target-triple suffix is required by Tauri's `externalBin` sidecar convention.
 
@@ -20,9 +22,10 @@ npm run service:build
 
 The service binary is written as `mioproxy-service-x86_64-pc-windows-msvc.exe`.
 
-`THIRD_PARTY_NOTICES.txt` is packaged with this resource directory and contains
-the Mihomo GPL-3.0 notice and source-availability links. Keep it with any
-redistributed Mihomo sidecar artifact.
+`THIRD_PARTY_NOTICES.txt` is packaged with this resource directory and records
+the exact bundled Mihomo version, asset digest, GPL-3.0 notice, and
+source-availability links. Keep it with any redistributed Mihomo sidecar
+artifact.
 Install it once from an elevated terminal, using the same data directory as the
 GUI:
 
