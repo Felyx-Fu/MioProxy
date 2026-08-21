@@ -641,10 +641,22 @@ export default function App() {
         setTunError("请先选择并下载一个 Profile，再启用 TUN。");
         return;
       }
-      setTunSnapshot({ ...current, status: enabled ? "starting" : "stopping", message: null, desiredEnabled: enabled });
+      setTunSnapshot({
+        ...current,
+        status: enabled ? "starting" : "stopping",
+        projection: enabled ? "enabling" : "disabling",
+        message: null,
+        desiredEnabled: enabled,
+      });
       const next = await mihomoApi.tunSetEnabled(enabled, enabled ? selectedProfile!.id : current.profileId);
       setTunSnapshot(next);
-      pushToast("success", next.status === "running" ? "TUN 已开启" : "TUN 已关闭并完成恢复");
+      if (next.projection === "recovering" || next.projection === "waitingForService") {
+        pushToast("info", "Service 正在恢复；已保留 TUN 目标状态，未重复执行未确认的操作。");
+      } else if (next.projection === "external") {
+        pushToast("info", "检测到外部 TUN；MioProxy 未接管，也不会覆盖它。");
+      } else {
+        pushToast("success", next.projection === "on" ? "TUN 已开启" : "TUN 已关闭并完成恢复");
+      }
     } catch (e) {
       failed = true;
       const message = errorMessage(e);

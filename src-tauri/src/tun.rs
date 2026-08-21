@@ -3,7 +3,11 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
-    sync::Mutex,
+    sync::{
+        atomic::AtomicBool,
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -23,10 +27,12 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, Runtime, State};
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::reconciliation::TunProjectionState;
 use crate::{config, mihomo};
 
 const STATE_FILE: &str = "tun-state.json";
 static TRANSITION_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
+static NEXT_TUN_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) async fn lock_transitions() -> tokio::sync::MutexGuard<'static, ()> {
     TRANSITION_LOCK.lock().await
@@ -83,6 +89,7 @@ pub struct TunStatusSnapshot {
     pub actual_state: TunActualState,
     pub owner: TunOwner,
     pub external_detected: bool,
+    pub projection: TunProjectionState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,9 +112,18 @@ struct TunRuntime {
     recovery_blocked: bool,
 }
 
+#[derive(Debug, Clone)]
+struct TunIntent {
+    desired_enabled: bool,
+    generation: u64,
+    profile_id: Option<String>,
+}
+
 #[derive(Default)]
 pub struct TunState {
     runtime: Mutex<TunRuntime>,
+    intent: Mutex<Option<TunIntent>>,
+    reconcile_in_flight: AtomicBool,
 }
 
 fn timestamp() -> u64 {
@@ -382,21 +398,148 @@ fn runtime_snapshot(state: &TunState) -> Result<TunRuntime, String> {
         .map_err(|_| "TUN 状态锁异常".to_string())
 }
 
+fn intent_snapshot(state: &TunState) -> Result<Option<TunIntent>, String> {
+    state
+        .intent
+        .lock()
+        .map(|intent| intent.clone())
+        .map_err(|_| "TUN 意图状态锁异常".to_string())
+}
+
+fn set_intent(
+    state: &TunState,
+    desired_enabled: bool,
+    profile_id: Option<String>,
+) -> Result<u64, String> {
+    let generation = NEXT_TUN_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let mut intent = state
+        .intent
+        .lock()
+        .map_err(|_| "TUN 意图状态锁异常".to_string())?;
+    *intent = Some(TunIntent {
+        desired_enabled,
+        generation,
+        profile_id,
+    });
+    Ok(generation)
+}
+
+fn clear_intent_if_generation(state: &TunState, generation: u64) -> Result<(), String> {
+    let mut intent = state
+        .intent
+        .lock()
+        .map_err(|_| "TUN 意图状态锁异常".to_string())?;
+    if intent
+        .as_ref()
+        .is_some_and(|current| current.generation == generation)
+    {
+        *intent = None;
+    }
+    Ok(())
+}
+
+fn apply_intent_to_snapshot(
+    state: &TunState,
+    mut snapshot: TunStatusSnapshot,
+) -> Result<TunStatusSnapshot, String> {
+    let Some(intent) = intent_snapshot(state)? else {
+        return Ok(snapshot);
+    };
+    let converged = match intent.desired_enabled {
+        true => matches!(snapshot.actual_state, TunActualState::MioProxyTun),
+        false => matches!(snapshot.actual_state, TunActualState::Disabled),
+    };
+    if converged && !snapshot.external_detected {
+        clear_intent_if_generation(state, intent.generation)?;
+        snapshot.desired_enabled = intent.desired_enabled;
+        snapshot.projection = if intent.desired_enabled {
+            TunProjectionState::On
+        } else {
+            TunProjectionState::Off
+        };
+        return Ok(snapshot);
+    }
+    snapshot.desired_enabled = intent.desired_enabled;
+    if !snapshot.external_detected && snapshot.projection != TunProjectionState::Error {
+        snapshot.projection = TunProjectionState::Recovering;
+    }
+    Ok(snapshot)
+}
+
+fn schedule_intent_reconciliation(app: &AppHandle, state: &TunState) {
+    if !state
+        .reconcile_in_flight
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let Some(state) = app.try_state::<TunState>() else {
+                return;
+            };
+            let _transition = lock_transitions().await;
+            if let Ok(Some(intent)) = intent_snapshot(&state) {
+                if let Ok(Some(snapshot)) = crate::service::request_tun(
+                    &app,
+                    intent.desired_enabled,
+                    intent.profile_id.clone(),
+                    false,
+                )
+                .await
+                {
+                    let converged = (intent.desired_enabled
+                        && snapshot.projection == TunProjectionState::On)
+                        || (!intent.desired_enabled
+                            && snapshot.projection == TunProjectionState::Off);
+                    if converged {
+                        let _ = clear_intent_if_generation(&state, intent.generation);
+                    }
+                }
+            }
+            state
+                .reconcile_in_flight
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+}
+
 fn response(state: &TunState) -> Result<TunStatusSnapshot, String> {
     let runtime = runtime_snapshot(state)?;
+    let intent = intent_snapshot(state)?;
     let (actual_state, owner) = tun_state_for_status(runtime.status);
-    let desired_enabled = requires_recovery(&runtime);
+    let desired_enabled = intent
+        .as_ref()
+        .map(|intent| intent.desired_enabled)
+        .unwrap_or_else(|| requires_recovery(&runtime));
+    let projection = if intent.is_some() && runtime.status == TunStatus::Disabled {
+        TunProjectionState::Recovering
+    } else {
+        tun_projection(runtime.status, desired_enabled)
+    };
     Ok(TunStatusSnapshot {
         status: runtime.status,
         message: runtime.message,
         admin: is_admin(),
-        profile_id: runtime.profile_id,
+        profile_id: runtime
+            .profile_id
+            .or_else(|| intent.as_ref().and_then(|intent| intent.profile_id.clone())),
         snapshot: runtime.snapshot,
         desired_enabled,
         actual_state,
         owner,
         external_detected: false,
+        projection,
     })
+}
+
+fn tun_projection(status: TunStatus, desired_enabled: bool) -> TunProjectionState {
+    match status {
+        TunStatus::Starting => TunProjectionState::Enabling,
+        TunStatus::Running => TunProjectionState::On,
+        TunStatus::Stopping => TunProjectionState::Disabling,
+        TunStatus::Error => TunProjectionState::Error,
+        TunStatus::Disabled if desired_enabled => TunProjectionState::Recovering,
+        TunStatus::Disabled => TunProjectionState::Off,
+    }
 }
 
 pub(crate) fn tun_state_for_status(status: TunStatus) -> (TunActualState, TunOwner) {
@@ -418,10 +561,11 @@ fn with_foreign_tun_detection(
     mut snapshot: TunStatusSnapshot,
     foreign_tun_detected: bool,
 ) -> TunStatusSnapshot {
-    if snapshot.status == TunStatus::Disabled && !snapshot.desired_enabled && foreign_tun_detected {
+    if snapshot.status == TunStatus::Disabled && foreign_tun_detected {
         snapshot.actual_state = TunActualState::ExternalTun;
         snapshot.owner = TunOwner::External;
         snapshot.external_detected = true;
+        snapshot.projection = TunProjectionState::External;
     }
     snapshot
 }
@@ -754,9 +898,23 @@ pub async fn tun_status(
         return with_external_tun_state(response(&state)?).await;
     }
     if let Some(snapshot) = crate::service::service_tun_status(&app).await? {
+        let snapshot = apply_intent_to_snapshot(&state, snapshot)?;
+        if matches!(
+            snapshot.projection,
+            TunProjectionState::WaitingForService | TunProjectionState::Recovering
+        ) {
+            schedule_intent_reconciliation(&app, &state);
+        }
         return with_external_tun_state(snapshot).await;
     }
-    with_external_tun_state(response(&state)?).await
+    let snapshot = apply_intent_to_snapshot(&state, response(&state)?)?;
+    if matches!(
+        snapshot.projection,
+        TunProjectionState::WaitingForService | TunProjectionState::Recovering
+    ) {
+        schedule_intent_reconciliation(&app, &state);
+    }
+    with_external_tun_state(snapshot).await
 }
 
 pub(crate) async fn diagnostic_status(app: &AppHandle) -> Result<TunStatusSnapshot, String> {
@@ -765,9 +923,23 @@ pub(crate) async fn diagnostic_status(app: &AppHandle) -> Result<TunStatusSnapsh
         return with_external_tun_state(response(&state)?).await;
     }
     if let Some(snapshot) = crate::service::service_tun_status(app).await? {
+        let snapshot = apply_intent_to_snapshot(&state, snapshot)?;
+        if matches!(
+            snapshot.projection,
+            TunProjectionState::WaitingForService | TunProjectionState::Recovering
+        ) {
+            schedule_intent_reconciliation(app, &state);
+        }
         return with_external_tun_state(snapshot).await;
     }
-    with_external_tun_state(response(&state)?).await
+    let snapshot = apply_intent_to_snapshot(&state, response(&state)?)?;
+    if matches!(
+        snapshot.projection,
+        TunProjectionState::WaitingForService | TunProjectionState::Recovering
+    ) {
+        schedule_intent_reconciliation(app, &state);
+    }
+    with_external_tun_state(snapshot).await
 }
 
 #[tauri::command]
@@ -783,13 +955,31 @@ pub async fn tun_set_enabled(
         if enabled {
             return Err("GUI TUN 会话仍在运行，请先关闭本地 TUN".to_string());
         }
-        return disable_tun(&app, &state).await;
+        let generation = set_intent(&state, false, None)?;
+        let result = disable_tun(&app, &state).await;
+        if result.is_ok() {
+            clear_intent_if_generation(&state, generation)?;
+        }
+        return result;
     }
+    let generation = set_intent(&state, enabled, profile_id.clone())?;
     if let Some(snapshot) =
         crate::service::request_tun(&app, enabled, profile_id.clone(), false).await?
     {
+        let snapshot = apply_intent_to_snapshot(&state, snapshot)?;
+        let converged = (enabled && snapshot.projection == TunProjectionState::On)
+            || (!enabled && snapshot.projection == TunProjectionState::Off);
+        if converged {
+            clear_intent_if_generation(&state, generation)?;
+        } else if matches!(
+            snapshot.projection,
+            TunProjectionState::WaitingForService | TunProjectionState::Recovering
+        ) {
+            schedule_intent_reconciliation(&app, &state);
+        }
         return Ok(snapshot);
     }
+    clear_intent_if_generation(&state, generation)?;
     if enabled {
         enable_tun(&app, &state, profile_id.unwrap_or_default()).await
     } else {
@@ -944,6 +1134,7 @@ mod tests {
         persisted_for, requires_recovery, with_foreign_tun_detection, NetworkSnapshot,
         PersistedTunState, TunActualState, TunOwner, TunRuntime, TunStatus, TunStatusSnapshot,
     };
+    use crate::reconciliation::TunProjectionState;
 
     #[test]
     fn corrupted_persisted_state_blocks_normal_tun_operations() {
@@ -1046,6 +1237,7 @@ mod tests {
             actual_state: TunActualState::Disabled,
             owner: TunOwner::None,
             external_detected: false,
+            projection: TunProjectionState::Off,
         };
 
         let classified = with_foreign_tun_detection(snapshot, true);
@@ -1068,6 +1260,7 @@ mod tests {
             actual_state: TunActualState::Unknown,
             owner: TunOwner::Unknown,
             external_detected: false,
+            projection: TunProjectionState::Error,
         };
 
         let classified = with_foreign_tun_detection(snapshot, true);

@@ -175,6 +175,7 @@ export type DnsSettings = {
 };
 
 export type TunStatus = "disabled" | "starting" | "running" | "stopping" | "error";
+export type TunProjectionState = "waitingForService" | "enabling" | "on" | "disabling" | "recovering" | "external" | "error" | "off";
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -196,7 +197,10 @@ export type TunStatusSnapshot = {
   actualState: "disabled" | "mioproxyTun" | "externalTun" | "unknown";
   owner: "mioproxy" | "external" | "none" | "unknown";
   externalDetected: boolean;
+  projection: TunProjectionState;
 };
+
+export type ServiceConnectivity = "notInstalled" | "serviceStopped" | "scmStarting" | "pipeNotReady" | "transient" | "ambiguous" | "ready" | "protocolFailure" | "authenticationFailure" | "commandFailure";
 
 export type ServiceConnectionStatus = {
   state: "running" | "stopped" | "starting" | "reconnecting" | "error";
@@ -213,6 +217,7 @@ export type ServiceConnectionStatus = {
   tunMessage: string | null;
   desiredCoreRunning: boolean;
   coreRecoveryMessage: string | null;
+  connectivity: ServiceConnectivity;
 };
 
 export type UpdatePhase = "preparing" | "installing" | "restarting" | "completed" | "failed";

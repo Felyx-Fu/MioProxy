@@ -15,6 +15,14 @@ function systemProxyProjection(snapshot: SystemProxyStatus | null, transitioning
 
 function tunProjection(snapshot: TunStatusSnapshot | null) {
   if (!snapshot) return { label: "TUN —", tone: "unknown" };
+  if (snapshot.projection === "waitingForService") return { label: "TUN Waiting", tone: "warning" };
+  if (snapshot.projection === "enabling") return { label: "TUN Enabling", tone: "warning" };
+  if (snapshot.projection === "disabling") return { label: "TUN Disabling", tone: "warning" };
+  if (snapshot.projection === "recovering") return { label: "TUN Recovering", tone: "warning" };
+  if (snapshot.projection === "external") return { label: "TUN External", tone: "warning" };
+  if (snapshot.projection === "error") return { label: "TUN Error", tone: "error" };
+  if (snapshot.projection === "on") return { label: "TUN On", tone: "success" };
+  if (snapshot.projection === "off") return { label: "TUN Off", tone: "muted" };
   if (snapshot.status === "starting" || snapshot.status === "stopping") return { label: "TUN Pending", tone: "warning" };
   if (snapshot.status === "error") return { label: "TUN Error", tone: "error" };
   if (snapshot.owner === "external" || snapshot.actualState === "externalTun" || snapshot.externalDetected) return { label: "TUN External", tone: "warning" };

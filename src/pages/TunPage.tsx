@@ -15,9 +15,11 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled, snapshot, 
 }) {
   const { t } = useI18n();
   const status = snapshot?.status ?? "disabled";
-  const transitioning = status === "starting" || status === "stopping";
+  const projection = snapshot?.projection;
+  const transitioning = projection === "waitingForService" || projection === "enabling" || projection === "disabling" || projection === "recovering";
+  const projectionError = projection === "error";
   const external = Boolean(snapshot?.owner === "external" || snapshot?.actualState === "externalTun" || snapshot?.externalDetected);
-  const owned = Boolean(snapshot?.owner === "mioproxy" && snapshot?.actualState === "mioproxyTun" && status === "running");
+  const owned = projection === "on" || Boolean(snapshot?.owner === "mioproxy" && snapshot?.actualState === "mioproxyTun" && status === "running");
   const willDisable = !external && Boolean(owned || snapshot?.desiredEnabled);
   const blockedForEnable = !coreRunning || !profileId || external;
 
@@ -25,13 +27,13 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled, snapshot, 
     <section className="page-stack tun-page">
       <header className="page-header compact-header">
         <div><button className="back-link" type="button" onClick={() => onNavigate("settings")}><ArrowLeft size={14} />{t("tun.settings")}</button><h1>{t("tun.title")}</h1><p>{t("tun.description")}</p></div>
-        <button className={willDisable ? "danger-button" : "primary-button"} type="button" onClick={onRequestTransition} disabled={loading || !snapshot || transitioning || (!willDisable && blockedForEnable)} aria-pressed={Boolean(snapshot?.desiredEnabled)}><CirclePower size={15} />{loading || transitioning ? t("tun.working") : external ? t("tun.externalTun") : willDisable ? t("tun.turnOff") : status === "error" ? t("tun.retry") : t("tun.turnOn")}</button>
+        <button className={willDisable ? "danger-button" : "primary-button"} type="button" onClick={onRequestTransition} disabled={loading || !snapshot || transitioning || (!willDisable && blockedForEnable)} aria-pressed={Boolean(snapshot?.desiredEnabled)}><CirclePower size={15} />{loading || transitioning ? t("tun.working") : external ? t("tun.externalTun") : willDisable ? t("tun.turnOff") : projectionError ? t("tun.retry") : t("tun.turnOn")}</button>
       </header>
       {error && <div className="info-bar error" role="alert"><AlertTriangle size={16} /><span>{error}</span></div>}
-      {snapshot?.message && <div className={status === "error" ? "info-bar error" : "info-bar success"}><ShieldCheck size={16} /><span>{snapshot.message}</span></div>}
+      {snapshot?.message && <div className={projectionError ? "info-bar error" : transitioning || external ? "info-bar warning" : "info-bar success"}><ShieldCheck size={16} /><span>{snapshot.message}</span></div>}
 
       <section className="surface-panel tun-runtime-panel">
-        <div className="section-title-row"><div><h2>{t("tun.runtimeProjection")}</h2><p>{external ? t("tun.externalOwnershipDescription") : t("tun.runtimeDescription")}</p></div><span className={`state-value tone-${status === "error" ? "error" : external || transitioning ? "warning" : owned ? "success" : "muted"}`}><span className="state-dot" />{external ? t("tun.stateExternal") : transitioning ? t("tun.stateTransitioning") : owned ? t("tun.stateOn") : status === "error" ? t("tun.stateError") : snapshot ? t("tun.stateOff") : t("tun.stateChecking")}</span></div>
+        <div className="section-title-row"><div><h2>{t("tun.runtimeProjection")}</h2><p>{external ? t("tun.externalOwnershipDescription") : t("tun.runtimeDescription")}</p></div><span className={`state-value tone-${projectionError ? "error" : external || transitioning ? "warning" : owned ? "success" : "muted"}`}><span className="state-dot" />{external ? t("tun.stateExternal") : transitioning ? t("tun.stateTransitioning") : owned ? t("tun.stateOn") : projectionError ? t("tun.stateError") : snapshot ? t("tun.stateOff") : t("tun.stateChecking")}</span></div>
         <dl className="form-details">
           <div><dt>{t("tun.owner")}</dt><dd>{snapshot?.owner ?? "—"}</dd></div>
           <div><dt>{t("tun.actualState")}</dt><dd>{snapshot?.actualState ?? "—"}</dd></div>

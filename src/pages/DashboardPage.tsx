@@ -33,11 +33,14 @@ function systemProxyLabel(snapshot: SystemProxyStatus | null, transitioning = fa
 
 function tunLabel(snapshot: TunStatusSnapshot | null) {
   if (!snapshot) return { key: "dashboard.state.checking" as const, tone: "muted" as const, owned: false, external: false };
-  if (snapshot.status === "error") return { key: "dashboard.state.error" as const, tone: "error" as const, owned: false, external: false };
+  if (snapshot.projection === "external" || snapshot.owner === "external" || snapshot.actualState === "externalTun" || snapshot.externalDetected) return { key: "dashboard.state.external" as const, tone: "warning" as const, owned: false, external: true };
+  if (snapshot.projection === "error") return { key: "dashboard.state.error" as const, tone: "error" as const, owned: false, external: false };
+  if (snapshot.projection === "waitingForService" || snapshot.projection === "enabling" || snapshot.projection === "disabling") return { key: "dashboard.state.pending" as const, tone: "warning" as const, owned: false, external: false };
+  if (snapshot.projection === "recovering") return { key: "dashboard.state.recoveryRequired" as const, tone: "warning" as const, owned: false, external: false };
+  if (snapshot.projection === "on" || (snapshot.owner === "mioproxy" && snapshot.actualState === "mioproxyTun" && snapshot.status === "running")) return { key: "dashboard.state.active" as const, tone: "success" as const, owned: true, external: false };
+  if (snapshot.projection === "off") return { key: "dashboard.state.disabled" as const, tone: "muted" as const, owned: false, external: false };
   if (snapshot.status === "starting" || snapshot.status === "stopping") return { key: "dashboard.state.pending" as const, tone: "warning" as const, owned: false, external: false };
-  if (snapshot.owner === "external" || snapshot.actualState === "externalTun" || snapshot.externalDetected) return { key: "dashboard.state.external" as const, tone: "warning" as const, owned: false, external: true };
-  if (snapshot.owner === "mioproxy" && snapshot.actualState === "mioproxyTun" && snapshot.status === "running") return { key: "dashboard.state.active" as const, tone: "success" as const, owned: true, external: false };
-  if (snapshot.desiredEnabled) return { key: "dashboard.state.recoveryRequired" as const, tone: "warning" as const, owned: false, external: false };
+  if (snapshot.status === "error") return { key: "dashboard.state.error" as const, tone: "error" as const, owned: false, external: false };
   return { key: "dashboard.state.disabled" as const, tone: "muted" as const, owned: false, external: false };
 }
 
@@ -164,7 +167,7 @@ export function DashboardPage({
   const tun = tunLabel(tunStatus);
   const checking = status === null;
   const healthy = coreState === "ready" && proxy.tone !== "error" && tun.tone !== "error";
-  const tunTransitioning = tunStatus?.status === "starting" || tunStatus?.status === "stopping";
+  const tunTransitioning = tunStatus?.projection === "waitingForService" || tunStatus?.projection === "enabling" || tunStatus?.projection === "disabling" || tunStatus?.projection === "recovering";
   const tunWillDisable = !tun.external && Boolean(tun.owned || tunStatus?.desiredEnabled);
   const coreTone = checking ? "muted" : coreState === "ready" ? "success" : coreState === "error" ? "error" : "warning";
 

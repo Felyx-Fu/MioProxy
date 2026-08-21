@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
+use crate::reconciliation::ServiceConnectivity;
+
 pub const SERVICE_NAME: &str = "MioProxyService";
 pub const PIPE_NAME: &str = r"\\.\pipe\MioProxyService";
 pub const SERVICE_PROTOCOL_VERSION: u32 = 1;
@@ -43,6 +45,8 @@ pub enum ServiceCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceRequest {
+    #[serde(default)]
+    pub request_id: u64,
     pub protocol_version: u32,
     pub client_version: String,
     pub token: String,
@@ -52,6 +56,8 @@ pub struct ServiceRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceResponse {
+    #[serde(default)]
+    pub request_id: u64,
     pub protocol_version: u32,
     pub service_version: String,
     pub ok: bool,
@@ -95,6 +101,7 @@ pub struct ServiceConnectionStatus {
     pub tun_message: Option<String>,
     pub desired_core_running: bool,
     pub core_recovery_message: Option<String>,
+    pub connectivity: ServiceConnectivity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -108,10 +115,11 @@ pub enum ServiceProjectionState {
 }
 
 impl ServiceConnectionStatus {
-    fn disconnected(
+    fn disconnected_with(
         state: ServiceProjectionState,
         error: Option<String>,
         version_mismatch: bool,
+        connectivity: ServiceConnectivity,
     ) -> Self {
         let core_recovery_message = if version_mismatch {
             error.clone()
@@ -133,7 +141,29 @@ impl ServiceConnectionStatus {
             tun_message: None,
             desired_core_running: false,
             core_recovery_message,
+            connectivity,
         }
+    }
+
+    fn disconnected(
+        state: ServiceProjectionState,
+        error: Option<String>,
+        version_mismatch: bool,
+    ) -> Self {
+        let connectivity = match state {
+            ServiceProjectionState::Starting => ServiceConnectivity::ScmStarting,
+            ServiceProjectionState::Reconnecting => ServiceConnectivity::Transient,
+            ServiceProjectionState::Stopped => ServiceConnectivity::ServiceStopped,
+            ServiceProjectionState::Error => {
+                if version_mismatch {
+                    ServiceConnectivity::ProtocolFailure
+                } else {
+                    ServiceConnectivity::CommandFailure
+                }
+            }
+            ServiceProjectionState::Running => ServiceConnectivity::Ready,
+        };
+        Self::disconnected_with(state, error, version_mismatch, connectivity)
     }
 }
 
@@ -150,8 +180,11 @@ mod windows_impl {
         os::windows::{ffi::OsStrExt, fs::MetadataExt},
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
-        sync::{Arc, Mutex},
-        time::Duration,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc, Mutex,
+        },
+        time::{Duration, Instant},
     };
 
     #[cfg(not(test))]
@@ -168,7 +201,37 @@ mod windows_impl {
     };
 
     static REQUEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
+    static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
     const IPC_TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[derive(Debug, Clone)]
+    struct ServiceIpcError {
+        connectivity: ServiceConnectivity,
+        request_written: bool,
+        message: String,
+    }
+
+    impl ServiceIpcError {
+        fn new(
+            connectivity: ServiceConnectivity,
+            request_written: bool,
+            message: impl Into<String>,
+        ) -> Self {
+            Self {
+                connectivity,
+                request_written,
+                message: message.into(),
+            }
+        }
+    }
+
+    impl std::fmt::Display for ServiceIpcError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(&self.message)
+        }
+    }
+
+    impl std::error::Error for ServiceIpcError {}
     use windows_service::{
         service::{ServiceAccess, ServiceExitCode, ServiceState},
         service_manager::{ServiceManager, ServiceManagerAccess},
@@ -490,68 +553,242 @@ mod windows_impl {
         ))
     }
 
+    fn scm_connectivity(state: Option<ServiceState>) -> ServiceConnectivity {
+        match state {
+            None => ServiceConnectivity::NotInstalled,
+            Some(ServiceState::Stopped | ServiceState::StopPending) => {
+                ServiceConnectivity::ServiceStopped
+            }
+            Some(ServiceState::StartPending | ServiceState::ContinuePending) => {
+                ServiceConnectivity::ScmStarting
+            }
+            Some(ServiceState::Running) => ServiceConnectivity::Ready,
+            Some(ServiceState::PausePending | ServiceState::Paused) => {
+                ServiceConnectivity::CommandFailure
+            }
+        }
+    }
+
+    fn classify_pipe_open_error(error: &io::Error) -> ServiceIpcError {
+        let connectivity = if is_pipe_busy(error) || error.kind() == io::ErrorKind::TimedOut {
+            ServiceConnectivity::Transient
+        } else {
+            match installed_service_state() {
+                Ok(Some(ServiceState::Running)) => ServiceConnectivity::PipeNotReady,
+                Ok(state) => scm_connectivity(state),
+                Err(_) => ServiceConnectivity::Transient,
+            }
+        };
+        let message = match connectivity {
+            ServiceConnectivity::NotInstalled => {
+                "MioProxy Service 未安装，允许使用未特权的开发回退路径"
+            }
+            ServiceConnectivity::ServiceStopped => "MioProxy Service 已安装但当前处于 Stopped",
+            ServiceConnectivity::ScmStarting => "MioProxy Service 正在启动，等待 Named Pipe 就绪",
+            ServiceConnectivity::Transient => "MioProxy Service IPC 暂时不可用，等待重新连接",
+            ServiceConnectivity::PipeNotReady => "MioProxy Service 已运行但 Named Pipe 尚未就绪",
+            ServiceConnectivity::Ready => "MioProxy Service IPC 已就绪但连接失败",
+            ServiceConnectivity::Ambiguous => "MioProxy Service IPC 状态不明确，等待权威状态",
+            ServiceConnectivity::ProtocolFailure => "MioProxy Service IPC 协议不可用",
+            ServiceConnectivity::AuthenticationFailure => "MioProxy Service IPC 身份验证不可用",
+            ServiceConnectivity::CommandFailure => "MioProxy Service 无法接受 IPC 连接",
+        };
+        let suffix = if error.to_string().is_empty() {
+            String::new()
+        } else {
+            format!("：{error}")
+        };
+        ServiceIpcError::new(connectivity, false, format!("{message}{suffix}"))
+    }
+
+    fn classified_error(
+        connectivity: ServiceConnectivity,
+        request_written: bool,
+        message: impl Into<String>,
+    ) -> ServiceIpcError {
+        ServiceIpcError::new(connectivity, request_written, message)
+    }
+
+    fn response_error_connectivity(error: &str) -> ServiceConnectivity {
+        if error.contains("令牌无效") || error.contains("令牌") && error.contains("无效") {
+            ServiceConnectivity::AuthenticationFailure
+        } else if error.contains("版本不匹配") || error.contains("协议") {
+            ServiceConnectivity::ProtocolFailure
+        } else {
+            ServiceConnectivity::CommandFailure
+        }
+    }
+
+    async fn try_request_classified(
+        app: &AppHandle,
+        command: ServiceCommand,
+        request_id: u64,
+    ) -> Result<Option<ServiceResponse>, ServiceIpcError> {
+        let _request = tokio::time::timeout(IPC_TIMEOUT, REQUEST_LOCK.lock())
+            .await
+            .map_err(|_| {
+                classified_error(
+                    ServiceConnectivity::Transient,
+                    false,
+                    "等待 MioProxy Service IPC 请求锁超时",
+                )
+            })?;
+        let mut client = match open_client().await {
+            Ok(client) => client,
+            Err(error) if is_pipe_missing(&error) => {
+                let classified = classify_pipe_open_error(&error);
+                if classified.connectivity == ServiceConnectivity::NotInstalled {
+                    return Err(classified);
+                }
+                return Err(classified);
+            }
+            Err(error) => return Err(classify_pipe_open_error(&error)),
+        };
+
+        verify_service_pipe(&client).map_err(|error| {
+            classified_error(
+                ServiceConnectivity::AuthenticationFailure,
+                false,
+                format!("MioProxy Service IPC 身份确认失败：{error}"),
+            )
+        })?;
+        let token = client_token(app).map_err(|error| {
+            classified_error(ServiceConnectivity::AuthenticationFailure, false, error)
+        })?;
+        let request = ServiceRequest {
+            request_id,
+            protocol_version: SERVICE_PROTOCOL_VERSION,
+            client_version: SERVICE_VERSION.to_string(),
+            token,
+            command,
+        };
+        let line = serde_json::to_string(&request).map_err(|error| {
+            classified_error(
+                ServiceConnectivity::CommandFailure,
+                false,
+                error.to_string(),
+            )
+        })? + "\n";
+
+        tokio::time::timeout(IPC_TIMEOUT, client.write_all(line.as_bytes()))
+            .await
+            .map_err(|_| {
+                classified_error(
+                    ServiceConnectivity::Ambiguous,
+                    true,
+                    "写入 Service 请求超时；请求结果不明确，等待权威状态",
+                )
+            })?
+            .map_err(|error| {
+                classified_error(
+                    ServiceConnectivity::Ambiguous,
+                    true,
+                    format!("写入 Service 请求失败；请求结果不明确：{error}"),
+                )
+            })?;
+        tokio::time::timeout(IPC_TIMEOUT, client.flush())
+            .await
+            .map_err(|_| {
+                classified_error(
+                    ServiceConnectivity::Ambiguous,
+                    true,
+                    "发送 Service 请求超时；请求结果不明确，等待权威状态",
+                )
+            })?
+            .map_err(|error| {
+                classified_error(
+                    ServiceConnectivity::Ambiguous,
+                    true,
+                    format!("发送 Service 请求失败；请求结果不明确：{error}"),
+                )
+            })?;
+
+        let mut reader = BufReader::new(client);
+        let mut response_line = String::new();
+        let bytes_read = tokio::time::timeout(IPC_TIMEOUT, reader.read_line(&mut response_line))
+            .await
+            .map_err(|_| {
+                classified_error(
+                    ServiceConnectivity::Ambiguous,
+                    true,
+                    "读取 Service 响应超时；请求结果不明确，等待权威状态",
+                )
+            })?
+            .map_err(|error| {
+                classified_error(
+                    ServiceConnectivity::Ambiguous,
+                    true,
+                    format!("读取 Service 响应失败；请求结果不明确：{error}"),
+                )
+            })?;
+        if bytes_read == 0 {
+            return Err(classified_error(
+                ServiceConnectivity::Ambiguous,
+                true,
+                "Service 已关闭 IPC 响应；请求结果不明确，等待权威状态",
+            ));
+        }
+        let response =
+            serde_json::from_str::<ServiceResponse>(&response_line).map_err(|error| {
+                classified_error(
+                    ServiceConnectivity::Ambiguous,
+                    true,
+                    format!("Service 响应无效；请求结果不明确：{error}"),
+                )
+            })?;
+        if response.request_id != request_id {
+            return Err(classified_error(
+                ServiceConnectivity::ProtocolFailure,
+                true,
+                format!(
+                    "MioProxy Service 响应请求 ID 不匹配：请求={}，响应={}",
+                    request_id, response.request_id
+                ),
+            ));
+        }
+        if response.protocol_version != SERVICE_PROTOCOL_VERSION {
+            return Err(classified_error(
+                ServiceConnectivity::ProtocolFailure,
+                true,
+                format!(
+                    "MioProxy Service 协议版本不匹配：GUI={}，Service={}",
+                    SERVICE_PROTOCOL_VERSION, response.protocol_version
+                ),
+            ));
+        }
+        if response.service_version != SERVICE_VERSION {
+            return Err(classified_error(
+                ServiceConnectivity::ProtocolFailure,
+                true,
+                format!(
+                    "MioProxy Service 版本不匹配：GUI={}，Service={}",
+                    SERVICE_VERSION, response.service_version
+                ),
+            ));
+        }
+        if !response.ok {
+            let message = response
+                .error
+                .unwrap_or_else(|| "MioProxy Service 请求失败".to_string());
+            return Err(classified_error(
+                response_error_connectivity(&message),
+                true,
+                message,
+            ));
+        }
+        Ok(Some(response))
+    }
+
     pub(crate) async fn try_request(
         app: &AppHandle,
         command: ServiceCommand,
     ) -> Result<Option<ServiceResponse>, String> {
-        let _request = tokio::time::timeout(IPC_TIMEOUT, REQUEST_LOCK.lock())
-            .await
-            .map_err(|_| "等待 MioProxy Service IPC 请求锁超时".to_string())?;
-        let mut client = match open_client().await {
-            Ok(client) => client,
-            Err(error) if is_pipe_missing(&error) => {
-                if service_is_installed()? {
-                    return Err(
-                        "MioProxy Service 已安装但当前 IPC 不可用，已阻止 GUI 接管 Mihomo"
-                            .to_string(),
-                    );
-                }
-                return Ok(None);
-            }
-            Err(error) => return Err(format!("连接 MioProxy Service 失败：{error}")),
-        };
-        verify_service_pipe(&client)?;
-        let request = ServiceRequest {
-            protocol_version: SERVICE_PROTOCOL_VERSION,
-            client_version: SERVICE_VERSION.to_string(),
-            token: client_token(app)?,
-            command,
-        };
-        let line = serde_json::to_string(&request).map_err(|e| e.to_string())? + "\n";
-        tokio::time::timeout(IPC_TIMEOUT, client.write_all(line.as_bytes()))
-            .await
-            .map_err(|_| "写入 Service 请求超时".to_string())?
-            .map_err(|e| format!("写入 Service 请求失败：{e}"))?;
-        tokio::time::timeout(IPC_TIMEOUT, client.flush())
-            .await
-            .map_err(|_| "发送 Service 请求超时".to_string())?
-            .map_err(|e| format!("发送 Service 请求失败：{e}"))?;
-        let mut reader = BufReader::new(client);
-        let mut response_line = String::new();
-        tokio::time::timeout(IPC_TIMEOUT, reader.read_line(&mut response_line))
-            .await
-            .map_err(|_| "读取 Service 响应超时".to_string())?
-            .map_err(|e| format!("读取 Service 响应失败：{e}"))?;
-        let response = serde_json::from_str::<ServiceResponse>(&response_line)
-            .map_err(|e| format!("Service 响应无效：{e}"))?;
-        if response.protocol_version != SERVICE_PROTOCOL_VERSION {
-            return Err(format!(
-                "MioProxy Service 协议版本不匹配：GUI={}，Service={}",
-                SERVICE_PROTOCOL_VERSION, response.protocol_version
-            ));
+        let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        match try_request_classified(app, command, request_id).await {
+            Ok(result) => Ok(result),
+            Err(error) if error.connectivity == ServiceConnectivity::NotInstalled => Ok(None),
+            Err(error) => Err(error.to_string()),
         }
-        if response.service_version != SERVICE_VERSION {
-            return Err(format!(
-                "MioProxy Service 版本不匹配：GUI={}，Service={}",
-                SERVICE_VERSION, response.service_version
-            ));
-        }
-        if !response.ok {
-            return Err(response
-                .error
-                .unwrap_or_else(|| "MioProxy Service 请求失败".to_string()));
-        }
-        Ok(Some(response))
     }
 
     fn is_optional_ipc_transport_error(error: &str) -> bool {
@@ -563,17 +800,9 @@ mod windows_impl {
             || error == "写入 Service 请求超时"
             || error == "发送 Service 请求超时"
             || error == "读取 Service 响应超时"
-            || error == "MioProxy Service 已安装但当前 IPC 不可用，已阻止 GUI 接管 Mihomo"
-            || error.starts_with("MioProxy Service 协议版本不匹配：")
-            || error.starts_with("MioProxy Service 版本不匹配：")
-    }
-
-    fn project_ipc_error(error: &str) -> ServiceProjectionState {
-        if !error.contains("版本不匹配") && is_optional_ipc_transport_error(error) {
-            ServiceProjectionState::Reconnecting
-        } else {
-            ServiceProjectionState::Error
-        }
+            || error.starts_with("MioProxy Service IPC 暂时不可用")
+            || error.starts_with("MioProxy Service 正在启动")
+            || error.starts_with("MioProxy Service 已运行但 Named Pipe 尚未就绪")
     }
 
     async fn optional_request(
@@ -612,10 +841,11 @@ mod windows_impl {
         if scm_projection != ServiceProjectionState::Running {
             let error = (scm_projection == ServiceProjectionState::Error)
                 .then(|| format!("MioProxy Service 处于不受支持的 SCM 状态：{scm_state:?}"));
-            return Ok(ServiceConnectionStatus::disconnected(
+            return Ok(ServiceConnectionStatus::disconnected_with(
                 scm_projection,
                 error,
                 false,
+                scm_connectivity(scm_state),
             ));
         }
 
@@ -624,41 +854,62 @@ mod windows_impl {
         // can reconnect in the background, not stalled behind a full IPC timeout.
         let response = match tokio::time::timeout(
             Duration::from_millis(250),
-            try_request(&app, ServiceCommand::Status),
+            try_request_classified(
+                &app,
+                ServiceCommand::Status,
+                NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+            ),
         )
         .await
         {
             Err(_) => {
-                return Ok(ServiceConnectionStatus::disconnected(
+                return Ok(ServiceConnectionStatus::disconnected_with(
                     ServiceProjectionState::Reconnecting,
                     Some("MioProxy Service health check timed out".to_string()),
                     false,
+                    ServiceConnectivity::Transient,
                 ));
             }
             Ok(response) => response,
         };
         let response = match response {
             Ok(response) => response,
-            Err(error) if error.contains("版本不匹配") => {
-                return Ok(ServiceConnectionStatus::disconnected(
+            Err(error) if error.connectivity == ServiceConnectivity::ProtocolFailure => {
+                return Ok(ServiceConnectionStatus::disconnected_with(
                     ServiceProjectionState::Error,
-                    Some(error),
+                    Some(error.to_string()),
                     true,
+                    ServiceConnectivity::ProtocolFailure,
                 ));
             }
             Err(error) => {
-                return Ok(ServiceConnectionStatus::disconnected(
-                    project_ipc_error(&error),
-                    Some(error),
+                let projection = match error.connectivity {
+                    ServiceConnectivity::ScmStarting
+                    | ServiceConnectivity::PipeNotReady
+                    | ServiceConnectivity::Transient
+                    | ServiceConnectivity::Ambiguous => ServiceProjectionState::Reconnecting,
+                    ServiceConnectivity::AuthenticationFailure
+                    | ServiceConnectivity::CommandFailure => ServiceProjectionState::Error,
+                    ServiceConnectivity::NotInstalled | ServiceConnectivity::ServiceStopped => {
+                        ServiceProjectionState::Stopped
+                    }
+                    ServiceConnectivity::Ready => ServiceProjectionState::Reconnecting,
+                    ServiceConnectivity::ProtocolFailure => ServiceProjectionState::Error,
+                };
+                return Ok(ServiceConnectionStatus::disconnected_with(
+                    projection,
+                    Some(error.to_string()),
                     false,
+                    error.connectivity,
                 ));
             }
         };
         let Some(response) = response else {
-            return Ok(ServiceConnectionStatus::disconnected(
+            return Ok(ServiceConnectionStatus::disconnected_with(
                 ServiceProjectionState::Reconnecting,
                 None,
                 false,
+                ServiceConnectivity::Transient,
             ));
         };
         let status: ServiceStatusData = match data(response) {
@@ -686,41 +937,46 @@ mod windows_impl {
             tun_message: status.tun_message,
             desired_core_running: status.desired_core_running,
             core_recovery_message: status.core_recovery_message,
+            connectivity: ServiceConnectivity::Ready,
         })
     }
 
     pub(crate) async fn service_tun_status(
         app: &AppHandle,
     ) -> Result<Option<crate::tun::TunStatusSnapshot>, String> {
-        let Some(response) = optional_request(app, ServiceCommand::Status).await? else {
-            return Ok(None);
-        };
-        let status: ServiceStatusData = data(response)?;
-        let tun_status = match status.tun_status.as_str() {
-            "disabled" => crate::tun::TunStatus::Disabled,
-            "starting" => crate::tun::TunStatus::Starting,
-            "running" => crate::tun::TunStatus::Running,
-            "stopping" => crate::tun::TunStatus::Stopping,
-            _ => crate::tun::TunStatus::Error,
-        };
-        Ok(Some(crate::tun::TunStatusSnapshot {
-            status: tun_status,
-            message: status.tun_message,
-            admin: status.admin,
-            profile_id: status.tun_profile_id,
-            snapshot: status.tun_snapshot,
-            desired_enabled: status.tun_status != "disabled",
-            actual_state: crate::tun::tun_state_for_status(tun_status).0,
-            owner: crate::tun::tun_state_for_status(tun_status).1,
-            external_detected: false,
-        }))
+        match try_request_classified(
+            app,
+            ServiceCommand::Status,
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+        )
+        .await
+        {
+            Ok(Some(response)) => {
+                let status: ServiceStatusData = data(response)?;
+                Ok(Some(snapshot_from_service_status(status, false)))
+            }
+            Ok(None) => Ok(None),
+            Err(error)
+                if matches!(
+                    error.connectivity,
+                    ServiceConnectivity::ServiceStopped
+                        | ServiceConnectivity::ScmStarting
+                        | ServiceConnectivity::PipeNotReady
+                        | ServiceConnectivity::Transient
+                        | ServiceConnectivity::Ambiguous
+                ) =>
+            {
+                Ok(Some(unavailable_tun_snapshot(false, error.to_string())))
+            }
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     pub(crate) async fn request_core(
         app: &AppHandle,
         command: ServiceCommand,
     ) -> Result<Option<crate::mihomo::CoreStatus>, String> {
-        let Some(response) = optional_request(app, command).await? else {
+        let Some(response) = try_request(app, command).await? else {
             return Ok(None);
         };
         data(response).map(Some)
@@ -778,48 +1034,383 @@ mod windows_impl {
         data(response).map(Some)
     }
 
+    fn tun_actual_state(
+        status: &str,
+        external_detected: bool,
+    ) -> crate::reconciliation::TunActualState {
+        if external_detected {
+            return crate::reconciliation::TunActualState::External;
+        }
+        match status {
+            "disabled" => crate::reconciliation::TunActualState::Disabled,
+            "running" => crate::reconciliation::TunActualState::Enabled,
+            "starting" | "stopping" => crate::reconciliation::TunActualState::Transitioning,
+            _ => crate::reconciliation::TunActualState::Unknown,
+        }
+    }
+
+    fn snapshot_from_service_status(
+        status: ServiceStatusData,
+        desired_enabled: bool,
+    ) -> crate::tun::TunStatusSnapshot {
+        let tun_status = match status.tun_status.as_str() {
+            "disabled" => crate::tun::TunStatus::Disabled,
+            "starting" => crate::tun::TunStatus::Starting,
+            "running" => crate::tun::TunStatus::Running,
+            "stopping" => crate::tun::TunStatus::Stopping,
+            _ => crate::tun::TunStatus::Error,
+        };
+        crate::tun::TunStatusSnapshot {
+            status: tun_status,
+            message: status.tun_message,
+            admin: status.admin,
+            profile_id: status.tun_profile_id,
+            snapshot: status.tun_snapshot,
+            desired_enabled,
+            actual_state: crate::tun::tun_state_for_status(tun_status).0,
+            owner: crate::tun::tun_state_for_status(tun_status).1,
+            external_detected: false,
+            projection: match tun_status {
+                crate::tun::TunStatus::Starting => {
+                    crate::reconciliation::TunProjectionState::Enabling
+                }
+                crate::tun::TunStatus::Running => crate::reconciliation::TunProjectionState::On,
+                crate::tun::TunStatus::Stopping => {
+                    crate::reconciliation::TunProjectionState::Disabling
+                }
+                crate::tun::TunStatus::Error => crate::reconciliation::TunProjectionState::Error,
+                crate::tun::TunStatus::Disabled => {
+                    if desired_enabled {
+                        crate::reconciliation::TunProjectionState::Recovering
+                    } else {
+                        crate::reconciliation::TunProjectionState::Off
+                    }
+                }
+            },
+        }
+    }
+
+    fn unavailable_tun_snapshot(
+        desired_enabled: bool,
+        message: impl Into<String>,
+    ) -> crate::tun::TunStatusSnapshot {
+        crate::tun::TunStatusSnapshot {
+            status: crate::tun::TunStatus::Error,
+            message: Some(message.into()),
+            admin: false,
+            profile_id: None,
+            snapshot: None,
+            desired_enabled,
+            actual_state: crate::tun::TunActualState::Unknown,
+            owner: crate::tun::TunOwner::Unknown,
+            external_detected: false,
+            projection: crate::reconciliation::TunProjectionState::Recovering,
+        }
+    }
+
+    fn external_tun_snapshot(
+        desired_enabled: bool,
+        message: impl Into<String>,
+    ) -> crate::tun::TunStatusSnapshot {
+        crate::tun::TunStatusSnapshot {
+            status: crate::tun::TunStatus::Disabled,
+            message: Some(message.into()),
+            admin: is_admin(),
+            profile_id: None,
+            snapshot: None,
+            desired_enabled,
+            actual_state: crate::tun::TunActualState::ExternalTun,
+            owner: crate::tun::TunOwner::External,
+            external_detected: true,
+            projection: crate::reconciliation::TunProjectionState::External,
+        }
+    }
+
     pub(crate) async fn request_tun(
         app: &AppHandle,
         enabled: bool,
         profile_id: Option<String>,
         system_proxy_enabled: bool,
     ) -> Result<Option<crate::tun::TunStatusSnapshot>, String> {
-        let command = ServiceCommand::TunSetEnabled {
-            enabled,
-            profile_id,
-            system_proxy_enabled,
-        };
-        let Some(response) = try_request(app, command).await? else {
+        if let Some(message) = crate::tun::foreign_tun_conflict()? {
+            return Ok(Some(external_tun_snapshot(enabled, message)));
+        }
+        if !service_is_installed()? {
             return Ok(None);
-        };
-        let value: ServiceTunData = data(response)?;
-        Ok(Some(value.into_snapshot()))
+        }
+
+        if enabled && matches!(installed_service_state()?, Some(ServiceState::Stopped)) {
+            tokio::task::spawn_blocking(start_installed_service_once)
+                .await
+                .map_err(|error| format!("启动 MioProxy Service 任务失败：{error}"))??;
+        }
+
+        let generation = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        let mut reconciler = crate::reconciliation::TunReconciler::new(enabled, generation);
+        debug_assert_eq!(reconciler.generation(), generation);
+        debug_assert_eq!(reconciler.desired_enabled(), enabled);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut last_snapshot = None;
+
+        while Instant::now() < deadline {
+            let external = crate::tun::foreign_tun_conflict()?.is_some();
+            let status_result = try_request_classified(
+                app,
+                ServiceCommand::Status,
+                NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+            )
+            .await;
+            let (connectivity, actual, snapshot) = match status_result {
+                Ok(Some(response)) => {
+                    let status: ServiceStatusData = data(response)?;
+                    let actual = tun_actual_state(&status.tun_status, external);
+                    let snapshot = snapshot_from_service_status(status, enabled);
+                    (ServiceConnectivity::Ready, actual, Some(snapshot))
+                }
+                Ok(None) => (
+                    ServiceConnectivity::NotInstalled,
+                    crate::reconciliation::TunActualState::Unknown,
+                    None,
+                ),
+                Err(error) => {
+                    let actual = if external {
+                        crate::reconciliation::TunActualState::External
+                    } else {
+                        crate::reconciliation::TunActualState::Unknown
+                    };
+                    (error.connectivity, actual, None)
+                }
+            };
+            if let Some(snapshot) = snapshot {
+                last_snapshot = Some(snapshot);
+            }
+
+            match reconciler.observe(generation, connectivity, actual, external) {
+                crate::reconciliation::ReconcileDecision::Complete => {
+                    let mut snapshot = last_snapshot.unwrap_or_else(|| {
+                        unavailable_tun_snapshot(enabled, "Service TUN 已达到目标状态")
+                    });
+                    snapshot.desired_enabled = enabled;
+                    snapshot.projection = if enabled {
+                        crate::reconciliation::TunProjectionState::On
+                    } else {
+                        crate::reconciliation::TunProjectionState::Off
+                    };
+                    return Ok(Some(snapshot));
+                }
+                crate::reconciliation::ReconcileDecision::AbortExternal => {
+                    return Ok(Some(external_tun_snapshot(
+                        enabled,
+                        "检测到外部 TUN，已停止 MioProxy TUN 恢复操作",
+                    )));
+                }
+                crate::reconciliation::ReconcileDecision::Fail(connectivity) => {
+                    return Err(format!("MioProxy Service TUN 操作失败（{connectivity:?}）"));
+                }
+                crate::reconciliation::ReconcileDecision::IssueMutation => {
+                    let command = ServiceCommand::TunSetEnabled {
+                        enabled,
+                        profile_id: profile_id.clone(),
+                        system_proxy_enabled,
+                    };
+                    let result = try_request_classified(
+                        app,
+                        command,
+                        NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+                    )
+                    .await;
+                    match result {
+                        Ok(Some(response)) => {
+                            let value: ServiceTunData = data(response)?;
+                            last_snapshot = Some(value.clone().into_snapshot());
+                            let _ = reconciler.record_mutation(
+                                generation,
+                                crate::reconciliation::MutationOutcome::Applied,
+                            );
+                        }
+                        Ok(None) => {
+                            let _ = reconciler.record_mutation(
+                                generation,
+                                crate::reconciliation::MutationOutcome::NotSent,
+                            );
+                        }
+                        Err(error)
+                            if matches!(
+                                error.connectivity,
+                                ServiceConnectivity::ProtocolFailure
+                                    | ServiceConnectivity::AuthenticationFailure
+                                    | ServiceConnectivity::CommandFailure
+                            ) =>
+                        {
+                            let _ = reconciler.record_mutation(
+                                generation,
+                                crate::reconciliation::MutationOutcome::DeterministicFailure,
+                            );
+                            return Err(error.to_string());
+                        }
+                        Err(error) if error.request_written => {
+                            let _ = reconciler.record_mutation(
+                                generation,
+                                crate::reconciliation::MutationOutcome::Ambiguous,
+                            );
+                            last_snapshot = Some(unavailable_tun_snapshot(
+                                enabled,
+                                "Service 已收到 TUN 请求但响应丢失，正在按权威状态恢复",
+                            ));
+                        }
+                        Err(error)
+                            if matches!(
+                                error.connectivity,
+                                ServiceConnectivity::ScmStarting
+                                    | ServiceConnectivity::PipeNotReady
+                                    | ServiceConnectivity::Transient
+                                    | ServiceConnectivity::ServiceStopped
+                            ) =>
+                        {
+                            let _ = reconciler.record_mutation(
+                                generation,
+                                crate::reconciliation::MutationOutcome::NotSent,
+                            );
+                        }
+                        Err(error) => {
+                            let _ = reconciler.record_mutation(
+                                generation,
+                                crate::reconciliation::MutationOutcome::DeterministicFailure,
+                            );
+                            return Err(error.to_string());
+                        }
+                    }
+                }
+                crate::reconciliation::ReconcileDecision::Wait(projection) => {
+                    let mut snapshot = last_snapshot.clone().unwrap_or_else(|| {
+                        unavailable_tun_snapshot(enabled, "等待 MioProxy Service IPC 恢复")
+                    });
+                    snapshot.desired_enabled = enabled;
+                    snapshot.projection = projection;
+                    last_snapshot = Some(snapshot);
+                }
+                crate::reconciliation::ReconcileDecision::Stale => {
+                    return Ok(Some(unavailable_tun_snapshot(
+                        enabled,
+                        "TUN 请求已被更新的用户意图取代",
+                    )));
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        let mut snapshot = last_snapshot.unwrap_or_else(|| {
+            unavailable_tun_snapshot(enabled, "MioProxy Service IPC 尚未在期限内恢复")
+        });
+        snapshot.desired_enabled = enabled;
+        snapshot.projection = crate::reconciliation::TunProjectionState::Recovering;
+        snapshot.message = Some(
+            "MioProxy Service IPC 正在恢复；已保留用户期望 TUN 状态，未重复执行未确认的切换"
+                .to_string(),
+        );
+        Ok(Some(snapshot))
     }
 
     pub(crate) async fn restore_for_lifecycle(app: &AppHandle) -> Result<(), String> {
+        let installed = match service_is_installed() {
+            Ok(installed) => installed,
+            Err(error) => {
+                crate::diagnostics::record_event(
+                    app,
+                    "warn",
+                    "service",
+                    format!("退出时无法确认 Service 安装状态，保留现有网络状态：{error}"),
+                );
+                return Ok(());
+            }
+        };
+        if !installed {
+            return Ok(());
+        }
+
+        let status = match tokio::time::timeout(
+            Duration::from_secs(1),
+            try_request_classified(
+                app,
+                ServiceCommand::Status,
+                NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+            ),
+        )
+        .await
+        {
+            Ok(Ok(Some(response))) => match data::<ServiceStatusData>(response) {
+                Ok(status) => status,
+                Err(error) => {
+                    crate::diagnostics::record_event(
+                        app,
+                        "warn",
+                        "service",
+                        format!("退出时 Service 状态无效，保留现有网络状态：{error}"),
+                    );
+                    return Ok(());
+                }
+            },
+            Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
+                crate::diagnostics::record_event(
+                    app,
+                    "warn",
+                    "service",
+                    "退出时 Service IPC 不可确认，未重复执行 TUN 清理",
+                );
+                return Ok(());
+            }
+        };
+        if status.tun_status == "disabled" {
+            return Ok(());
+        }
+        let external_tun = match crate::tun::foreign_tun_conflict() {
+            Ok(external) => external.is_some(),
+            Err(error) => {
+                crate::diagnostics::record_event(
+                    app,
+                    "warn",
+                    "service",
+                    format!("退出时无法确认外部 TUN，未修改任何 TUN 状态：{error}"),
+                );
+                return Ok(());
+            }
+        };
+        if external_tun {
+            crate::diagnostics::record_event(
+                app,
+                "warn",
+                "service",
+                "退出时检测到外部 TUN，未修改任何 TUN 状态",
+            );
+            return Ok(());
+        }
+
         let command = ServiceCommand::TunSetEnabled {
             enabled: false,
             profile_id: None,
             system_proxy_enabled: false,
         };
-        let mut last_error = None;
-        for attempt in 0..20 {
-            match try_request(app, command.clone()).await {
-                Ok(None) => return Ok(()),
-                Ok(Some(response)) => match data::<ServiceTunData>(response) {
-                    Ok(_) => return Ok(()),
-                    Err(error) => last_error = Some(error),
-                },
-                Err(error) => last_error = Some(error),
-            }
-            if attempt < 19 {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+        match tokio::time::timeout(
+            Duration::from_secs(2),
+            try_request_classified(
+                app,
+                command,
+                NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+            ),
+        )
+        .await
+        {
+            Ok(Ok(Some(_))) => Ok(()),
+            Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
+                crate::diagnostics::record_event(
+                    app,
+                    "warn",
+                    "service",
+                    "退出时 TUN 清理未确认，未重复执行或反转请求，保留现有网络状态",
+                );
+                Ok(())
             }
         }
-        Err(format!(
-            "退出前等待 MioProxy Service 清理 TUN 失败：{}",
-            last_error.unwrap_or_else(|| "未知错误".to_string())
-        ))
     }
 
     fn stop_installed_service() -> Result<(), String> {
@@ -864,7 +1455,7 @@ mod windows_impl {
         Ok(())
     }
 
-    fn start_installed_service() -> Result<(), String> {
+    fn start_installed_service_once() -> Result<(), String> {
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
             .map_err(|error| format!("打开 MioProxy Service Manager 失败：{error}"))?;
         let service = manager
@@ -884,6 +1475,16 @@ mod windows_impl {
                 Err(error) => return Err(format!("重新启动 MioProxy Service 失败：{error}")),
             }
         }
+        Ok(())
+    }
+
+    fn start_installed_service() -> Result<(), String> {
+        start_installed_service_once()?;
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|error| format!("打开 MioProxy Service Manager 失败：{error}"))?;
+        let service = manager
+            .open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+            .map_err(|error| format!("打开 MioProxy Service 失败：{error}"))?;
         let running = (0..100).any(|_| {
             let is_running = service
                 .query_status()
@@ -1012,6 +1613,21 @@ mod windows_impl {
                 actual_state: crate::tun::tun_state_for_status(status).0,
                 owner: crate::tun::tun_state_for_status(status).1,
                 external_detected: false,
+                projection: match status {
+                    crate::tun::TunStatus::Starting => {
+                        crate::reconciliation::TunProjectionState::Enabling
+                    }
+                    crate::tun::TunStatus::Running => crate::reconciliation::TunProjectionState::On,
+                    crate::tun::TunStatus::Stopping => {
+                        crate::reconciliation::TunProjectionState::Disabling
+                    }
+                    crate::tun::TunStatus::Error => {
+                        crate::reconciliation::TunProjectionState::Error
+                    }
+                    crate::tun::TunStatus::Disabled => {
+                        crate::reconciliation::TunProjectionState::Off
+                    }
+                },
             }
         }
     }
@@ -2777,8 +3393,9 @@ rules:
         Ok(())
     }
 
-    fn response_ok(data: Value) -> ServiceResponse {
+    fn response_ok(request_id: u64, data: Value) -> ServiceResponse {
         ServiceResponse {
+            request_id,
             protocol_version: SERVICE_PROTOCOL_VERSION,
             service_version: SERVICE_VERSION.to_string(),
             ok: true,
@@ -2787,8 +3404,9 @@ rules:
         }
     }
 
-    fn response_error(error: String) -> ServiceResponse {
+    fn response_error(request_id: u64, error: String) -> ServiceResponse {
         ServiceResponse {
+            request_id,
             protocol_version: SERVICE_PROTOCOL_VERSION,
             service_version: SERVICE_VERSION.to_string(),
             ok: false,
@@ -2891,7 +3509,7 @@ rules:
             Ok(request) => request,
             Err(error) => {
                 let line =
-                    serde_json::to_string(&response_error(format!("Service 请求无效：{error}")))
+                    serde_json::to_string(&response_error(0, format!("Service 请求无效：{error}")))
                         .map_err(|error| error.to_string())?
                         + "\n";
                 server
@@ -2902,21 +3520,27 @@ rules:
             }
         };
         let response = if request.protocol_version != SERVICE_PROTOCOL_VERSION {
-            response_error(format!(
-                "Service 协议版本不匹配：{SERVICE_PROTOCOL_VERSION} != {}",
-                request.protocol_version
-            ))
+            response_error(
+                request.request_id,
+                format!(
+                    "Service 协议版本不匹配：{SERVICE_PROTOCOL_VERSION} != {}",
+                    request.protocol_version
+                ),
+            )
         } else if request.client_version != SERVICE_VERSION {
-            response_error(format!(
-                "GUI 与 Service 版本不匹配：{SERVICE_VERSION} != {}",
-                request.client_version
-            ))
+            response_error(
+                request.request_id,
+                format!(
+                    "GUI 与 Service 版本不匹配：{SERVICE_VERSION} != {}",
+                    request.client_version
+                ),
+            )
         } else if request.token != expected_token {
-            response_error("Service 令牌无效".to_string())
+            response_error(request.request_id, "Service 令牌无效".to_string())
         } else {
             match runtime.handle(request.command).await {
-                Ok(data) => response_ok(data),
-                Err(error) => response_error(error),
+                Ok(data) => response_ok(request.request_id, data),
+                Err(error) => response_error(request.request_id, error),
             }
         };
         let line = serde_json::to_string(&response).map_err(|e| e.to_string())? + "\n";
@@ -3107,13 +3731,15 @@ rules:
         #[test]
         fn ordinary_ipc_can_fall_back_when_service_transport_is_unavailable() {
             for error in [
-                "MioProxy Service 已安装但当前 IPC 不可用，已阻止 GUI 接管 Mihomo",
-                "连接 MioProxy Service 失败：pipe unavailable",
-                "MioProxy Service 协议版本不匹配：GUI=1，Service=2",
-                "MioProxy Service 版本不匹配：GUI=0.9.1，Service=0.9.0",
+                "MioProxy Service IPC 暂时不可用，等待重新连接",
+                "MioProxy Service 正在启动，等待 Named Pipe 就绪",
+                "MioProxy Service 已运行但 Named Pipe 尚未就绪",
             ] {
                 assert!(is_optional_ipc_transport_error(error));
             }
+            assert!(!is_optional_ipc_transport_error(
+                "MioProxy Service 版本不匹配：GUI=0.9.1，Service=0.9.0"
+            ));
             assert!(!is_optional_ipc_transport_error("Service 令牌无效"));
         }
 
@@ -3153,22 +3779,24 @@ rules:
         #[test]
         fn ipc_errors_distinguish_reconnects_from_terminal_errors() {
             assert_eq!(
-                project_ipc_error(
-                    "MioProxy Service 已安装但当前 IPC 不可用，已阻止 GUI 接管 Mihomo"
-                ),
-                ServiceProjectionState::Reconnecting
+                scm_connectivity(Some(ServiceState::StartPending)),
+                ServiceConnectivity::ScmStarting
             );
             assert_eq!(
-                project_ipc_error("连接 MioProxy Service 失败：pipe unavailable"),
-                ServiceProjectionState::Reconnecting
+                scm_connectivity(Some(ServiceState::Running)),
+                ServiceConnectivity::Ready
             );
             assert_eq!(
-                project_ipc_error("MioProxy Service 版本不匹配：GUI=0.9.1，Service=0.9.0"),
-                ServiceProjectionState::Error
+                response_error_connectivity("Service 令牌无效"),
+                ServiceConnectivity::AuthenticationFailure
             );
             assert_eq!(
-                project_ipc_error("Service 令牌无效"),
-                ServiceProjectionState::Error
+                response_error_connectivity("Service 协议版本不匹配"),
+                ServiceConnectivity::ProtocolFailure
+            );
+            assert_eq!(
+                response_error_connectivity("MioProxy Service TUN 命令失败"),
+                ServiceConnectivity::CommandFailure
             );
         }
 
@@ -3338,6 +3966,7 @@ rules:
             }
             let (mut client, token) = client.expect("Service named pipe did not become ready");
             let request = ServiceRequest {
+                request_id: 1,
                 protocol_version: SERVICE_PROTOCOL_VERSION,
                 client_version: SERVICE_VERSION.to_string(),
                 token: token.trim().to_string(),
@@ -3351,6 +3980,7 @@ rules:
             reader.read_line(&mut response_line).await.unwrap();
             let response: ServiceResponse = serde_json::from_str(&response_line).unwrap();
             assert!(response.ok);
+            assert_eq!(response.request_id, 1);
             assert_eq!(response.protocol_version, SERVICE_PROTOCOL_VERSION);
             let status: ServiceStatusData = serde_json::from_value(response.data.unwrap()).unwrap();
             assert!(!status.running);
@@ -3368,6 +3998,7 @@ rules:
             let mut mismatch_client =
                 mismatch_client.expect("Service did not accept a second client");
             let mismatch_request = ServiceRequest {
+                request_id: 2,
                 protocol_version: SERVICE_PROTOCOL_VERSION + 1,
                 client_version: SERVICE_VERSION.to_string(),
                 token: token.trim().to_string(),
@@ -3399,6 +4030,7 @@ rules:
             let mut version_client =
                 version_client.expect("Service did not accept a version mismatch client");
             let version_request = ServiceRequest {
+                request_id: 3,
                 protocol_version: SERVICE_PROTOCOL_VERSION,
                 client_version: "0.7.0".to_string(),
                 token: token.trim().to_string(),
@@ -3430,6 +4062,7 @@ rules:
             let mut token_client =
                 token_client.expect("Service did not accept an invalid token client");
             let token_request = ServiceRequest {
+                request_id: 4,
                 protocol_version: SERVICE_PROTOCOL_VERSION,
                 client_version: SERVICE_VERSION.to_string(),
                 token: "invalid-service-token".to_string(),

@@ -5,6 +5,7 @@ mod migration;
 mod mihomo;
 mod outbound;
 mod profiles;
+mod reconciliation;
 pub mod service;
 mod startup;
 mod system_proxy;
@@ -141,7 +142,7 @@ pub fn run() {
                             .recovery_message
                             .unwrap_or_else(|| "Service Core 未达到 Ready".to_string()),
                     ),
-                    Ok(None) | Err(_) => {
+                    Ok(None) => {
                         if let Err(error) = mihomo::start_owned_for_lifecycle(&recovery_app).await {
                             diagnostics::record_event(
                                 &recovery_app,
@@ -151,6 +152,12 @@ pub fn run() {
                             );
                         }
                     }
+                    Err(error) => diagnostics::record_event(
+                        &recovery_app,
+                        "warn",
+                        "service",
+                        format!("Service IPC 尚未恢复，拒绝启动 GUI Core：{error}"),
+                    ),
                 }
             });
             Ok(())
