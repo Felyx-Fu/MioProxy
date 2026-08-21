@@ -155,20 +155,6 @@ pub fn run() {
             });
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let exiting = window
-                    .app_handle()
-                    .state::<AppLifecycle>()
-                    .exiting
-                    .load(Ordering::SeqCst);
-                if !exiting {
-                    api.prevent_close();
-                    let _ = window.set_skip_taskbar(true);
-                    let _ = window.hide();
-                }
-            }
-        })
         .invoke_handler(tauri::generate_handler![
             mihomo_start,
             mihomo_stop,
@@ -213,6 +199,7 @@ pub fn run() {
             core_update::mihomo_core_update_install,
             diagnostics::diagnostic_bundle_generate,
             tray::tray_set_locale,
+            window_shell::window_hide_to_tray,
             window_shell::window_set_maximize_button_rect,
             window_shell::window_show_system_menu,
             window_shell::window_material_set,

@@ -80,6 +80,15 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn window_hide_to_tray(window: WebviewWindow) -> Result<(), String> {
+    ensure_main_window(&window)?;
+    window
+        .set_skip_taskbar(true)
+        .map_err(|error| error.to_string())?;
+    window.hide().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn window_set_maximize_button_rect(
     window: WebviewWindow,
     rect: LogicalRect,

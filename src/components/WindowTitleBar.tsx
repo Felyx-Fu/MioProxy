@@ -78,18 +78,17 @@ export function WindowTitleBar() {
     publishMaximizeButtonRect();
   }
 
-  async function close() {
-    await appWindow.close();
+  async function hideToTray() {
+    await invoke("window_hide_to_tray");
   }
 
   function handleMouseDown(event: MouseEvent<HTMLDivElement>) {
     if (event.button !== 0 || isWindowControl(event.target)) return;
+    if (event.detail > 1) {
+      void toggleMaximize();
+      return;
+    }
     void appWindow.startDragging();
-  }
-
-  function handleDoubleClick(event: MouseEvent<HTMLDivElement>) {
-    if (isWindowControl(event.target)) return;
-    void toggleMaximize();
   }
 
   function handleContextMenu(event: MouseEvent<HTMLDivElement>) {
@@ -103,7 +102,6 @@ export function WindowTitleBar() {
       className="window-titlebar"
       aria-label={t("titlebar.label")}
       onContextMenu={handleContextMenu}
-      onDoubleClick={handleDoubleClick}
       onMouseDown={handleMouseDown}
     >
       <span className="window-titlebar-title">MioProxy</span>
@@ -120,7 +118,7 @@ export function WindowTitleBar() {
         >
           <Square size={13} strokeWidth={1.7} />
         </button>
-        <button className="window-titlebar-control window-titlebar-close" type="button" aria-label={t("titlebar.close")} onClick={() => void close()}>
+        <button className="window-titlebar-control window-titlebar-close" type="button" aria-label={t("titlebar.close")} onClick={() => void hideToTray()}>
           <X size={14} strokeWidth={1.7} />
         </button>
       </div>
