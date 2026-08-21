@@ -94,6 +94,27 @@ The pre-tag GitHub Actions workflow is `MioProxy Release Readiness`. It is
 started with `workflow_dispatch`, performs the locked build/test/lint gates and
 an unsigned Windows bundle build, and never creates a GitHub Release.
 
+## Dependency security status
+
+The Windows release surface is checked explicitly with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\check-windows-dependency-surface.ps1
+```
+
+The shared cross-platform `src-tauri/Cargo.lock` contains `glib 0.18.5` only
+through Tauri's non-Windows GTK3 dependency graph. The `x86_64-pc-windows-msvc`
+release graph does not select `glib`, and it is not compiled into the Windows
+application or installer. GitHub Dependabot may still report
+[GHSA-wrw7-89jp-8q8g](https://github.com/advisories/GHSA-wrw7-89jp-8q8g) from
+the cross-platform lockfile.
+
+Forcing `glib 0.20` into this graph is not a safe fix: the current Tauri GTK3
+stack requires the `0.18` API line. The complete cross-platform fix belongs to
+the upstream Tauri/GTK migration; MioProxy does not silently replace that
+stack or claim the unsupported Linux path is patched. The Windows release
+workflow fails if `glib` ever enters the Windows target dependency surface.
+
 ## Windows release build
 
 The updater signing private key is never stored in this repository. For a local

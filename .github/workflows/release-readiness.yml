@@ -56,6 +56,12 @@ jobs:
             throw "Tauri resources no longer include the binaries directory."
           }
 
+      - name: Verify Windows dependency surface
+        shell: pwsh
+        run: |
+          & powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/check-windows-dependency-surface.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Run locked source gates
         run: |
           npm run build
