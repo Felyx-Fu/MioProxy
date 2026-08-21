@@ -45,6 +45,7 @@ export default function App() {
   const [delayByProxy, setDelayByProxy] = useState<Record<string, number>>({});
   const [delayStatusByProxy, setDelayStatusByProxy] = useState<Record<string, "available" | "unavailable">>({});
   const [error, setError] = useState<string | null>(null);
+  const [coreRecoveryError, setCoreRecoveryError] = useState<string | null>(null);
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ currentVersion: "0.9.1", updating: false, checkpoint: null, recoveryError: null });
@@ -99,7 +100,7 @@ export default function App() {
       const next = await mihomoApi.status();
       setStatus(next);
       setCoreState(next.state);
-      if (next.recoveryMessage) setError(next.recoveryMessage);
+      setCoreRecoveryError(next.recoveryMessage ?? null);
       if (next.state === "ready") {
         setVersion(await mihomoApi.version());
       } else {
@@ -109,6 +110,7 @@ export default function App() {
       const message = errorMessage(e);
       if (isServiceIpcFailure(message)) return;
       setCoreState("error");
+      setCoreRecoveryError(message);
       setError(message);
     }
   }, []);
@@ -375,6 +377,7 @@ export default function App() {
       }
       setStatus((current) => current ? { ...current, state: "stopped", running: false } : current);
       setCoreState("stopped");
+      setCoreRecoveryError(null);
       setProxyState("disabled");
     }).then((stop) => {
       if (active) unlistenStopped = stop;
@@ -386,6 +389,7 @@ export default function App() {
       coreCrashPending.current = true;
       setStatus((current) => current ? { ...current, state: "error", running: false } : current);
       setCoreState("error");
+      setCoreRecoveryError(message);
       setProxyState("disabled");
       setError(message);
       pushToast("error", message);
@@ -710,7 +714,7 @@ export default function App() {
       <div className="app-shell">
         <Sidebar page={page} onChange={setPage} />
         <main className="content" id="main-content">
-          {page === "home" && <DashboardPage status={status} coreState={coreState} version={version} proxyStatus={proxyStatus} proxyState={proxyState} tunStatus={tunSnapshot} tunBusy={tunBusy} traffic={traffic.snapshot} connectionCount={connectionCount} currentNode={currentNode} delay={currentNode ? delayByProxy[currentNode] ?? null : null} proxyPathState={proxyPathState} memory={connections.data?.memory ?? null} selectedProfile={selectedProfile} appliedProfileName={appliedProfileSession?.name ?? null} error={error} tunError={tunError} onRequestProxyTransition={() => void requestSystemProxyTransition()} onRequestTunTransition={() => void requestTunTransition()} onNavigate={setPage} />}
+          {page === "home" && <DashboardPage status={status} coreState={coreState} version={version} proxyStatus={proxyStatus} proxyState={proxyState} tunStatus={tunSnapshot} tunBusy={tunBusy} traffic={traffic.snapshot} connectionCount={connectionCount} currentNode={currentNode} delay={currentNode ? delayByProxy[currentNode] ?? null : null} proxyPathState={proxyPathState} memory={connections.data?.memory ?? null} selectedProfile={selectedProfile} appliedProfileName={appliedProfileSession?.name ?? null} error={coreRecoveryError ?? error} tunError={tunError} onRequestProxyTransition={() => void requestSystemProxyTransition()} onRequestTunTransition={() => void requestTunTransition()} onNavigate={setPage} />}
           {page === "connections" && <ConnectionsPage state={connections} onRefresh={connections.refresh} onClose={connections.closeConnection} onCloseAll={connections.closeAllConnections} />}
           {page === "logs" && <LogsPage state={logs} />}
           {page === "profiles" && <ProfilesPage profiles={profiles} selectedId={selectedProfileId} appliedId={appliedProfileSession?.id ?? null} busyId={profileBusyId} error={error} onSelect={setSelectedProfileId} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} onNavigate={setPage} />}
@@ -721,7 +725,7 @@ export default function App() {
           {page === "tun" && <TunPage profileId={selectedProfileId} coreRunning={coreReady} systemProxyEnabled={Boolean(proxyStatus?.enabled)} snapshot={tunSnapshot} loading={tunBusy} error={tunError} onRequestTransition={() => void requestTunTransition()} onNavigate={setPage} />}
           {page === "settings" && <SettingsPage status={status} coreState={coreState} proxyStatus={proxyStatus} proxyState={proxyState} tunStatus={tunSnapshot} tunBusy={tunBusy} serviceConnection={serviceConnection} startup={startup} updatePreferences={updatePreferences} busy={settingsBusy} onRequestProxyTransition={() => void requestSystemProxyTransition()} onRequestTunTransition={() => void requestTunTransition()} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} onToggleUpdatePreference={toggleUpdatePreference} appUpdate={{ ...updateStatus, checking: updateChecking, downloading: updateDownloading, installing: updateInstalling, downloaded: updateDownloaded, progress: updateProgress, availableVersion: availableUpdate?.version ?? null, releaseNotes: availableUpdate?.body ?? null, error: updateError }} onCheckForUpdate={() => void checkForUpdate()} onInstallUpdate={() => void installUpdate()} coreUpdate={coreUpdate} coreUpdateBusy={coreUpdateBusy} onCheckCoreUpdate={() => void checkCoreUpdate()} onInstallCoreUpdate={() => void installCoreUpdate()} diagnosticBusy={diagnosticBusy} diagnosticPath={diagnosticPath} onGenerateDiagnosticBundle={() => void generateDiagnosticBundle()} onNavigate={setPage} />}
         </main>
-        <RuntimeStatusBar status={status} coreState={coreState} selectedProfileName={selectedProfile?.name ?? null} appliedProfileName={appliedProfileSession?.name ?? null} currentNode={currentNode} traffic={traffic.snapshot} connectionCount={connectionCount} proxyStatus={proxyStatus} tunStatus={tunSnapshot} onNavigate={setPage} />
+        <RuntimeStatusBar status={status} coreState={coreState} selectedProfileName={selectedProfile?.name ?? null} appliedProfileName={appliedProfileSession?.name ?? null} currentNode={currentNode} traffic={traffic.snapshot} connectionCount={connectionCount} proxyStatus={proxyStatus} proxyState={proxyState} tunStatus={tunSnapshot} onNavigate={setPage} />
       </div>
       <ToastHost toasts={toasts} onDismiss={dismissToast} />
     </div>

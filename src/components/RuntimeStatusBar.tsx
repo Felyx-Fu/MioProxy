@@ -1,15 +1,15 @@
 import { ArrowDown, ArrowUp, Circle, Network, Route, SlidersHorizontal } from "lucide-react";
-import type { CoreState, CoreStatus, SystemProxyStatus, TrafficSnapshot, TunStatusSnapshot } from "../api/mihomo";
+import type { CoreState, CoreStatus, ProxyState, SystemProxyStatus, TrafficSnapshot, TunStatusSnapshot } from "../api/mihomo";
 import { formatRate } from "../utils/format";
 import type { Page } from "./Sidebar";
 
-function systemProxyProjection(snapshot: SystemProxyStatus | null) {
+function systemProxyProjection(snapshot: SystemProxyStatus | null, transitioning: boolean) {
   if (!snapshot) return { label: "Proxy —", tone: "unknown" };
   if (snapshot.owner === "external" || snapshot.actualState === "externalEndpoint" || snapshot.externalDetected) return { label: "Proxy External", tone: "warning" };
-  if (!snapshot.stateConsistent) return { label: "Proxy Error", tone: "error" };
+  if (transitioning) return { label: "Proxy Pending", tone: "warning" };
   if (snapshot.owner === "mioproxy" && snapshot.actualState === "mioproxyEndpoint" && snapshot.enabled) return { label: "Proxy On", tone: "success" };
-  if (snapshot.desiredEnabled) return { label: "Proxy Pending", tone: "warning" };
   if (snapshot.owner === "none" && snapshot.actualState === "disabled") return { label: "Proxy Off", tone: "muted" };
+  if (!snapshot.stateConsistent) return { label: "Proxy Error", tone: "error" };
   return { label: "Proxy —", tone: "unknown" };
 }
 
@@ -33,6 +33,7 @@ export function RuntimeStatusBar({
   traffic,
   connectionCount,
   proxyStatus,
+  proxyState,
   tunStatus,
   onNavigate,
 }: {
@@ -44,13 +45,14 @@ export function RuntimeStatusBar({
   traffic: TrafficSnapshot | null;
   connectionCount: number | null;
   proxyStatus: SystemProxyStatus | null;
+  proxyState: ProxyState;
   tunStatus: TunStatusSnapshot | null;
   onNavigate: (page: Page) => void;
 }) {
   const coreLabel = !status ? "Checking" : coreState === "ready" ? "Ready" : coreState === "starting" ? "Starting" : coreState === "stopped" ? "Stopped" : "Error";
   const coreTone = !status ? "unknown" : coreState === "ready" ? "success" : coreState === "error" ? "error" : "warning";
   const profileLabel = appliedProfileName ? `${appliedProfileName} · session` : selectedProfileName ? `Selected ${selectedProfileName}` : "Profile —";
-  const proxy = systemProxyProjection(proxyStatus);
+  const proxy = systemProxyProjection(proxyStatus, proxyState === "enabling" || proxyState === "disabling");
   const tun = tunProjection(tunStatus);
 
   return (

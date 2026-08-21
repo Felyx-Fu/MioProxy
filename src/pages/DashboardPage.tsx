@@ -19,12 +19,15 @@ function StateValue({ tone, children }: { tone: "success" | "warning" | "error" 
   return <span className={`state-value tone-${tone}`}><span className="state-dot" />{children}</span>;
 }
 
-function systemProxyLabel(snapshot: SystemProxyStatus | null) {
+function systemProxyLabel(snapshot: SystemProxyStatus | null, transitioning = false) {
   if (!snapshot) return { key: "dashboard.state.checking" as const, tone: "muted" as const, owned: false, external: false };
   if (snapshot.owner === "external" || snapshot.actualState === "externalEndpoint" || snapshot.externalDetected) return { key: "dashboard.state.external" as const, tone: "warning" as const, owned: false, external: true };
-  if (!snapshot.stateConsistent) return { key: "dashboard.state.recoveryRequired" as const, tone: "error" as const, owned: false, external: false };
+  if (transitioning) return { key: "dashboard.state.pending" as const, tone: "warning" as const, owned: false, external: false };
   if (snapshot.owner === "mioproxy" && snapshot.actualState === "mioproxyEndpoint" && snapshot.enabled) return { key: "dashboard.state.enabled" as const, tone: "success" as const, owned: true, external: false };
-  if (snapshot.desiredEnabled) return { key: "dashboard.state.pending" as const, tone: "warning" as const, owned: false, external: false };
+  // The card reports the observed Windows state. A persisted desired flag must
+  // not make an already-disabled proxy look like it is still transitioning.
+  if (snapshot.owner === "none" && snapshot.actualState === "disabled") return { key: "dashboard.state.disabled" as const, tone: "muted" as const, owned: false, external: false };
+  if (!snapshot.stateConsistent) return { key: "dashboard.state.recoveryRequired" as const, tone: "error" as const, owned: false, external: false };
   return { key: "dashboard.state.disabled" as const, tone: "muted" as const, owned: false, external: false };
 }
 
@@ -156,11 +159,11 @@ export function DashboardPage({
   onNavigate: (page: Page) => void;
 }) {
   const { t } = useI18n();
-  const proxy = systemProxyLabel(proxyStatus);
+  const proxyBusy = proxyState === "enabling" || proxyState === "disabling";
+  const proxy = systemProxyLabel(proxyStatus, proxyBusy);
   const tun = tunLabel(tunStatus);
   const checking = status === null;
   const healthy = coreState === "ready" && proxy.tone !== "error" && tun.tone !== "error";
-  const proxyBusy = proxyState === "enabling" || proxyState === "disabling";
   const tunTransitioning = tunStatus?.status === "starting" || tunStatus?.status === "stopping";
   const tunWillDisable = !tun.external && Boolean(tun.owned || tunStatus?.desiredEnabled);
   const coreTone = checking ? "muted" : coreState === "ready" ? "success" : coreState === "error" ? "error" : "warning";
