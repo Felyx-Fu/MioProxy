@@ -10,7 +10,7 @@ if ([string]::IsNullOrWhiteSpace($token)) { throw 'MioProxy Service token is una
 function Invoke-MioProxyServiceCommand([hashtable]$command) {
     $request = [ordered]@{
         protocolVersion = 1
-        clientVersion = '0.9.1'
+        clientVersion = '0.9.2'
         token = $token
         command = $command
     } | ConvertTo-Json -Compress -Depth 5

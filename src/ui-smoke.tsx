@@ -88,8 +88,8 @@ mockIPC((cmd: string, args?: InvokeArgs) => {
     case "startup_status": return { enabled: true, startMinimized: true };
     case "profile_list": return profiles;
     case "tun_status": return { status: "running", message: null, admin: true, profileId: "global", snapshot: null, desiredEnabled: true, actualState: "mioproxyTun", owner: "mioproxy", externalDetected: false };
-    case "service_status_command": return { reachable: true, protocolVersion: 1, serviceVersion: "0.9.1", versionMismatch: false, error: null, admin: true, ownsCore: true, coreRunning: true, ownershipConflict: false, tunStatus: "running", tunMessage: null, desiredCoreRunning: true, coreRecoveryMessage: null };
-    case "update_status": return { currentVersion: "0.9.1", updating: false, checkpoint: null, recoveryError: null };
+    case "service_status_command": return { reachable: true, protocolVersion: 1, serviceVersion: "0.9.2", versionMismatch: false, error: null, admin: true, ownsCore: true, coreRunning: true, ownershipConflict: false, tunStatus: "running", tunMessage: null, desiredCoreRunning: true, coreRecoveryMessage: null };
+    case "update_status": return { currentVersion: "0.9.2", updating: false, checkpoint: null, recoveryError: null };
     case "update_preferences_status": return { checkOnStartup: false, autoDownload: false };
     case "mihomo_core_update_status": return { currentVersion: "1.19.29", availableVersion: null, assetName: null, phase: "idle", error: null };
     case "mihomo_rules": return { rules: [

@@ -48,7 +48,7 @@ export default function App() {
   const [coreRecoveryError, setCoreRecoveryError] = useState<string | null>(null);
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ currentVersion: "0.9.1", updating: false, checkpoint: null, recoveryError: null });
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ currentVersion: "0.9.2", updating: false, checkpoint: null, recoveryError: null });
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateDownloading, setUpdateDownloading] = useState(false);

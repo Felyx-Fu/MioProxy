@@ -3738,7 +3738,7 @@ rules:
                 assert!(is_optional_ipc_transport_error(error));
             }
             assert!(!is_optional_ipc_transport_error(
-                "MioProxy Service 版本不匹配：GUI=0.9.1，Service=0.9.0"
+                "MioProxy Service 版本不匹配：GUI=0.9.2，Service=0.9.0"
             ));
             assert!(!is_optional_ipc_transport_error("Service 令牌无效"));
         }

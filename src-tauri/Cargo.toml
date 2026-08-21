@@ -1,6 +1,6 @@
 [package]
 name = "mioproxy"
-version = "0.9.1"
+version = "0.9.2"
 description = "A Windows desktop proxy client powered by a separate Mihomo core"
 authors = ["Felyx"]
 edition = "2021"

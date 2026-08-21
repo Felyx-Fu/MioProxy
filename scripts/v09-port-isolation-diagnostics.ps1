@@ -56,7 +56,7 @@ function Invoke-ServicePortDiagnostics([int]$TargetPort) {
         $client.Connect(2000)
         $writer = [System.IO.StreamWriter]::new($client)
         $writer.AutoFlush = $true
-        $request = @{ protocolVersion = 1; clientVersion = '0.9.1'; token = $token; command = @{ command = 'portDiagnostics'; port = $TargetPort } } | ConvertTo-Json -Compress -Depth 4
+        $request = @{ protocolVersion = 1; clientVersion = '0.9.2'; token = $token; command = @{ command = 'portDiagnostics'; port = $TargetPort } } | ConvertTo-Json -Compress -Depth 4
         $writer.WriteLine($request)
         $reader = [System.IO.StreamReader]::new($client)
         $response = $reader.ReadLine() | ConvertFrom-Json
