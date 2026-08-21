@@ -16,10 +16,13 @@
         "title": "MioProxy",
         "width": 1180,
         "height": 760,
-        "minWidth": 960,
+        "minWidth": 800,
         "minHeight": 650,
         "center": true,
-        "resizable": true
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true
       }
     ],
     "security": {

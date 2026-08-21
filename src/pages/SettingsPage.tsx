@@ -1,6 +1,9 @@
 import { Download, FileDown, FolderCog, Info, LockKeyhole, Monitor, Network, Power, Rocket, Route, Search, ShieldCheck, SlidersHorizontal } from "lucide-react";
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { ReactNode, useMemo, useState } from "react";
 import type { CoreState, CoreStatus, CoreUpdateStatus, ProxyState, ServiceConnectionStatus, StartupSettings, SystemProxyStatus, TunStatusSnapshot, UpdatePreferences, UpdateStatus } from "../api/mihomo";
+import { useAppearance, type ThemePreference } from "../appearance/AppearanceProvider";
+import { useI18n } from "../i18n/I18nProvider";
+import type { MessageKey } from "../locales/en-US";
 import type { Page } from "../components/Sidebar";
 
 type AppUpdateState = UpdateStatus & {
@@ -15,15 +18,31 @@ type AppUpdateState = UpdateStatus & {
 };
 
 type Category = "general" | "network" | "core" | "appearance" | "updates" | "advanced" | "about";
-const CATEGORIES: Array<{ id: Category; label: string }> = [
-  { id: "general", label: "General" },
-  { id: "network", label: "Network" },
-  { id: "core", label: "Core" },
-  { id: "appearance", label: "Appearance" },
-  { id: "updates", label: "Updates" },
-  { id: "advanced", label: "Advanced" },
-  { id: "about", label: "About" },
+
+const CATEGORIES: Array<{ id: Category; label: MessageKey }> = [
+  { id: "general", label: "settings.category.general" },
+  { id: "network", label: "settings.category.network" },
+  { id: "core", label: "settings.category.core" },
+  { id: "appearance", label: "settings.category.appearance" },
+  { id: "updates", label: "settings.category.updates" },
+  { id: "advanced", label: "settings.category.advanced" },
+  { id: "about", label: "settings.category.about" },
 ];
+
+const CORE_STATE_KEYS: Record<CoreState, MessageKey> = {
+  stopped: "dashboard.state.stopped",
+  starting: "dashboard.state.starting",
+  ready: "dashboard.state.ready",
+  error: "dashboard.state.error",
+};
+
+const SERVICE_STATE_KEYS: Record<ServiceConnectionStatus["state"], MessageKey> = {
+  running: "settings.service.running",
+  stopped: "settings.service.stopped",
+  starting: "settings.service.starting",
+  reconnecting: "settings.service.reconnecting",
+  error: "settings.service.error",
+};
 
 type SettingsPageProps = {
   status: CoreStatus | null;
@@ -71,57 +90,59 @@ export function SettingsPage(props: SettingsPageProps) {
     appUpdate, onCheckForUpdate, onInstallUpdate, coreUpdate, coreUpdateBusy, onCheckCoreUpdate, onInstallCoreUpdate,
     diagnosticBusy, diagnosticPath, onGenerateDiagnosticBundle, onNavigate,
   } = props;
+  const { t, languagePreference, setLanguagePreference } = useI18n();
+  const { themePreference, setThemePreference, useWindowsMaterial, setUseWindowsMaterial, materialStatus } = useAppearance();
   const [category, setCategory] = useState<Category>("general");
   const [query, setQuery] = useState("");
-  const [theme, setTheme] = useState<"light" | "dark" | "system">(() => {
-    const saved = window.sessionStorage.getItem("mioproxy.preview.theme");
-    return saved === "dark" || saved === "system" ? saved : "light";
-  });
   const searching = Boolean(query.trim());
   const proxyExternal = Boolean(proxyStatus?.owner === "external" || proxyStatus?.actualState === "externalEndpoint" || proxyStatus?.externalDetected);
   const tunExternal = Boolean(tunStatus?.owner === "external" || tunStatus?.actualState === "externalTun" || tunStatus?.externalDetected);
   const tunOwned = Boolean(tunStatus?.owner === "mioproxy" && tunStatus?.actualState === "mioproxyTun");
   const tunWillDisable = !tunExternal && Boolean(tunOwned || tunStatus?.desiredEnabled);
 
-  useEffect(() => {
-    const root = document.documentElement;
-    root.dataset.theme = theme;
-    window.sessionStorage.setItem("mioproxy.preview.theme", theme);
-  }, [theme]);
+  const enabledLabel = (value: boolean | undefined) => value === undefined ? t("common.checking") : t(value ? "common.enabled" : "common.disabled");
+  const coreLabel = (state: CoreState) => t(CORE_STATE_KEYS[state]);
+  const serviceLabel = (connection: ServiceConnectionStatus | null) => {
+    if (!connection) return t("common.checking");
+    if (connection.versionMismatch) return t("settings.service.versionMismatch");
+    return t(SERVICE_STATE_KEYS[connection.state]);
+  };
 
   const content: Record<Category, Array<{ search: string; node: ReactNode }>> = useMemo(() => ({
     general: [
-      { search: "start windows launch startup 开机启动", node: <SettingRow key="startup" icon={<Rocket size={16} />} title="Start with Windows" description="Launch MioProxy automatically for the current Windows user." value={startup ? startup.enabled ? "Enabled" : "Disabled" : "Checking"} control={<button className="setting-toggle" type="button" onClick={() => onToggleStartup(!(startup?.enabled ?? false))} disabled={busy || !startup}>{startup?.enabled ? "Turn off" : "Turn on"}</button>} /> },
-      { search: "minimize tray startup 最小化 托盘", node: <SettingRow key="minimized" icon={<Monitor size={16} />} title="Minimize to system tray" description="Keep MioProxy available in the notification area after launch." value={startup ? startup.startMinimized ? "Enabled" : "Disabled" : "Checking"} control={<button className="setting-toggle" type="button" onClick={() => onToggleMinimized(!(startup?.startMinimized ?? false))} disabled={busy || !startup?.enabled}>{startup?.startMinimized ? "Turn off" : "Turn on"}</button>} /> },
+      { search: "start windows launch startup 开机启动", node: <SettingRow key="startup" icon={<Rocket size={16} />} title={t("settings.general.start.title")} description={t("settings.general.start.description")} value={startup ? enabledLabel(startup.enabled) : t("common.checking")} control={<button className="setting-toggle" type="button" onClick={() => onToggleStartup(!(startup?.enabled ?? false))} disabled={busy || !startup}>{startup?.enabled ? t("settings.action.turnOff") : t("settings.action.turnOn")}</button>} /> },
+      { search: "minimize tray startup 最小化 托盘", node: <SettingRow key="minimized" icon={<Monitor size={16} />} title={t("settings.general.minimized.title")} description={t("settings.general.minimized.description")} value={startup ? enabledLabel(startup.startMinimized) : t("common.checking")} control={<button className="setting-toggle" type="button" onClick={() => onToggleMinimized(!(startup?.startMinimized ?? false))} disabled={busy || !startup?.enabled}>{startup?.startMinimized ? t("settings.action.turnOff") : t("settings.action.turnOn")}</button>} /> },
     ],
     network: [
-      { search: "system proxy windows network 系统代理", node: <SettingRow key="proxy" icon={<Power size={16} />} title="System Proxy" description={proxyExternal ? "An external proxy owns the current Windows setting; MioProxy will not take it over here." : "MioProxy restores the original Windows setting when it releases ownership."} value={!proxyStatus ? "Checking" : proxyExternal ? "External owner" : proxyStatus.enabled ? `On · 127.0.0.1:${proxyStatus.mixedPort}` : "Off"} control={<button className="setting-toggle" type="button" onClick={onRequestProxyTransition} disabled={coreState !== "ready" || busy || proxyExternal}>{proxyState === "enabling" || proxyState === "disabling" ? "Working…" : proxyExternal ? "External" : proxyStatus?.enabled ? "Turn off" : "Turn on"}</button>} /> },
-      { search: "tun transparent route network 透明代理", node: <SettingRow key="tun" icon={<Route size={16} />} title="TUN" description={tunExternal ? "An external TUN is active; MioProxy leaves it untouched." : "Route traffic through the MioProxy-managed Mihomo TUN."} value={!tunStatus ? "Checking" : tunExternal ? "External owner" : tunStatus.status === "running" ? "On" : tunStatus.status === "error" ? "Error" : tunStatus.status === "starting" || tunStatus.status === "stopping" ? "Transitioning" : tunStatus.desiredEnabled ? "Recovery pending" : "Off"} control={<button className="setting-toggle" type="button" onClick={onRequestTunTransition} disabled={tunBusy || tunExternal || (!tunWillDisable && coreState !== "ready")}>{tunBusy ? "Working…" : tunExternal ? "External" : tunWillDisable ? "Turn off" : "Turn on"}</button>} /> },
-      { search: "dns nameserver network", node: <SettingRow key="dns" icon={<Network size={16} />} title="DNS" description="Edit DNS values used when building the selected Profile preview." control={<button className="setting-toggle" type="button" onClick={() => onNavigate("dns")}>Open DNS</button>} /> },
+      { search: "system proxy windows network 系统代理", node: <SettingRow key="proxy" icon={<Power size={16} />} title={t("settings.network.proxy.title")} description={proxyExternal ? t("settings.network.proxy.externalDescription") : t("settings.network.proxy.description")} value={!proxyStatus ? t("common.checking") : proxyExternal ? t("settings.network.proxy.externalOwner") : proxyStatus.enabled ? t("settings.network.proxy.onValue", { port: proxyStatus.mixedPort }) : t("common.off")} control={<button className="setting-toggle" type="button" onClick={onRequestProxyTransition} disabled={coreState !== "ready" || busy || proxyExternal}>{proxyState === "enabling" || proxyState === "disabling" ? t("common.working") : proxyExternal ? t("common.external") : proxyStatus?.enabled ? t("settings.action.turnOff") : t("settings.action.turnOn")}</button>} /> },
+      { search: "tun transparent route network 透明代理", node: <SettingRow key="tun" icon={<Route size={16} />} title={t("settings.network.tun.title")} description={tunExternal ? t("settings.network.tun.externalDescription") : t("settings.network.tun.description")} value={!tunStatus ? t("common.checking") : tunExternal ? t("common.external") : tunStatus.status === "running" ? t("common.on") : tunStatus.status === "error" ? t("common.error") : tunStatus.status === "starting" || tunStatus.status === "stopping" ? t("settings.network.tun.transitioning") : tunStatus.desiredEnabled ? t("settings.network.tun.recoveryPending") : t("common.off")} control={<button className="setting-toggle" type="button" onClick={onRequestTunTransition} disabled={tunBusy || tunExternal || (!tunWillDisable && coreState !== "ready")}>{tunBusy ? t("common.working") : tunExternal ? t("common.external") : tunWillDisable ? t("settings.action.turnOff") : t("settings.action.turnOn")}</button>} /> },
+      { search: "dns nameserver network", node: <SettingRow key="dns" icon={<Network size={16} />} title={t("settings.network.dns.title")} description={t("settings.network.dns.description")} control={<button className="setting-toggle" type="button" onClick={() => onNavigate("dns")}>{t("settings.action.openDns")}</button>} /> },
     ],
     core: [
-      { search: "core mihomo state controller", node: <SettingRow key="core-state" icon={<ShieldCheck size={16} />} title="Mihomo Core" description="Core is Ready only after authenticated Controller health checks succeed." value={!status ? "Checking" : `${coreState}${status.mode ? ` · ${status.mode}` : ""}`} /> },
-      { search: "config path runtime yaml", node: <SettingRow key="config" icon={<FolderCog size={16} />} title="Runtime configuration" description="Generated configuration path managed by MioProxy." value={status?.configPath ?? "—"} /> },
-      { search: "controller localhost port 19090", node: <SettingRow key="controller" icon={<LockKeyhole size={16} />} title="Controller" description="Local authenticated Controller endpoint." value={status?.controller ?? "—"} /> },
+      { search: "core mihomo state controller", node: <SettingRow key="core-state" icon={<ShieldCheck size={16} />} title={t("settings.core.mihomo.title")} description={t("settings.core.mihomo.description")} value={!status ? t("common.checking") : `${coreLabel(coreState)}${status.mode ? ` · ${status.mode}` : ""}`} /> },
+      { search: "config path runtime yaml", node: <SettingRow key="config" icon={<FolderCog size={16} />} title={t("settings.core.runtime.title")} description={t("settings.core.runtime.description")} value={status?.configPath ?? "—"} /> },
+      { search: "controller localhost port 19090", node: <SettingRow key="controller" icon={<LockKeyhole size={16} />} title={t("settings.core.controller.title")} description={t("settings.core.controller.description")} value={status?.controller ?? "—"} /> },
     ],
     appearance: [
-      { search: "theme light dark system appearance 主题", node: <SettingRow key="theme" icon={<Monitor size={16} />} title="Theme" description="Choose the interface appearance for this application session." control={<select value={theme} onChange={(event) => setTheme(event.target.value as typeof theme)} aria-label="Theme"><option value="light">Light</option><option value="dark">Dark</option><option value="system">System</option></select>} /> },
+      { search: "language locale system 中文 English 语言", node: <SettingRow key="language" icon={<Monitor size={16} />} title={t("settings.appearance.language.title")} description={t("settings.appearance.language.description")} control={<select value={languagePreference} onChange={(event) => setLanguagePreference(event.target.value as typeof languagePreference)} aria-label={t("settings.appearance.language.label")}><option value="system">{t("settings.appearance.language.system")}</option><option value="zh-CN">{t("settings.appearance.language.zhCN")}</option><option value="en-US">{t("settings.appearance.language.enUS")}</option></select>} /> },
+      { search: "theme light dark system appearance 主题", node: <SettingRow key="theme" icon={<Monitor size={16} />} title={t("settings.appearance.theme.title")} description={t("settings.appearance.theme.description")} control={<select value={themePreference} onChange={(event) => setThemePreference(event.target.value as ThemePreference)} aria-label={t("settings.appearance.theme.label")}><option value="system">{t("settings.appearance.theme.system")}</option><option value="light">{t("settings.appearance.theme.light")}</option><option value="dark">{t("settings.appearance.theme.dark")}</option></select>} /> },
+      { search: "mica material transparency windows 材质", node: <SettingRow key="material" icon={<Monitor size={16} />} title={t("settings.appearance.material.title")} description={t("settings.appearance.material.description")} value={!useWindowsMaterial ? t("settings.appearance.material.off") : materialStatus.applied ? t("settings.appearance.material.applied") : t("settings.appearance.material.fallback")} control={<button className="setting-toggle" type="button" onClick={() => setUseWindowsMaterial(!useWindowsMaterial)}>{useWindowsMaterial ? t("settings.appearance.material.off") : t("settings.appearance.material.on")}</button>} /> },
     ],
     updates: [
-      { search: "application app update version 更新", node: <SettingRow key="app-update" icon={<Download size={16} />} title="Application update" description={appUpdate.error ?? appUpdate.releaseNotes ?? "Updates use signed MioProxy release metadata."} value={appUpdate.availableVersion ? `MioProxy ${appUpdate.availableVersion} available` : `Current ${appUpdate.currentVersion}`} control={<button className="setting-toggle" type="button" onClick={appUpdate.availableVersion ? onInstallUpdate : onCheckForUpdate} disabled={busy || appUpdate.checking || appUpdate.downloading || appUpdate.installing}>{appUpdate.downloading ? `${appUpdate.progress ?? 0}%` : appUpdate.installing ? "Installing…" : appUpdate.checking ? "Checking…" : appUpdate.availableVersion ? "Install" : "Check"}</button>} /> },
-      { search: "startup check updates 自动检查", node: <SettingRow key="check-startup" icon={<Download size={16} />} title="Check on startup" description="Check for application updates after startup without blocking the window." value={updatePreferences ? updatePreferences.checkOnStartup ? "Enabled" : "Disabled" : "Checking"} control={<button className="setting-toggle" type="button" onClick={() => onToggleUpdatePreference("checkOnStartup", !(updatePreferences?.checkOnStartup ?? false))} disabled={busy || !updatePreferences}>{updatePreferences?.checkOnStartup ? "Turn off" : "Turn on"}</button>} /> },
-      { search: "auto download updates 自动下载", node: <SettingRow key="auto-download" icon={<Download size={16} />} title="Download automatically" description="Download and verify application updates without installing them." value={updatePreferences ? updatePreferences.autoDownload ? "Enabled" : "Disabled" : "Checking"} control={<button className="setting-toggle" type="button" onClick={() => onToggleUpdatePreference("autoDownload", !(updatePreferences?.autoDownload ?? false))} disabled={busy || !updatePreferences}>{updatePreferences?.autoDownload ? "Turn off" : "Turn on"}</button>} /> },
-      { search: "mihomo core update version", node: <SettingRow key="core-update" icon={<ShieldCheck size={16} />} title="Mihomo Core update" description={coreUpdate?.error ?? (coreUpdate?.phase === "completed" ? "Core passed its post-update health check." : "Official release with rollback on failure.")} value={coreUpdate?.availableVersion ? `Mihomo ${coreUpdate.availableVersion} available` : coreUpdate?.currentVersion ? `Current ${coreUpdate.currentVersion}` : "Waiting for version"} control={<button className="setting-toggle" type="button" onClick={coreUpdate?.availableVersion ? onInstallCoreUpdate : onCheckCoreUpdate} disabled={busy || coreUpdateBusy}>{coreUpdateBusy ? "Working…" : coreUpdate?.availableVersion ? "Install" : "Check"}</button>} /> },
+      { search: "application app update version 更新", node: <SettingRow key="app-update" icon={<Download size={16} />} title={t("settings.updates.app.title")} description={appUpdate.error ?? appUpdate.releaseNotes ?? t("settings.updates.app.description")} value={appUpdate.availableVersion ? t("settings.updates.app.available", { version: appUpdate.availableVersion }) : t("settings.updates.app.current", { version: appUpdate.currentVersion })} control={<button className="setting-toggle" type="button" onClick={appUpdate.availableVersion ? onInstallUpdate : onCheckForUpdate} disabled={busy || appUpdate.checking || appUpdate.downloading || appUpdate.installing}>{appUpdate.downloading ? `${appUpdate.progress ?? 0}%` : appUpdate.installing ? t("settings.updates.app.installing") : appUpdate.checking ? t("settings.updates.app.checking") : appUpdate.availableVersion ? t("common.install") : t("common.check")}</button>} /> },
+      { search: "startup check updates 自动检查", node: <SettingRow key="check-startup" icon={<Download size={16} />} title={t("settings.updates.checkStartup.title")} description={t("settings.updates.checkStartup.description")} value={updatePreferences ? enabledLabel(updatePreferences.checkOnStartup) : t("common.checking")} control={<button className="setting-toggle" type="button" onClick={() => onToggleUpdatePreference("checkOnStartup", !(updatePreferences?.checkOnStartup ?? false))} disabled={busy || !updatePreferences}>{updatePreferences?.checkOnStartup ? t("settings.action.turnOff") : t("settings.action.turnOn")}</button>} /> },
+      { search: "auto download updates 自动下载", node: <SettingRow key="auto-download" icon={<Download size={16} />} title={t("settings.updates.autoDownload.title")} description={t("settings.updates.autoDownload.description")} value={updatePreferences ? enabledLabel(updatePreferences.autoDownload) : t("common.checking")} control={<button className="setting-toggle" type="button" onClick={() => onToggleUpdatePreference("autoDownload", !(updatePreferences?.autoDownload ?? false))} disabled={busy || !updatePreferences}>{updatePreferences?.autoDownload ? t("settings.action.turnOff") : t("settings.action.turnOn")}</button>} /> },
+      { search: "mihomo core update version", node: <SettingRow key="core-update" icon={<ShieldCheck size={16} />} title={t("settings.updates.core.title")} description={coreUpdate?.error ?? (coreUpdate?.phase === "completed" ? t("settings.updates.core.completedDescription") : t("settings.updates.core.description"))} value={coreUpdate?.availableVersion ? t("settings.updates.core.available", { version: coreUpdate.availableVersion }) : coreUpdate?.currentVersion ? t("settings.updates.core.current", { version: coreUpdate.currentVersion }) : t("settings.updates.core.waiting")} control={<button className="setting-toggle" type="button" onClick={coreUpdate?.availableVersion ? onInstallCoreUpdate : onCheckCoreUpdate} disabled={busy || coreUpdateBusy}>{coreUpdateBusy ? t("common.working") : coreUpdate?.availableVersion ? t("common.install") : t("common.check")}</button>} /> },
     ],
     advanced: [
-      { search: "diagnostic support bundle log 诊断包", node: <SettingRow key="diagnostic" icon={<FileDown size={16} />} title="Diagnostic bundle" description="Export redacted runtime information without subscription tokens or passwords." value={diagnosticPath ? "A bundle was generated in this session" : undefined} control={<button className="setting-toggle" type="button" onClick={onGenerateDiagnosticBundle} disabled={busy || diagnosticBusy}>{diagnosticBusy ? "Generating…" : "Generate"}</button>} /> },
-      { search: "override yaml advanced config", node: <SettingRow key="override" icon={<SlidersHorizontal size={16} />} title="Local Override" description="Edit the global local override and preview it with the selected Profile." control={<button className="setting-toggle" type="button" onClick={() => onNavigate("overrides")}>Open editor</button>} /> },
+      { search: "diagnostic support bundle log 诊断包", node: <SettingRow key="diagnostic" icon={<FileDown size={16} />} title={t("settings.advanced.diagnostic.title")} description={t("settings.advanced.diagnostic.description")} value={diagnosticPath ? t("settings.advanced.diagnostic.generated") : undefined} control={<button className="setting-toggle" type="button" onClick={onGenerateDiagnosticBundle} disabled={busy || diagnosticBusy}>{diagnosticBusy ? t("settings.advanced.diagnostic.generating") : t("common.generate")}</button>} /> },
+      { search: "override yaml advanced config", node: <SettingRow key="override" icon={<SlidersHorizontal size={16} />} title={t("settings.advanced.override.title")} description={t("settings.advanced.override.description")} control={<button className="setting-toggle" type="button" onClick={() => onNavigate("overrides")}>{t("settings.action.openEditor")}</button>} /> },
     ],
     about: [
-      { search: "about mioproxy version", node: <SettingRow key="about-app" icon={<Info size={16} />} title="MioProxy" description="Windows controller for a MioProxy-managed Mihomo runtime." value={`Version ${appUpdate.currentVersion}`} /> },
-      { search: "service ipc background version", node: <SettingRow key="about-service" icon={<ShieldCheck size={16} />} title="Background Service" description="Privileged operations are isolated behind the local Service IPC boundary." value={!serviceConnection ? "—" : serviceConnection.versionMismatch ? "Version mismatch" : serviceConnection.reachable ? serviceConnection.serviceVersion ?? "Connected" : "Reconnecting"} /> },
+      { search: "about mioproxy version", node: <SettingRow key="about-app" icon={<Info size={16} />} title="MioProxy" description={t("settings.about.app.description")} value={t("settings.about.version", { version: appUpdate.currentVersion })} /> },
+      { search: "service ipc background version", node: <SettingRow key="about-service" icon={<ShieldCheck size={16} />} title={t("settings.about.service.title")} description={t("settings.about.service.description")} value={serviceLabel(serviceConnection)} /> },
     ],
-  }), [appUpdate, busy, coreState, coreUpdate, coreUpdateBusy, diagnosticBusy, diagnosticPath, onCheckCoreUpdate, onCheckForUpdate, onGenerateDiagnosticBundle, onInstallCoreUpdate, onInstallUpdate, onNavigate, onRequestProxyTransition, onRequestTunTransition, onToggleMinimized, onToggleStartup, onToggleUpdatePreference, proxyExternal, proxyState, proxyStatus, serviceConnection, startup, status, theme, tunBusy, tunExternal, tunStatus, tunWillDisable, updatePreferences]);
+  }), [appUpdate, busy, coreState, coreUpdate, diagnosticBusy, diagnosticPath, languagePreference, materialStatus, onCheckCoreUpdate, onCheckForUpdate, onGenerateDiagnosticBundle, onInstallCoreUpdate, onInstallUpdate, onNavigate, onRequestProxyTransition, onRequestTunTransition, onToggleMinimized, onToggleStartup, onToggleUpdatePreference, proxyExternal, proxyState, proxyStatus, serviceConnection, setLanguagePreference, setThemePreference, setUseWindowsMaterial, startup, status, t, themePreference, tunBusy, tunExternal, tunStatus, tunWillDisable, updatePreferences, useWindowsMaterial]);
 
   const normalizedQuery = query.trim().toLowerCase();
   const sections = searching
@@ -130,14 +151,14 @@ export function SettingsPage(props: SettingsPageProps) {
 
   return (
     <section className="page-stack settings-page">
-      <header className="page-header compact-header"><div><h1>Settings</h1><p>Application preferences and trusted runtime controls.</p></div><label className="search-box settings-search"><Search size={15} /><input data-page-search value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search settings…" aria-label="Search settings" /></label></header>
-      {serviceConnection?.error && <div className="info-bar warning"><ShieldCheck size={16} /><span>{serviceConnection.versionMismatch ? "The background Service version is incompatible with this app version." : "MioProxy is reconnecting to the background Service."}</span></div>}
+      <header className="page-header compact-header"><div><h1>{t("settings.title")}</h1><p>{t("settings.description")}</p></div><label className="search-box settings-search"><Search size={15} /><input data-page-search value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("settings.searchPlaceholder")} aria-label={t("settings.searchLabel")} /></label></header>
+      {serviceConnection?.error && <div className="info-bar warning"><ShieldCheck size={16} /><span>{serviceConnection.versionMismatch ? t("settings.service.versionMismatchWarning") : serviceConnection.state === "error" ? t("settings.service.errorWarning") : t("settings.service.reconnectingWarning")}</span></div>}
       <div className="settings-workspace">
-        <aside className="settings-categories surface-panel" aria-label="Settings categories">
-          {CATEGORIES.map((item) => <button key={item.id} type="button" className={!searching && category === item.id ? "active" : ""} onClick={() => { setCategory(item.id); setQuery(""); }}>{item.label}</button>)}
+        <aside className="settings-categories surface-panel" aria-label={t("settings.categoriesLabel")}>
+          {CATEGORIES.map((item) => <button key={item.id} type="button" className={!searching && category === item.id ? "active" : ""} onClick={() => { setCategory(item.id); setQuery(""); }}>{t(item.label)}</button>)}
         </aside>
         <div className="settings-content">
-          {sections.length ? sections.map((section) => <section key={section.id} className="settings-section surface-panel"><div className="settings-section-title"><h2>{section.label}</h2>{searching && <span>{section.rows.length} match{section.rows.length === 1 ? "" : "es"}</span>}</div><div className="settings-list">{section.rows.map((row) => row.node)}</div></section>) : <div className="empty-card surface-panel"><Search size={20} /><strong>No settings match “{query}”</strong><p>Try another term or clear the search.</p></div>}
+          {sections.length ? sections.map((section) => <section key={section.id} className="settings-section surface-panel"><div className="settings-section-title"><h2>{t(section.label)}</h2>{searching && <span>{section.rows.length === 1 ? t("settings.match") : t("settings.matches", { count: section.rows.length })}</span>}</div><div className="settings-list">{section.rows.map((row) => row.node)}</div></section>) : <div className="empty-card surface-panel"><Search size={20} /><strong>{t("settings.noMatches", { query })}</strong><p>{t("settings.noMatchesHelp")}</p></div>}
         </div>
       </div>
     </section>

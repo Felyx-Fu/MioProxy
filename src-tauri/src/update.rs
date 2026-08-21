@@ -15,6 +15,15 @@ const CHECKPOINT_FILE: &str = "update-checkpoint.json";
 const PREFERENCES_FILE: &str = "update-preferences.json";
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
+fn update_check_disabled_by(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+fn update_check_disabled() -> bool {
+    let value = std::env::var("MIOPROXY_DISABLE_UPDATE_CHECK").ok();
+    update_check_disabled_by(value.as_deref())
+}
+
 pub(crate) fn register_app_handle(app: &AppHandle) {
     let _ = APP_HANDLE.set(app.clone());
 }
@@ -513,6 +522,10 @@ pub(crate) fn before_updater_exit(app: &AppHandle) -> Result<(), String> {
 pub(crate) async fn update_check<R: Runtime>(
     webview: Webview<R>,
 ) -> Result<Option<UpdateMetadata>, String> {
+    if update_check_disabled() {
+        return Ok(None);
+    }
+
     use tauri_plugin_updater::UpdaterExt;
 
     let hook_app = registered_app_handle()?;
@@ -635,6 +648,15 @@ mod tests {
         assert!(ensure_upgrade("0.8.0", "0.8.0").is_err());
         assert!(ensure_upgrade("0.8.1", "0.8.0").is_err());
         assert!(ensure_upgrade("0.7.0", "not-semver").is_err());
+    }
+
+    #[test]
+    fn update_check_disable_override_is_explicit() {
+        assert!(!update_check_disabled_by(None));
+        assert!(!update_check_disabled_by(Some("")));
+        assert!(!update_check_disabled_by(Some("0")));
+        assert!(!update_check_disabled_by(Some("true")));
+        assert!(update_check_disabled_by(Some("1")));
     }
 
     #[test]

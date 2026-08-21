@@ -41,6 +41,22 @@
 
 Service 默认需要管理员权限安装；详细命令见 `src-tauri/binaries/README.md`。
 
+## Windows 发布构建
+
+更新器签名私钥不放入仓库。发布构建会优先使用 `TAURI_SIGNING_PRIVATE_KEY_PATH`，否则自动查找当前用户的 `.tauri\mioproxy-v0.8.key`，并以隐藏输入提示私钥密码：
+
+```powershell
+npm run release:build
+```
+
+如果密钥不在默认位置，可以显式指定路径：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ./scripts/build-windows-release.ps1 -SigningKeyPath C:\path\to\signing.key
+```
+
+不要提交私钥或密码；仓库只保存用于验证更新包的公钥。
+
 ## Windows 开发环境
 
 建议安装：

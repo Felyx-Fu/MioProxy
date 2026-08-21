@@ -81,6 +81,7 @@ pub struct ServiceStatusData {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceConnectionStatus {
+    pub state: ServiceProjectionState,
     pub reachable: bool,
     pub protocol_version: u32,
     pub service_version: Option<String>,
@@ -94,6 +95,46 @@ pub struct ServiceConnectionStatus {
     pub tun_message: Option<String>,
     pub desired_core_running: bool,
     pub core_recovery_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceProjectionState {
+    Running,
+    Stopped,
+    Starting,
+    Reconnecting,
+    Error,
+}
+
+impl ServiceConnectionStatus {
+    fn disconnected(
+        state: ServiceProjectionState,
+        error: Option<String>,
+        version_mismatch: bool,
+    ) -> Self {
+        let core_recovery_message = if version_mismatch {
+            error.clone()
+        } else {
+            None
+        };
+        Self {
+            state,
+            reachable: false,
+            protocol_version: SERVICE_PROTOCOL_VERSION,
+            service_version: None,
+            version_mismatch,
+            error,
+            admin: false,
+            owns_core: false,
+            core_running: false,
+            ownership_conflict: false,
+            tun_status: None,
+            tun_message: None,
+            desired_core_running: false,
+            core_recovery_message,
+        }
+    }
 }
 
 pub(crate) fn token_path(data_dir: &std::path::Path) -> std::path::PathBuf {
@@ -369,6 +410,37 @@ mod windows_impl {
         }
     }
 
+    fn installed_service_state() -> Result<Option<ServiceState>, String> {
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|error| format!("查询 MioProxy Service 状态失败：{error}"))?;
+        let service = match manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS) {
+            Ok(service) => service,
+            Err(windows_service::Error::Winapi(error)) if error.raw_os_error() == Some(1060) => {
+                return Ok(None);
+            }
+            Err(error) => return Err(format!("查询 MioProxy Service 状态失败：{error}")),
+        };
+        service
+            .query_status()
+            .map(|status| Some(status.current_state))
+            .map_err(|error| format!("查询 MioProxy Service 状态失败：{error}"))
+    }
+
+    fn project_scm_state(state: Option<ServiceState>) -> ServiceProjectionState {
+        match state {
+            None | Some(ServiceState::Stopped | ServiceState::StopPending) => {
+                ServiceProjectionState::Stopped
+            }
+            Some(ServiceState::StartPending | ServiceState::ContinuePending) => {
+                ServiceProjectionState::Starting
+            }
+            Some(ServiceState::Running) => ServiceProjectionState::Running,
+            Some(ServiceState::PausePending | ServiceState::Paused) => {
+                ServiceProjectionState::Error
+            }
+        }
+    }
+
     #[cfg(not(test))]
     fn service_process_id() -> Result<Option<u32>, String> {
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
@@ -496,6 +568,14 @@ mod windows_impl {
             || error.starts_with("MioProxy Service 版本不匹配：")
     }
 
+    fn project_ipc_error(error: &str) -> ServiceProjectionState {
+        if !error.contains("版本不匹配") && is_optional_ipc_transport_error(error) {
+            ServiceProjectionState::Reconnecting
+        } else {
+            ServiceProjectionState::Error
+        }
+    }
+
     async fn optional_request(
         app: &AppHandle,
         command: ServiceCommand,
@@ -518,6 +598,27 @@ mod windows_impl {
     }
 
     pub(crate) async fn service_status(app: AppHandle) -> Result<ServiceConnectionStatus, String> {
+        let scm_state = match installed_service_state() {
+            Ok(state) => state,
+            Err(error) => {
+                return Ok(ServiceConnectionStatus::disconnected(
+                    ServiceProjectionState::Error,
+                    Some(error),
+                    false,
+                ));
+            }
+        };
+        let scm_projection = project_scm_state(scm_state);
+        if scm_projection != ServiceProjectionState::Running {
+            let error = (scm_projection == ServiceProjectionState::Error)
+                .then(|| format!("MioProxy Service 处于不受支持的 SCM 状态：{scm_state:?}"));
+            return Ok(ServiceConnectionStatus::disconnected(
+                scm_projection,
+                error,
+                false,
+            ));
+        }
+
         // Health checks are deliberately short and non-disruptive. A service
         // which is still starting must be represented as unavailable so the GUI
         // can reconnect in the background, not stalled behind a full IPC timeout.
@@ -528,80 +629,50 @@ mod windows_impl {
         .await
         {
             Err(_) => {
-                return Ok(ServiceConnectionStatus {
-                    reachable: false,
-                    protocol_version: SERVICE_PROTOCOL_VERSION,
-                    service_version: None,
-                    version_mismatch: false,
-                    error: Some("MioProxy Service health check timed out".to_string()),
-                    admin: false,
-                    owns_core: false,
-                    core_running: false,
-                    ownership_conflict: false,
-                    tun_status: None,
-                    tun_message: None,
-                    desired_core_running: false,
-                    core_recovery_message: None,
-                });
+                return Ok(ServiceConnectionStatus::disconnected(
+                    ServiceProjectionState::Reconnecting,
+                    Some("MioProxy Service health check timed out".to_string()),
+                    false,
+                ));
             }
             Ok(response) => response,
         };
         let response = match response {
             Ok(response) => response,
             Err(error) if error.contains("版本不匹配") => {
-                return Ok(ServiceConnectionStatus {
-                    reachable: false,
-                    protocol_version: SERVICE_PROTOCOL_VERSION,
-                    service_version: None,
-                    version_mismatch: true,
-                    error: Some(error.clone()),
-                    admin: false,
-                    owns_core: false,
-                    core_running: false,
-                    ownership_conflict: false,
-                    tun_status: None,
-                    tun_message: None,
-                    desired_core_running: false,
-                    core_recovery_message: Some(error.clone()),
-                });
+                return Ok(ServiceConnectionStatus::disconnected(
+                    ServiceProjectionState::Error,
+                    Some(error),
+                    true,
+                ));
             }
             Err(error) => {
-                return Ok(ServiceConnectionStatus {
-                    reachable: false,
-                    protocol_version: SERVICE_PROTOCOL_VERSION,
-                    service_version: None,
-                    version_mismatch: false,
-                    error: Some(error),
-                    admin: false,
-                    owns_core: false,
-                    core_running: false,
-                    ownership_conflict: false,
-                    tun_status: None,
-                    tun_message: None,
-                    desired_core_running: false,
-                    core_recovery_message: None,
-                });
+                return Ok(ServiceConnectionStatus::disconnected(
+                    project_ipc_error(&error),
+                    Some(error),
+                    false,
+                ));
             }
         };
         let Some(response) = response else {
-            return Ok(ServiceConnectionStatus {
-                reachable: false,
-                protocol_version: SERVICE_PROTOCOL_VERSION,
-                service_version: None,
-                version_mismatch: false,
-                error: None,
-                admin: false,
-                owns_core: false,
-                core_running: false,
-                ownership_conflict: false,
-                tun_status: None,
-                tun_message: None,
-                desired_core_running: false,
-                core_recovery_message: None,
-            });
+            return Ok(ServiceConnectionStatus::disconnected(
+                ServiceProjectionState::Reconnecting,
+                None,
+                false,
+            ));
         };
-        let status: ServiceStatusData = data(response)?;
+        let status: ServiceStatusData = match data(response) {
+            Ok(status) => status,
+            Err(error) => {
+                return Ok(ServiceConnectionStatus::disconnected(
+                    ServiceProjectionState::Error,
+                    Some(error),
+                    false,
+                ));
+            }
+        };
         Ok(ServiceConnectionStatus {
+            state: ServiceProjectionState::Running,
             reachable: true,
             protocol_version: SERVICE_PROTOCOL_VERSION,
             service_version: Some(SERVICE_VERSION.to_string()),
@@ -3047,6 +3118,69 @@ rules:
         }
 
         #[test]
+        fn scm_states_project_without_changing_service_state() {
+            assert_eq!(project_scm_state(None), ServiceProjectionState::Stopped);
+            assert_eq!(
+                project_scm_state(Some(ServiceState::Stopped)),
+                ServiceProjectionState::Stopped
+            );
+            assert_eq!(
+                project_scm_state(Some(ServiceState::StopPending)),
+                ServiceProjectionState::Stopped
+            );
+            assert_eq!(
+                project_scm_state(Some(ServiceState::StartPending)),
+                ServiceProjectionState::Starting
+            );
+            assert_eq!(
+                project_scm_state(Some(ServiceState::ContinuePending)),
+                ServiceProjectionState::Starting
+            );
+            assert_eq!(
+                project_scm_state(Some(ServiceState::Running)),
+                ServiceProjectionState::Running
+            );
+            assert_eq!(
+                project_scm_state(Some(ServiceState::PausePending)),
+                ServiceProjectionState::Error
+            );
+            assert_eq!(
+                project_scm_state(Some(ServiceState::Paused)),
+                ServiceProjectionState::Error
+            );
+        }
+
+        #[test]
+        fn ipc_errors_distinguish_reconnects_from_terminal_errors() {
+            assert_eq!(
+                project_ipc_error(
+                    "MioProxy Service 已安装但当前 IPC 不可用，已阻止 GUI 接管 Mihomo"
+                ),
+                ServiceProjectionState::Reconnecting
+            );
+            assert_eq!(
+                project_ipc_error("连接 MioProxy Service 失败：pipe unavailable"),
+                ServiceProjectionState::Reconnecting
+            );
+            assert_eq!(
+                project_ipc_error("MioProxy Service 版本不匹配：GUI=0.9.1，Service=0.9.0"),
+                ServiceProjectionState::Error
+            );
+            assert_eq!(
+                project_ipc_error("Service 令牌无效"),
+                ServiceProjectionState::Error
+            );
+        }
+
+        #[test]
+        fn service_projection_state_serializes_as_lowercase() {
+            assert_eq!(
+                serde_json::to_value(ServiceProjectionState::Reconnecting).unwrap(),
+                "reconnecting"
+            );
+        }
+
+        #[test]
         fn legacy_service_tun_state_migrates_optional_recovery_fields() {
             let state = serde_json::from_str::<PersistedServiceTunState>(
                 r#"{"previousOverride":"legacy override","profileId":"profile-1"}"#,
@@ -3156,6 +3290,14 @@ rules:
                     .unwrap()
                     .as_nanos()
             ));
+            fs::create_dir_all(&data_dir).unwrap();
+            fs::write(
+                data_dir.join(CORE_STATE_FILE),
+                format!(
+                    r#"{{"formatVersion":{CORE_STATE_FORMAT_VERSION},"desiredRunning":false}}"#
+                ),
+            )
+            .unwrap();
             let test_pipe = format!(
                 r"\\.\pipe\MioProxyServiceTest-{}",
                 SystemTime::now()
@@ -3412,21 +3554,11 @@ pub(crate) fn verify_stopped_for_update() -> Result<(), String> {
 #[cfg(not(windows))]
 #[tauri::command]
 pub async fn service_status_command(_app: AppHandle) -> Result<ServiceConnectionStatus, String> {
-    Ok(ServiceConnectionStatus {
-        reachable: false,
-        protocol_version: SERVICE_PROTOCOL_VERSION,
-        service_version: None,
-        version_mismatch: false,
-        error: None,
-        admin: false,
-        owns_core: false,
-        core_running: false,
-        ownership_conflict: false,
-        tun_status: None,
-        tun_message: None,
-        desired_core_running: false,
-        core_recovery_message: None,
-    })
+    Ok(ServiceConnectionStatus::disconnected(
+        ServiceProjectionState::Stopped,
+        None,
+        false,
+    ))
 }
 
 #[cfg(windows)]

@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "release:build": "powershell -ExecutionPolicy Bypass -File ./scripts/build-windows-release.ps1",
     "mihomo:setup": "powershell -ExecutionPolicy Bypass -File ./scripts/setup-mihomo.ps1",
     "service:build": "powershell -ExecutionPolicy Bypass -File ./scripts/build-mioproxy-service.ps1",
     "tauri:build": "tauri build"

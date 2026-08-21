@@ -6,6 +6,7 @@ import { mihomoApi, type CoreState, type CoreStatus, type CoreUpdateStatus, type
 import { Sidebar, type Page } from "./components/Sidebar";
 import { ToastHost, type ToastMessage, type ToastTone } from "./components/Feedback";
 import { PreviewTitleBar } from "./components/PreviewTitleBar";
+import { WindowTitleBar } from "./components/WindowTitleBar";
 import { RuntimeStatusBar } from "./components/RuntimeStatusBar";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -20,6 +21,7 @@ import { TunPage } from "./pages/TunPage";
 import { useConnections } from "./hooks/useConnections";
 import { useTraffic } from "./hooks/useTraffic";
 import { useLogs } from "./hooks/useLogs";
+import { isNativeRuntime } from "./appearance/AppearanceProvider";
 
 export default function App() {
   const [page, setPage] = useState<Page>("home");
@@ -704,7 +706,7 @@ export default function App() {
 
   return (
     <div className="app-frame">
-      <PreviewTitleBar />
+      {isNativeRuntime() ? <WindowTitleBar /> : <PreviewTitleBar />}
       <div className="app-shell">
         <Sidebar page={page} onChange={setPage} />
         <main className="content" id="main-content">
@@ -717,7 +719,7 @@ export default function App() {
           {page === "dns" && <DnsPage profileId={selectedProfileId} />}
           {page === "overrides" && <OverridesPage profileId={selectedProfileId} />}
           {page === "tun" && <TunPage profileId={selectedProfileId} coreRunning={coreReady} systemProxyEnabled={Boolean(proxyStatus?.enabled)} snapshot={tunSnapshot} loading={tunBusy} error={tunError} onRequestTransition={() => void requestTunTransition()} onNavigate={setPage} />}
-          {page === "settings" && <SettingsPage status={status} coreState={coreState} proxyStatus={proxyStatus} proxyState={proxyState} tunStatus={tunSnapshot} tunBusy={tunBusy} serviceConnection={serviceReconnectVisible || serviceConnection?.reachable ? serviceConnection : null} startup={startup} updatePreferences={updatePreferences} busy={settingsBusy} onRequestProxyTransition={() => void requestSystemProxyTransition()} onRequestTunTransition={() => void requestTunTransition()} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} onToggleUpdatePreference={toggleUpdatePreference} appUpdate={{ ...updateStatus, checking: updateChecking, downloading: updateDownloading, installing: updateInstalling, downloaded: updateDownloaded, progress: updateProgress, availableVersion: availableUpdate?.version ?? null, releaseNotes: availableUpdate?.body ?? null, error: updateError }} onCheckForUpdate={() => void checkForUpdate()} onInstallUpdate={() => void installUpdate()} coreUpdate={coreUpdate} coreUpdateBusy={coreUpdateBusy} onCheckCoreUpdate={() => void checkCoreUpdate()} onInstallCoreUpdate={() => void installCoreUpdate()} diagnosticBusy={diagnosticBusy} diagnosticPath={diagnosticPath} onGenerateDiagnosticBundle={() => void generateDiagnosticBundle()} onNavigate={setPage} />}
+          {page === "settings" && <SettingsPage status={status} coreState={coreState} proxyStatus={proxyStatus} proxyState={proxyState} tunStatus={tunSnapshot} tunBusy={tunBusy} serviceConnection={serviceConnection} startup={startup} updatePreferences={updatePreferences} busy={settingsBusy} onRequestProxyTransition={() => void requestSystemProxyTransition()} onRequestTunTransition={() => void requestTunTransition()} onToggleStartup={toggleStartup} onToggleMinimized={toggleStartMinimized} onToggleUpdatePreference={toggleUpdatePreference} appUpdate={{ ...updateStatus, checking: updateChecking, downloading: updateDownloading, installing: updateInstalling, downloaded: updateDownloaded, progress: updateProgress, availableVersion: availableUpdate?.version ?? null, releaseNotes: availableUpdate?.body ?? null, error: updateError }} onCheckForUpdate={() => void checkForUpdate()} onInstallUpdate={() => void installUpdate()} coreUpdate={coreUpdate} coreUpdateBusy={coreUpdateBusy} onCheckCoreUpdate={() => void checkCoreUpdate()} onInstallCoreUpdate={() => void installCoreUpdate()} diagnosticBusy={diagnosticBusy} diagnosticPath={diagnosticPath} onGenerateDiagnosticBundle={() => void generateDiagnosticBundle()} onNavigate={setPage} />}
         </main>
         <RuntimeStatusBar status={status} coreState={coreState} selectedProfileName={selectedProfile?.name ?? null} appliedProfileName={appliedProfileSession?.name ?? null} currentNode={currentNode} traffic={traffic.snapshot} connectionCount={connectionCount} proxyStatus={proxyStatus} tunStatus={tunSnapshot} onNavigate={setPage} />
       </div>

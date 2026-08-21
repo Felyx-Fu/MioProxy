@@ -11,6 +11,7 @@ mod system_proxy;
 mod tray;
 mod tun;
 mod update;
+mod window_shell;
 
 use mihomo::{
     mihomo_close_all_connections, mihomo_close_connection, mihomo_connections, mihomo_proxies,
@@ -58,6 +59,10 @@ pub(crate) fn ensure_mutations_allowed(app: &tauri::AppHandle) -> Result<(), Str
     Ok(())
 }
 
+fn native_ui_qa_mode() -> bool {
+    cfg!(debug_assertions) && std::env::var("MIOPROXY_NATIVE_UI_QA").as_deref() == Ok("1")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -101,9 +106,17 @@ pub fn run() {
                 Ok(None) => {}
                 Err(error) => eprintln!("读取更新恢复检查点失败：{error}"),
             }
-            startup::apply_start_minimized(app.handle());
+            if !native_ui_qa_mode() {
+                startup::apply_start_minimized(app.handle());
+            }
+            window_shell::setup(app.handle()).map_err(|error| {
+                Box::new(std::io::Error::other(error)) as Box<dyn std::error::Error>
+            })?;
             if let Err(error) = tray::setup(app.handle()) {
                 return Err(Box::new(std::io::Error::other(error)));
+            }
+            if native_ui_qa_mode() {
+                return Ok(());
             }
             let recovery_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -141,20 +154,6 @@ pub fn run() {
                 }
             });
             Ok(())
-        })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let exiting = window
-                    .app_handle()
-                    .state::<AppLifecycle>()
-                    .exiting
-                    .load(Ordering::SeqCst);
-                if !exiting {
-                    api.prevent_close();
-                    let _ = window.set_skip_taskbar(true);
-                    let _ = window.hide();
-                }
-            }
         })
         .invoke_handler(tauri::generate_handler![
             mihomo_start,
@@ -199,6 +198,11 @@ pub fn run() {
             core_update::mihomo_core_update_check,
             core_update::mihomo_core_update_install,
             diagnostics::diagnostic_bundle_generate,
+            tray::tray_set_locale,
+            window_shell::window_hide_to_tray,
+            window_shell::window_set_maximize_button_rect,
+            window_shell::window_show_system_menu,
+            window_shell::window_material_set,
             #[cfg(feature = "validation-fault-injection")]
             service::validation_crash_managed_core,
         ])
@@ -206,6 +210,9 @@ pub fn run() {
         .expect("error while building MioProxy")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if native_ui_qa_mode() {
+                    return;
+                }
                 let lifecycle = app.state::<AppLifecycle>();
                 if lifecycle.exiting.swap(true, Ordering::SeqCst) {
                     return;
