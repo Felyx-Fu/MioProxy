@@ -29,10 +29,15 @@ function Read-SigningPassword {
 }
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$defaultKeyPath = Join-Path $env:USERPROFILE ".tauri\mioproxy-v0.8.key"
+$defaultKeyPath = Join-Path $env:USERPROFILE ".tauri\mioproxy.key"
+$legacyKeyPath = Join-Path $env:USERPROFILE ".tauri\mioproxy-v0.8.key"
 if ([string]::IsNullOrWhiteSpace($SigningKeyPath)) {
     $SigningKeyPath = if (-not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PATH)) {
         $env:TAURI_SIGNING_PRIVATE_KEY_PATH
+    } elseif (Test-Path -LiteralPath $defaultKeyPath) {
+        $defaultKeyPath
+    } elseif (Test-Path -LiteralPath $legacyKeyPath) {
+        $legacyKeyPath
     } else {
         $defaultKeyPath
     }

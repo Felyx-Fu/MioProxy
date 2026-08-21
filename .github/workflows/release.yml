@@ -25,15 +25,8 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           $expected = $env:RELEASE_TAG.TrimStart('v')
-          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          $cargoVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"$').Matches.Groups[1].Value
-          if (@($packageVersion, $tauriVersion, $cargoVersion) -contains $null -or @($packageVersion, $tauriVersion, $cargoVersion) -contains '') {
-            throw "Unable to read one or more release versions."
-          }
-          if ($packageVersion -ne $expected -or $tauriVersion -ne $expected -or $cargoVersion -ne $expected) {
-            throw "Release tag $expected does not match package=$packageVersion tauri=$tauriVersion cargo=$cargoVersion."
-          }
+          & powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/check-version-consistency.ps1 -ExpectedVersion $expected
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -49,6 +42,11 @@ jobs:
 
       - name: Install JavaScript dependencies
         run: npm ci
+
+      - name: Verify lock files were not changed by npm ci
+        shell: pwsh
+        run: |
+          git diff --exit-code -- package-lock.json src-tauri/Cargo.lock
 
       - name: Verify updater signing secret is present
         shell: pwsh
@@ -68,12 +66,21 @@ jobs:
       - name: Validate source
         run: |
           npm run build
-          cargo check --manifest-path src-tauri/Cargo.toml
-          cargo test --manifest-path src-tauri/Cargo.toml
-          cargo build --release --locked --manifest-path src-tauri/Cargo.toml --bin mioproxy --bin mioproxy-service
           cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+          cargo check --locked --manifest-path src-tauri/Cargo.toml
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          cargo build --release --locked --manifest-path src-tauri/Cargo.toml --bin mioproxy --bin mioproxy-service
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
           git diff --check
+
+      - name: Fail if validation changed tracked files
+        shell: pwsh
+        run: |
+          $changes = git status --porcelain
+          if ($changes) {
+            Write-Host $changes
+            throw "Release validation mutated tracked or untracked repository files."
+          }
 
       - name: Build and publish signed Tauri release
         uses: tauri-apps/tauri-action@v0

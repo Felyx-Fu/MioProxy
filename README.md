@@ -1,131 +1,128 @@
-# MioProxy V0.8
+# MioProxy
 
-一个从零搭建的 Windows 桌面代理客户端骨架：**Tauri 2 + React + TypeScript + Rust + Mihomo sidecar**。
+MioProxy is a Windows desktop proxy client built with Tauri 2, React,
+TypeScript, Vite and Rust. The current architecture separates the normal-user
+GUI from the elevated Windows Service that owns the managed Mihomo runtime.
 
-## V0.1 已实现
+## Current architecture
 
-- Tauri 2 桌面应用骨架
-- React/TypeScript 深色桌面 UI
-- Rust 侧启动/停止 Mihomo
-- Mihomo Controller API 只经 Rust 转发给前端
-- `/version` 版本读取
-- `/proxies` 代理组读取
-- 默认 `config.yaml` 自动生成到应用数据目录
-- Windows x64 Mihomo 自动下载/准备脚本
-
-## V0.2 当前已完成
-
-- Profile 名称与订阅 URL 管理
-- 订阅 YAML 下载、原子保存与应用
-- Mihomo 配置 reload
-- Controller 代理组节点切换
-- 节点延迟测速
-
-## V0.7 当前实现
-
-- Windows System Proxy、托盘与开机启动
-- Connections/Traffic WebSocket
-- TUN 开关、管理员权限检查、启动失败回滚
-- `auto-route`、`auto-detect-interface`、DNS hijack 基础配置
-- TUN 运行前网络快照、异常退出恢复、睡眠/网络变化后重载
-- `MioProxyService` named-pipe IPC、协议/版本校验与 Mihomo 单实例保护
-- Windows Service 管理 Mihomo、TUN 与恢复状态
-
-## V0.8 当前实现
-
-- Tauri signed updater、SemVer 升级保护与 GitHub Releases endpoint
-- 原子更新 checkpoint，以及 System Proxy/TUN/Service 安全停机与恢复
-- GUI/Service 协议与版本握手，拒绝不兼容 Service 绕过 IPC
-- Mihomo Core 官方 Release 检查、SHA-256 校验、staging、健康检查与回滚
-- Release 构建同时打包 GUI、MioProxy Service 与 Mihomo Core
-
-Service 默认需要管理员权限安装；详细命令见 `src-tauri/binaries/README.md`。
-
-## Windows 发布构建
-
-更新器签名私钥不放入仓库。发布构建会优先使用 `TAURI_SIGNING_PRIVATE_KEY_PATH`，否则自动查找当前用户的 `.tauri\mioproxy-v0.8.key`，并以隐藏输入提示私钥密码：
-
-```powershell
-npm run release:build
+```text
+React / TypeScript UI
+        │ Tauri commands
+        ▼
+MioProxy GUI (normal user)
+        │ authenticated named-pipe IPC
+        ▼
+MioProxy Service (administrator)
+        ├── managed Mihomo Core lifecycle
+        ├── managed TUN, routes, DNS and recovery snapshots
+        └── runtime configuration and update coordination
+                 │
+                 ▼
+              Windows network
 ```
 
-如果密钥不在默认位置，可以显式指定路径：
+- The GUI does not call the Mihomo Controller directly. Rust owns Controller
+  authentication, response handling and redaction before data reaches the UI.
+- The Service owns the managed Mihomo process and rejects ambiguous ownership
+  or incompatible IPC peers.
+- MioProxy System Proxy is represented through an ownership-aware Windows
+  snapshot. An external endpoint or PAC/WPAD owner is never overwritten.
+- MioProxy TUN is managed by the Service. TUN enable/disable uses runtime
+  snapshots and recovery paths; an externally owned TUN is observed as external
+  and is not killed or taken over.
+- The tray and window shell are Tauri/Win32 integrations. Closing from the
+  Windows taskbar exits normally; the explicit title-bar action hides to tray.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File ./scripts/build-windows-release.ps1 -SigningKeyPath C:\path\to\signing.key
-```
+## Development prerequisites
 
-不要提交私钥或密码；仓库只保存用于验证更新包的公钥。
-
-## Windows 开发环境
-
-建议安装：
-
-1. Node.js 20+
-2. Rust stable (`rustup`)
+1. Node.js 20 or newer
+2. Rust stable with the MSVC Windows target
 3. Microsoft C++ Build Tools / Visual Studio Build Tools
-4. WebView2 Runtime（Windows 11 通常已存在）
+4. WebView2 Runtime
 
-## 第一次运行
-
-在项目根目录 PowerShell：
+Install dependencies and prepare the local sidecars from the repository root:
 
 ```powershell
-npm install
+npm ci
 npm run mihomo:setup
 npm run service:build
 npm run tauri dev
 ```
 
-`npm run mihomo:setup` 会读取 MetaCubeX/mihomo 的 GitHub Latest Release，优先下载 `windows-amd64-compatible` 版本，并按 Tauri sidecar 规则放到：
+`mihomo:setup` downloads the latest stable Windows amd64-compatible Mihomo
+release, verifies its published SHA-256 digest, and places the sidecar at
+`src-tauri/binaries/mihomo-x86_64-pc-windows-msvc.exe`.
 
-```text
-src-tauri/binaries/mihomo-x86_64-pc-windows-msvc.exe
+## Runtime defaults
+
+The first managed Core start creates a runtime configuration under
+`%APPDATA%\dev.MioProxy`. The settings page reports the actual paths and
+runtime state. The generated baseline uses a local mixed port, loopback
+Controller, `allow-lan: false`, and rule mode. A real proxy node appears only
+after a Profile is added and downloaded.
+
+## Validation and release readiness
+
+The non-network quality gates are reproducible locally:
+
+```powershell
+npm run build
+powershell -ExecutionPolicy Bypass -File .\scripts\check-version-consistency.ps1
+cargo fmt --manifest-path .\src-tauri\Cargo.toml -- --check
+cargo check --locked --manifest-path .\src-tauri\Cargo.toml
+cargo test --locked --manifest-path .\src-tauri\Cargo.toml
+cargo clippy --locked --manifest-path .\src-tauri\Cargo.toml --all-targets --all-features -- -D warnings
 ```
 
-## 配置在哪里？
+For the explicit Windows coexistence path, start with both System Proxy and
+MioProxy TUN already enabled and run:
 
-第一次点击“启动内核”后，Rust 后端会生成应用数据目录下的 `config.yaml`。设置页会直接显示实际路径。
-
-初始配置：
-
-- mixed-port: `7890`
-- external-controller: `127.0.0.1:9090`
-- allow-lan: `false`
-- mode: `rule`
-- 代理组 `PROXY` 默认只有 `DIRECT`
-
-因此第一次运行不会自动获得代理节点；添加 Profile 并下载订阅 YAML 后，才会出现实际代理节点。
-
-## 架构
-
-```text
-React UI
-   │ invoke()
-   ▼
-Tauri / Rust GUI
-   ├── normal-privilege UI
-   ├── Controller API client
-   └── named pipe IPC
-          │
-          ▼
-MioProxy Service (administrator)
-   ├── Mihomo lifecycle
-   ├── TUN / route / DNS recovery
-   └── config.yaml + runtime snapshots
-          │
-          ▼
-       Network
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\release-system-proxy-tun-readiness.ps1 -Execute -ConfirmManualNetworkChanges
 ```
 
-前端不直接访问 `127.0.0.1:9090`，这样后续可以把 Controller secret、配置校验、日志过滤等统一放在 Rust 层。
+The harness refuses an external TUN or externally owned System Proxy, does not
+kill processes, and records only redacted readiness evidence. It asks for the
+System Proxy toggle in the GUI, uses authenticated Service IPC for the managed
+TUN transition, probes domestic/foreign HTTPS and DNS, and requires the final
+state to match the initial state. A manual run is required before claiming the
+Windows network acceptance gate; this repository does not claim that run has
+already passed.
 
-## 后续验证
+The pre-tag GitHub Actions workflow is `MioProxy Release Readiness`. It is
+started with `workflow_dispatch`, performs the locked build/test/lint gates and
+an unsigned Windows bundle build, and never creates a GitHub Release.
 
-1. 在目标 Windows 机器安装并启动 `MioProxyService`
-2. 使用真实 Profile 验证 TUN 启停、路由/DNS 恢复
-3. 验证睡眠唤醒、网卡切换与 Service 升级版本协商
+## Windows release build
 
-## License / Mihomo
+The updater signing private key is never stored in this repository. For a local
+signed build:
 
-Mihomo 是 GPL-3.0 软件，并作为独立 sidecar 进程使用。若最终发布安装包并捆绑 Mihomo，请阅读 `THIRD_PARTY.md` 并履行对应的再分发义务。
+```powershell
+npm run release:build
+```
+
+The script accepts `-SigningKeyPath` or
+`TAURI_SIGNING_PRIVATE_KEY_PATH`. It prefers the generic
+`%USERPROFILE%\.tauri\mioproxy.key` name and retains a compatibility fallback
+for an existing legacy key file. Never commit the private key or password.
+
+All five release version sources must agree: `package.json`, `package-lock.json`,
+`src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`.
+
+## Third-party software
+
+Mihomo is GPL-3.0 software distributed as an independent sidecar. The
+repository notice is [THIRD_PARTY.md](THIRD_PARTY.md), and the packaged resource
+notice is `binaries/THIRD_PARTY_NOTICES.txt`. It contains the upstream source,
+release and license links required for redistribution information. MioProxy's
+own source remains private/unlicensed until a separate licensing decision is
+made.
+
+## Scope boundary
+
+This repository intentionally does not claim Windows Snap/DPI/Mica behavior,
+external-network reachability, or installer reputation as browser/build-only
+facts. Those remain explicit Windows acceptance checks and must be reported as
+`MANUAL PENDING` until performed on the target machine.

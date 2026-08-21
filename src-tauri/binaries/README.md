@@ -19,6 +19,10 @@ npm run service:build
 ```
 
 The service binary is written as `mioproxy-service-x86_64-pc-windows-msvc.exe`.
+
+`THIRD_PARTY_NOTICES.txt` is packaged with this resource directory and contains
+the Mihomo GPL-3.0 notice and source-availability links. Keep it with any
+redistributed Mihomo sidecar artifact.
 Install it once from an elevated terminal, using the same data directory as the
 GUI:
 

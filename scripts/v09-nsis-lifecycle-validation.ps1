@@ -1,10 +1,17 @@
 param(
     [switch]$IUnderstandCodexMayDisconnect,
     [switch]$SkipInstall,
-    [string]$InstallerPath = (Join-Path $PSScriptRoot '..\src-tauri\target\release\bundle\nsis\MioProxy_0.9.1_x64-setup.exe')
+    [string]$InstallerPath = ""
 )
 
 $ErrorActionPreference = 'Stop'
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+if ([string]::IsNullOrWhiteSpace($InstallerPath)) {
+    $packageVersion = [string](Get-Content -LiteralPath (Join-Path $repoRoot 'package.json') -Raw | ConvertFrom-Json).version
+    if ([string]::IsNullOrWhiteSpace($packageVersion)) { throw 'Unable to read package version for the NSIS installer path.' }
+    $InstallerPath = Join-Path $repoRoot "src-tauri\target\release\bundle\nsis\MioProxy_${packageVersion}_x64-setup.exe"
+}
+$InstallerPath = (Resolve-Path -LiteralPath $InstallerPath -ErrorAction Stop).Path
 
 if (-not $IUnderstandCodexMayDisconnect) {
     throw 'This validation restarts MioProxyService. Review the current control path, then rerun with -IUnderstandCodexMayDisconnect.'

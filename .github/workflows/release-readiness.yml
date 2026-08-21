@@ -1,0 +1,82 @@
+name: MioProxy Release Readiness
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-readiness:
+    name: Windows pre-tag readiness
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Verify repository version and lock consistency
+        shell: pwsh
+        run: |
+          & powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/check-version-consistency.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Verify lock files after npm ci
+        shell: pwsh
+        run: |
+          git diff --exit-code -- package-lock.json src-tauri/Cargo.lock
+
+      - name: Prepare official Mihomo sidecar
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run mihomo:setup
+
+      - name: Verify third-party packaging notice
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath src-tauri/binaries/THIRD_PARTY_NOTICES.txt)) {
+            throw "Mihomo third-party notice is missing from the packaged resource directory."
+          }
+          $config = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          if (@($config.bundle.resources) -notcontains 'binaries') {
+            throw "Tauri resources no longer include the binaries directory."
+          }
+
+      - name: Run locked source gates
+        run: |
+          npm run build
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+          cargo check --locked --manifest-path src-tauri/Cargo.toml
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+          cargo build --release --locked --manifest-path src-tauri/Cargo.toml --bin mioproxy --bin mioproxy-service
+          git diff --check
+
+      - name: Build unsigned Windows installers without publishing
+        shell: pwsh
+        run: |
+          & npx tauri build --ci --no-sign --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Fail if readiness validation changed repository files
+        shell: pwsh
+        run: |
+          $changes = git status --porcelain
+          if ($changes) {
+            Write-Host $changes
+            throw "Release readiness validation mutated tracked or untracked repository files."
+          }
