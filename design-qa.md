@@ -20,7 +20,7 @@ The written contract takes precedence over low-fidelity mock fields. The impleme
 
 The inner frame measurements were exactly 1180 × 760 and 960 × 650 CSS px at device pixel ratio 1.5. Final evidence files were captured from those frame bounds and independently verified as 1180 × 760 or 960 × 650 pixels. The current compact Overview was normalized from its 1440 × 975 device-pixel capture to the matching 960 × 650 CSS target before comparison.
 
-The visual fixture uses local, browser-only Tauri IPC mocks. Native Tauri startup was deliberately not used because application setup can recover or change real System Proxy/TUN/Core state. The production window keeps Windows native decorations, so Snap, resize, system menu and hide-to-tray semantics are preserved instead of being replaced by an unverified DOM caption. The caption visible in browser evidence is explicitly preview-only.
+The visual fixture uses local, browser-only Tauri IPC mocks. Native Tauri startup was deliberately not used because application setup can recover or change real System Proxy/TUN/Core state. The production window uses a custom HTML caption (`decorations: false`) backed by Win32 hit testing and system-menu integration, so Snap, resize, system menu and hide-to-tray semantics remain native rather than being replaced by an unverified browser caption. The caption visible in browser evidence is explicitly preview-only.
 
 ## Full-view comparison
 
@@ -67,6 +67,6 @@ Verified interactions:
 | Passed | Destructive-action safety | External System Proxy ownership cannot be overwritten by the UI or the locked backend transition; partial write failures roll back only while the exact write prefix and managed listener remain owned, otherwise retaining the recovery snapshot. Compact inspector dismissal is distinct from closing a connection. |
 | Passed | Accessibility | Semantic headings, labelled searches, `aria-current`, visible input/select focus treatment, keyboard navigation, reduced-motion, forced-colors and zoom-scroll fallbacks are present. |
 | Passed | Icons/assets | Visible controls use one Lucide icon family. There are no emoji, ASCII glyph assets, gradients, decorative blobs or competitor assets. The traffic SVG is live data visualization, not a substitute image asset. |
-| Intentional boundary | Native shell | Custom Win32 caption/Snap code was not introduced without a safe native test gate; the release continues to use Windows native decorations. |
+| Intentional boundary | Native shell | The custom caption and Win32 hit-testing are source-verified; installed-window Snap, DPI, taskbar and lifecycle behavior remain manual acceptance checks. |
 
 final result: passed
