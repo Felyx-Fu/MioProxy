@@ -88,9 +88,10 @@ jobs:
       - name: Fail if validation changed tracked files
         shell: pwsh
         run: |
-          $changes = git status --porcelain
-          if ($changes) {
-            Write-Host $changes
+          $trackedChanges = @(git diff --name-only)
+          $untrackedChanges = @(git ls-files --others --exclude-standard)
+          if ($trackedChanges.Count -gt 0 -or $untrackedChanges.Count -gt 0) {
+            Write-Host ($trackedChanges + $untrackedChanges)
             throw "Release validation mutated tracked or untracked repository files."
           }
 
