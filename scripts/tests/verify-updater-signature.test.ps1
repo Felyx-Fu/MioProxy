@@ -71,13 +71,13 @@ function Invoke-SignatureVerification {
     Write-Host "$Label $result as expected." -ForegroundColor Green
 }
 
-$tempRoot = Join-Path (
-    if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
-        [IO.Path]::GetTempPath()
-    } else {
-        $env:RUNNER_TEMP
-    }
-) ("mioproxy-updater-signature-test-" + [Guid]::NewGuid().ToString("N"))
+$tempBase = [IO.Path]::GetTempPath()
+if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+    $tempBase = $env:RUNNER_TEMP
+}
+$tempRoot = Join-Path $tempBase (
+    "mioproxy-updater-signature-test-" + [Guid]::NewGuid().ToString("N")
+)
 
 try {
     New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
