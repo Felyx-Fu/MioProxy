@@ -1,7 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$SigningKeyPath = "",
-    [string]$AuthenticodeConfig = ""
+    [string]$SigningKeyPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,13 +58,6 @@ try {
 
     Write-Host "Using updater signing key: $($resolvedKey.Path)" -ForegroundColor Cyan
     $tauriArguments = @("run", "tauri", "build")
-    if (-not [string]::IsNullOrWhiteSpace($AuthenticodeConfig)) {
-        $tauriArguments += @("--config", $AuthenticodeConfig)
-    } elseif (-not [string]::IsNullOrWhiteSpace($env:MIOPROXY_AUTHENTICODE_CERTIFICATE_PATH)) {
-        $tauriArguments += @("--config", "scripts/tauri-windows-release.json")
-    } else {
-        Write-Warning "Building without Authenticode integration because no certificate was configured. This output is not a trusted release."
-    }
     Write-Host "Building Windows bundles..." -ForegroundColor Cyan
     npm @tauriArguments
     if ($LASTEXITCODE -ne 0) {

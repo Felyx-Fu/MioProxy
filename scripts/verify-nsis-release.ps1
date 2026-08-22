@@ -41,6 +41,12 @@ if ($msi.Count -gt 0) {
 }
 
 if ($RequireUpdaterMetadata) {
+    $signaturePath = "$($nsis[0].FullName).sig"
+    $signature = (Get-Content -Raw -LiteralPath $signaturePath).Trim()
+    if ([string]::IsNullOrWhiteSpace($signature)) {
+        throw "The NSIS installer updater signature is empty: $signaturePath"
+    }
+
     $latestPath = Join-Path $bundleRoot "latest.json"
     if (-not (Test-Path -LiteralPath $latestPath -PathType Leaf)) {
         throw "Tauri updater metadata is missing: $latestPath"
@@ -62,9 +68,30 @@ if ($RequireUpdaterMetadata) {
         if ($url -notmatch "MioProxy_${version}_x64-setup\.exe$") {
             throw "Updater metadata must reference the V1 NSIS installer: $($platform.Name) -> $url"
         }
-        if ([string]::IsNullOrWhiteSpace([string]$platform.Value.signature)) {
-            throw "Updater signature is missing for platform $($platform.Name)."
+        if ([string]$platform.Value.signature -cne $signature) {
+            throw "Updater signature mismatch for platform $($platform.Name): latest.json is not identical to $signaturePath."
         }
+    }
+
+    $verifierArguments = @(
+        "run",
+        "--quiet",
+        "--locked",
+        "--manifest-path",
+        (Join-Path $repoRoot "src-tauri\Cargo.toml"),
+        "--bin",
+        "verify-updater-signature",
+        "--",
+        "--artifact",
+        $nsis[0].FullName,
+        "--signature",
+        $signaturePath,
+        "--config",
+        (Join-Path $repoRoot "src-tauri\tauri.conf.json")
+    )
+    & cargo @verifierArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Cryptographic Tauri updater signature verification failed for $($nsis[0].FullName)."
     }
 }
 

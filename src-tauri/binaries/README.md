@@ -8,7 +8,7 @@ npm run mihomo:setup
 
 The setup script resolves the repository-pinned Mihomo release in
 `config/mihomo-release.json`, verifies both the upstream archive SHA-256 and
-the extracted pre-Authenticode executable SHA-256, and places the exact
+the extracted raw executable SHA-256, and places the exact
 Windows asset here as:
 
 `mihomo-x86_64-pc-windows-msvc.exe` (currently Mihomo v1.19.30)
@@ -35,12 +35,14 @@ The service binary is written as `mioproxy-service-x86_64-pc-windows-msvc.exe`.
 the exact bundled Mihomo version, upstream archive/extracted-binary hashes,
 GeoSite/GeoIP release provenance, GPL-3.0 notice, and source-availability
 links. Keep it with any redistributed Mihomo sidecar artifact. The final
-post-Authenticode hashes of signed PE files are recorded separately in the
-release manifest; they are not the upstream source hashes listed here.
+distributed SHA-256 values of shipped executable artifacts are recorded in the
+release manifest; they are not the upstream source hashes listed here. Tauri
+updater `.sig` files provide update authenticity and do not alter executable
+bytes.
 
 The V1 Windows distribution is NSIS EXE only: `MioProxy_<version>_x64-setup.exe`.
 MSI/WiX is not an official artifact. Tauri updater metadata remains supported
-and references the signed NSIS installer.
+and references the updater-signed NSIS installer.
 Install it once from an elevated terminal, using the same data directory as the
 GUI:
 

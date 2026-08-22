@@ -28,7 +28,7 @@ $baseUrl = if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
     $BaseUrl.TrimEnd('/')
 }
 $notes = if ([string]::IsNullOrWhiteSpace($Notes)) {
-    "Signed Windows x86_64 NSIS release for MioProxy."
+    "Tauri updater-signed Windows x86_64 NSIS release for MioProxy."
 } else {
     $Notes
 }

@@ -12,8 +12,8 @@ License text: https://www.gnu.org/licenses/gpl-3.0.txt
 
 Bundled release: Mihomo v1.19.30
 Bundled Windows asset: mihomo-windows-amd64-compatible-v1.19.30.zip
-Upstream archive SHA-256 (pre-sign source): 289fde5e29d37a5b3326480590d8b3551c5bf7f8737290355c19bce74d57a563
-Upstream extracted mihomo.exe SHA-256 (pre-Authenticode): 6ac25fcb26afe8e1bea24b6e6e80805bf884a33232d12e2d78dfa0b6c529ac14
+Upstream archive SHA-256 (source archive): 289fde5e29d37a5b3326480590d8b3551c5bf7f8737290355c19bce74d57a563
+Upstream extracted mihomo.exe SHA-256 (raw bundled binary): 6ac25fcb26afe8e1bea24b6e6e80805bf884a33232d12e2d78dfa0b6c529ac14
 Release: https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.30
 Source archive: https://github.com/MetaCubeX/mihomo/archive/refs/tags/v1.19.30.tar.gz
 
@@ -31,10 +31,10 @@ Geodata source attribution: https://github.com/MetaCubeX/meta-rules-dat/blob/417
 
 GeoSite.dat download: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat
 GeoSite.dat checksum file: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat.sha256sum
-GeoSite.dat SHA-256 (upstream data, not Authenticode): 8c9e9ec13807174ffb3582d95655e00559af3fb30253b5e30c0385e46366d9dc
+GeoSite.dat SHA-256 (upstream data): 8c9e9ec13807174ffb3582d95655e00559af3fb30253b5e30c0385e46366d9dc
 GeoIP.dat download: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat
 GeoIP.dat checksum file: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat.sha256sum
-GeoIP.dat SHA-256 (upstream data, not Authenticode): 8ebcb11333f7deed4bf2740f2ce3249aa8997ef03d437150c7ae373c011cd72a
+GeoIP.dat SHA-256 (upstream data): 8ebcb11333f7deed4bf2740f2ce3249aa8997ef03d437150c7ae373c011cd72a
 
 The upstream README attributes the geosite data to Loyalsoldier/v2ray-rules-dat,
 v2fly/domain-list-community, Loyalsoldier/domain-list-custom,
@@ -44,10 +44,11 @@ described by that README. These upstream attribution links and their licenses
 remain part of the provenance record; the pinned MetaCubeX release/license and
 content hashes above identify the exact redistributed data.
 
-The pre-Authenticode hashes above identify upstream source inputs. The final
-distributed hashes after Windows Authenticode signing and RFC 3161 timestamping
-are recorded separately as postAuthenticodeSha256/distributedSha256 in the
-release manifest and SHA256SUMS file.
+The raw Mihomo binary hash above identifies the exact upstream binary bundled by
+MioProxy. Distributed SHA-256 records: the release manifest and SHA256SUMS file
+list every shipped executable. Tauri updater .sig files provide
+cryptographic update authenticity using the public key in the application
+configuration; they do not alter the executable bytes.
 
 The corresponding source for the Mihomo binary is available from the listed
 upstream source archive. This notice is shipped with the application resources

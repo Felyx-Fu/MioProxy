@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "product": "MioProxy",
+  "version": "0.9.2",
+  "gitCommit": "0123456789abcdef0123456789abcdef01234567",
+  "mihomoProject": "MetaCubeX/mihomo",
+  "mihomoVersion": "1.19.30",
+  "mihomoReleaseTag": "v1.19.30",
+  "mihomoAsset": "mihomo-windows-amd64-compatible-v1.19.30.zip",
+  "mihomoAssetUrl": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.30/mihomo-windows-amd64-compatible-v1.19.30.zip",
+  "mihomoSourceUrl": "https://github.com/MetaCubeX/mihomo/archive/refs/tags/v1.19.30.tar.gz",
+  "mihomoReleaseUrl": "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.30",
+  "mihomoUpstreamArchiveSha256": "289fde5e29d37a5b3326480590d8b3551c5bf7f8737290355c19bce74d57a563",
+  "mihomoUpstreamBinarySha256": "6ac25fcb26afe8e1bea24b6e6e80805bf884a33232d12e2d78dfa0b6c529ac14",
+  "hashPolicy": {
+    "distributedSha256": "SHA-256 of the exact file shipped to users.",
+    "reproducibility": "Deterministic and traceable inputs; final artifacts are verified by SHA-256 and Tauri updater signatures."
+  },
+  "executables": [
+    {
+      "role": "app",
+      "path": "src-tauri/target/release/mioproxy.exe",
+      "length": 1,
+      "distributedSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "role": "service",
+      "path": "src-tauri/binaries/mioproxy-service-x86_64-pc-windows-msvc.exe",
+      "length": 1,
+      "distributedSha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "role": "mihomo",
+      "path": "src-tauri/binaries/mihomo-x86_64-pc-windows-msvc.exe",
+      "length": 1,
+      "distributedSha256": "6ac25fcb26afe8e1bea24b6e6e80805bf884a33232d12e2d78dfa0b6c529ac14"
+    },
+    {
+      "role": "installer",
+      "path": "src-tauri/target/release/bundle/nsis/MioProxy_0.9.2_x64-setup.exe",
+      "length": 1,
+      "distributedSha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ]
+}

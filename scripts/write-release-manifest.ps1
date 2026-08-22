@@ -2,8 +2,7 @@
 param(
     [string]$BundleRoot = "",
     [string]$ManifestPath = "",
-    [string]$Sha256Path = "",
-    [string]$AuthenticodeRecordPath = ""
+    [string]$Sha256Path = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,20 +27,6 @@ $bundleRoot = if ([string]::IsNullOrWhiteSpace($BundleRoot)) { Join-Path $repoRo
 $version = [string](Get-Content -Raw (Join-Path $repoRoot "package.json") | ConvertFrom-Json).version
 $manifestPath = if ([string]::IsNullOrWhiteSpace($ManifestPath)) { Join-Path $bundleRoot "MioProxy-$version-release-manifest.json" } else { $ManifestPath }
 $sha256Path = if ([string]::IsNullOrWhiteSpace($Sha256Path)) { Join-Path $bundleRoot "MioProxy-$version-SHA256SUMS.txt" } else { $Sha256Path }
-$authenticodeRecordPath = if ([string]::IsNullOrWhiteSpace($AuthenticodeRecordPath)) { $env:MIOPROXY_AUTHENTICODE_RECORD_PATH } else { $AuthenticodeRecordPath }
-
-$hashRecords = @{}
-if (-not [string]::IsNullOrWhiteSpace($authenticodeRecordPath) -and (Test-Path -LiteralPath $authenticodeRecordPath -PathType Leaf)) {
-    foreach ($line in Get-Content -LiteralPath $authenticodeRecordPath) {
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
-        $record = $line | ConvertFrom-Json
-        $recordPath = (Resolve-Path -LiteralPath ([string]$record.path)).Path
-        if (-not $hashRecords.ContainsKey($recordPath)) {
-            $hashRecords[$recordPath] = @{}
-        }
-        $hashRecords[$recordPath][[string]$record.phase] = ([string]$record.sha256).ToLowerInvariant()
-    }
-}
 
 $releaseExecutablePaths = Get-ReleaseExecutablePaths -RepoRoot $repoRoot
 $roleByPath = @{}
@@ -57,54 +42,46 @@ if ($paths.Count -eq 0) {
     throw "No shipped Windows executables were found for MioProxy $version."
 }
 
+$sidecarManifest = Get-Content -Raw (Join-Path $repoRoot "config\mihomo-release.json") | ConvertFrom-Json
+$mihomoUpstreamBinaryHash = ([string]$sidecarManifest.upstreamBinarySha256).ToLowerInvariant()
+if ($mihomoUpstreamBinaryHash -notmatch '^[0-9a-f]{64}$') {
+    throw "The pinned Mihomo upstream binary SHA-256 is missing or malformed."
+}
+
 $items = foreach ($path in $paths) {
     $file = Get-Item -LiteralPath $path
     $resolvedPath = $file.FullName
     $distributedHash = Get-Sha256 -Path $path
-    $signature = Get-AuthenticodeSignature -LiteralPath $path
-    $record = if ($hashRecords.ContainsKey($resolvedPath)) { $hashRecords[$resolvedPath] } else { $null }
-    $preAuthenticodeHash = if ($null -ne $record -and $record.ContainsKey('preAuthenticode')) {
-        $record['preAuthenticode']
-    } elseif ($signature.Status -eq 'NotSigned') {
-        $distributedHash
-    } else {
-        $null
-    }
-    $postAuthenticodeHash = if ($null -ne $record -and $record.ContainsKey('postAuthenticode')) {
-        $record['postAuthenticode']
-    } elseif ($signature.Status -eq 'Valid') {
-        $distributedHash
-    } else {
-        $null
+    $role = if ($roleByPath.ContainsKey($resolvedPath)) { $roleByPath[$resolvedPath] } else { 'installer' }
+    if ($role -eq 'mihomo' -and $distributedHash -ne $mihomoUpstreamBinaryHash) {
+        throw "The bundled raw Mihomo binary hash does not match config/mihomo-release.json."
     }
     [pscustomobject]@{
         path = $path.Substring($repoRoot.Length).TrimStart('\', '/') -replace '\\', '/'
-        role = if ($roleByPath.ContainsKey($resolvedPath)) { $roleByPath[$resolvedPath] } else { 'installer' }
+        role = $role
         length = [int64]$file.Length
-        preAuthenticodeSha256 = $preAuthenticodeHash
-        postAuthenticodeSha256 = $postAuthenticodeHash
         distributedSha256 = $distributedHash
-        authenticodeStatus = [string]$signature.Status
-        signer = if ($signature.SignerCertificate) { [string]$signature.SignerCertificate.Subject } else { $null }
-        timestamped = $null -ne $signature.TimeStamperCertificate
     }
 }
 
 $commit = (& git -C $repoRoot rev-parse HEAD).Trim()
-$sidecarManifest = Get-Content -Raw (Join-Path $repoRoot "config\mihomo-release.json") | ConvertFrom-Json
 $document = [ordered]@{
     schemaVersion = 1
     product = "MioProxy"
     version = $version
     gitCommit = $commit
+    mihomoProject = [string]$sidecarManifest.project
     mihomoVersion = [string]$sidecarManifest.version
+    mihomoReleaseTag = [string]$sidecarManifest.tag
+    mihomoAsset = [string]$sidecarManifest.asset
+    mihomoAssetUrl = [string]$sidecarManifest.assetUrl
+    mihomoSourceUrl = [string]$sidecarManifest.sourceUrl
+    mihomoReleaseUrl = [string]$sidecarManifest.releaseUrl
     mihomoUpstreamArchiveSha256 = ([string]$sidecarManifest.upstreamArchiveSha256).ToLowerInvariant()
-    mihomoUpstreamBinarySha256 = ([string]$sidecarManifest.upstreamBinarySha256).ToLowerInvariant()
+    mihomoUpstreamBinarySha256 = $mihomoUpstreamBinaryHash
     hashPolicy = [ordered]@{
-        preAuthenticodeSha256 = "Hash of a PE before Authenticode signing."
-        postAuthenticodeSha256 = "Hash of the final signed PE after Authenticode and RFC 3161 timestamping."
-        distributedSha256 = "The postAuthenticodeSha256 hash used for the shipped artifact."
-        reproducibility = "Deterministic and traceable inputs with verifiable signed outputs; RFC 3161 timestamps make signed bytes time-dependent."
+        distributedSha256 = "SHA-256 of the exact file shipped to users."
+        reproducibility = "Deterministic and traceable inputs; final artifacts are verified by SHA-256 and Tauri updater signatures."
     }
     executables = @($items)
 }

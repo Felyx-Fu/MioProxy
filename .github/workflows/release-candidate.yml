@@ -1,4 +1,4 @@
-name: MioProxy Signed Release Candidate
+name: MioProxy Updater-Signed Release Candidate
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   windows-release-candidate:
-    name: Windows x86_64 signed RC
+    name: Windows x86_64 updater-signed RC
     if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
     steps:
@@ -43,8 +43,8 @@ jobs:
           }
           "MIOPROXY_RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "artifact_name=MioProxy-$version-signed-rc-$env:GITHUB_RUN_ID" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          Write-Host "Resolved signed RC product version: $version"
+          "artifact_name=MioProxy-$version-updater-signed-rc-$env:GITHUB_RUN_ID" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Resolved updater-signed RC product version: $version"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -112,34 +112,16 @@ jobs:
         shell: pwsh
         run: Remove-Item -LiteralPath './src-tauri/target/release/bundle' -Recurse -Force -ErrorAction SilentlyContinue
 
-      - name: Build signed Windows NSIS RC from deterministic inputs
+      - name: Build updater-signed Windows NSIS RC from deterministic inputs
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          MIOPROXY_AUTHENTICODE_CERTIFICATE_PASSWORD: ${{ secrets.MIOPROXY_AUTHENTICODE_CERTIFICATE_PASSWORD }}
-          MIOPROXY_AUTHENTICODE_TIMESTAMP_URL: ${{ secrets.MIOPROXY_AUTHENTICODE_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
-          WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64 }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) { throw "TAURI_SIGNING_PRIVATE_KEY is not configured." }
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) { throw "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is not configured." }
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64)) { throw "WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64 is not configured." }
-          if ([string]::IsNullOrWhiteSpace($env:MIOPROXY_AUTHENTICODE_CERTIFICATE_PASSWORD)) { throw "MIOPROXY_AUTHENTICODE_CERTIFICATE_PASSWORD is not configured." }
-          if ([string]::IsNullOrWhiteSpace($env:MIOPROXY_AUTHENTICODE_TIMESTAMP_URL)) { throw "MIOPROXY_AUTHENTICODE_TIMESTAMP_URL is not configured." }
-          $certificatePath = Join-Path $env:RUNNER_TEMP 'mioproxy-authenticode.pfx'
-          $recordPath = Join-Path $env:RUNNER_TEMP 'mioproxy-authenticode-record.jsonl'
-          Remove-Item -LiteralPath $recordPath -Force -ErrorAction SilentlyContinue
-          try {
-            [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64))
-            $env:MIOPROXY_AUTHENTICODE_CERTIFICATE_PATH = $certificatePath
-            $env:MIOPROXY_AUTHENTICODE_RECORD_PATH = $recordPath
-            "MIOPROXY_AUTHENTICODE_RECORD_PATH=$recordPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            & npx tauri build --ci --config scripts/tauri-windows-release.json
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-          finally {
-            if (Test-Path -LiteralPath $certificatePath) { Remove-Item -LiteralPath $certificatePath -Force }
-          }
+          & npx tauri build --ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Assert V1 Windows packaging is NSIS-only
         shell: pwsh
@@ -147,16 +129,12 @@ jobs:
           & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/verify-nsis-release.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Record and verify RC hashes and Authenticode signatures
+      - name: Record and verify RC hashes and updater signatures
         shell: pwsh
-        env:
-          EXPECTED_AUTHENTICODE_SIGNER_THUMBPRINT: ${{ vars.MIOPROXY_AUTHENTICODE_SIGNER_THUMBPRINT }}
-          EXPECTED_AUTHENTICODE_SIGNER_SUBJECT: ${{ vars.MIOPROXY_AUTHENTICODE_SIGNER_SUBJECT }}
         run: |
           & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/write-release-manifest.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if ([string]::IsNullOrWhiteSpace($env:EXPECTED_AUTHENTICODE_SIGNER_THUMBPRINT)) { throw "MIOPROXY_AUTHENTICODE_SIGNER_THUMBPRINT repository variable is required." }
-          & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/verify-windows-release.ps1 -ExpectedSignerThumbprint $env:EXPECTED_AUTHENTICODE_SIGNER_THUMBPRINT -ExpectedSignerSubject $env:EXPECTED_AUTHENTICODE_SIGNER_SUBJECT
+          & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/verify-windows-release.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Write artifact-only updater metadata for the RC
@@ -165,16 +143,22 @@ jobs:
           RC_TAG: rc-${{ github.run_id }}
           RC_BASE_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts
         run: |
-          & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/write-updater-manifest.ps1 -Tag $env:RC_TAG -BaseUrl $env:RC_BASE_URL -Notes 'Signed RC verification metadata; artifact-only and not an official updater endpoint.'
+          & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/write-updater-manifest.ps1 -Tag $env:RC_TAG -BaseUrl $env:RC_BASE_URL -Notes 'Tauri updater-signed RC verification metadata; artifact-only and not an official updater endpoint.'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Verify NSIS updater metadata and signatures
+      - name: Verify NSIS updater metadata and cryptographic Tauri updater signature
         shell: pwsh
         run: |
           & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/verify-nsis-release.ps1 -RequireUpdaterMetadata
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Upload signed RC evidence only
+      - name: Exercise Tauri updater signature tamper resistance
+        shell: pwsh
+        run: |
+          & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/tests/verify-updater-signature.test.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload updater-signed RC evidence only
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ steps.resolve_version.outputs.artifact_name }}
@@ -188,14 +172,3 @@ jobs:
             src-tauri/target/release/bundle/MioProxy-*-SHA256SUMS.txt
             src-tauri/binaries/THIRD_PARTY_NOTICES.txt
             config/mihomo-release.json
-
-      - name: Remove Authenticode certificate and hash-record material from the runner
-        if: always()
-        shell: pwsh
-        run: |
-          if ($env:MIOPROXY_AUTHENTICODE_CERTIFICATE_PATH -and (Test-Path -LiteralPath $env:MIOPROXY_AUTHENTICODE_CERTIFICATE_PATH)) {
-            Remove-Item -LiteralPath $env:MIOPROXY_AUTHENTICODE_CERTIFICATE_PATH -Force
-          }
-          if ($env:MIOPROXY_AUTHENTICODE_RECORD_PATH -and (Test-Path -LiteralPath $env:MIOPROXY_AUTHENTICODE_RECORD_PATH)) {
-            Remove-Item -LiteralPath $env:MIOPROXY_AUTHENTICODE_RECORD_PATH -Force
-          }

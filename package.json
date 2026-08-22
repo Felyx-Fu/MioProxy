@@ -13,7 +13,7 @@
     "mihomo:setup": "powershell -ExecutionPolicy Bypass -File ./scripts/setup-mihomo.ps1",
     "service:build": "powershell -ExecutionPolicy Bypass -File ./scripts/build-mioproxy-service.ps1",
     "tauri:build": "tauri build",
-    "test:release-manifest": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/tests/release-manifest-path.test.ps1"
+    "test:release-manifest": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/tests/release-manifest.test.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

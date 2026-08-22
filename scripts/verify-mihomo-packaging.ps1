@@ -40,6 +40,10 @@ $binaryDigest = ([string]$manifest.upstreamBinarySha256).ToLowerInvariant()
 $geodata = $manifest.geodata
 $notice = Get-Content -LiteralPath $noticePath -Raw
 
+if ((Get-Sha256 -Path $binaryPath) -ne $binaryDigest) {
+    throw "Pinned Mihomo raw binary SHA-256 mismatch."
+}
+
 if ($tag -ne "v$version") { throw "Mihomo manifest tag/version are inconsistent." }
 foreach ($item in @(
     [pscustomobject]@{ File = [string]$manifest.geodata.geoSite.file; Path = $geoSitePath; Sha256 = ([string]$manifest.geodata.geoSite.upstreamSha256).ToLowerInvariant() },
@@ -55,10 +59,10 @@ if ([string]$geodata.project -ne 'MetaCubeX/meta-rules-dat' -or [string]$geodata
 foreach ($requiredText in @(
     "Bundled release: Mihomo $tag",
     "Bundled Windows asset: $asset",
-    "Upstream archive SHA-256 (pre-sign source): $digest",
-    "Upstream extracted mihomo.exe SHA-256 (pre-Authenticode): $binaryDigest",
-    "GeoSite.dat SHA-256 (upstream data, not Authenticode): $([string]$manifest.geodata.geoSite.upstreamSha256)",
-    "GeoIP.dat SHA-256 (upstream data, not Authenticode): $([string]$manifest.geodata.geoIp.upstreamSha256)",
+    "Upstream archive SHA-256 (source archive): $digest",
+    "Upstream extracted mihomo.exe SHA-256 (raw bundled binary): $binaryDigest",
+    "GeoSite.dat SHA-256 (upstream data): $([string]$manifest.geodata.geoSite.upstreamSha256)",
+    "GeoIP.dat SHA-256 (upstream data): $([string]$manifest.geodata.geoIp.upstreamSha256)",
     "Source archive: $([string]$manifest.sourceUrl)",
     "Release: $([string]$manifest.releaseUrl)",
     "Bundled GeoSite/GeoIP project: $([string]$geodata.project)",
@@ -67,7 +71,8 @@ foreach ($requiredText in @(
     "Geodata license: $([string]$geodata.license)",
     "Geodata release: $([string]$geodata.releaseUrl)",
     'GNU General Public License, version 3 (GPL-3.0)',
-    'postAuthenticodeSha256/distributedSha256'
+    'Distributed SHA-256 records',
+    'Tauri updater .sig files'
 )) {
     if ($notice.IndexOf($requiredText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
         throw "Mihomo third-party notice does not record required pinned release information: $requiredText"
