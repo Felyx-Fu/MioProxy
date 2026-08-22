@@ -78,8 +78,16 @@ jobs:
         shell: pwsh
         run: |
           Remove-Item -LiteralPath './src-tauri/target/release/bundle' -Recurse -Force -ErrorAction SilentlyContinue
-          & npx tauri build --ci --no-sign --config '{"bundle":{"createUpdaterArtifacts":false}}'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $configPath = Join-Path $env:RUNNER_TEMP 'mioproxy-readiness-tauri-config.json'
+          $configJson = '{"bundle":{"createUpdaterArtifacts":false}}'
+          [IO.File]::WriteAllText($configPath, $configJson, [Text.UTF8Encoding]::new($false))
+          try {
+            & npx tauri build --ci --no-sign --config $configPath
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          finally {
+            if (Test-Path -LiteralPath $configPath) { Remove-Item -LiteralPath $configPath -Force }
+          }
 
       - name: Assert V1 Windows packaging is NSIS-only
         shell: pwsh
