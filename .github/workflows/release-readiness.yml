@@ -100,6 +100,15 @@ jobs:
         run: |
           $changes = git status --porcelain
           if ($changes) {
+            Write-Host '--- git status --porcelain ---'
             Write-Host $changes
+            Write-Host '--- git diff --stat ---'
+            git diff --stat
+            Write-Host '--- relevant textual diff ---'
+            git diff -- src-tauri/Cargo.toml src-tauri/gen/schemas/desktop-schema.json src-tauri/gen/schemas/windows-schema.json
+            Write-Host '--- relevant diff ignoring CR-at-EOL ---'
+            git diff --ignore-cr-at-eol -- src-tauri/Cargo.toml src-tauri/gen/schemas/desktop-schema.json src-tauri/gen/schemas/windows-schema.json
+            Write-Host '--- relevant diff ignoring whitespace at EOL ---'
+            git diff --ignore-space-at-eol -- src-tauri/Cargo.toml src-tauri/gen/schemas/desktop-schema.json src-tauri/gen/schemas/windows-schema.json
             throw "Release readiness validation mutated tracked or untracked repository files."
           }

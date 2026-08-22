@@ -1,0 +1,4 @@
+# Tauri rewrites this manifest and regenerates these schemas as LF text.
+# Keep Windows checkouts byte-compatible with those deterministic writers.
+src-tauri/Cargo.toml text eol=lf
+src-tauri/gen/schemas/*.json text eol=lf
