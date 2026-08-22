@@ -23,6 +23,7 @@ function Get-Sha256 {
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+. (Join-Path $PSScriptRoot "release-artifact-paths.ps1")
 $bundleRoot = if ([string]::IsNullOrWhiteSpace($BundleRoot)) { Join-Path $repoRoot "src-tauri\target\release\bundle" } else { (Resolve-Path $BundleRoot).Path }
 $version = [string](Get-Content -Raw (Join-Path $repoRoot "package.json") | ConvertFrom-Json).version
 $manifestPath = if ([string]::IsNullOrWhiteSpace($ManifestPath)) { Join-Path $bundleRoot "MioProxy-$version-release-manifest.json" } else { $ManifestPath }
@@ -42,16 +43,13 @@ if (-not [string]::IsNullOrWhiteSpace($authenticodeRecordPath) -and (Test-Path -
     }
 }
 
+$releaseExecutablePaths = Get-ReleaseExecutablePaths -RepoRoot $repoRoot
 $roleByPath = @{}
-$roleByPath[(Resolve-Path (Join-Path $repoRoot "src-tauri\target\release\mioproxy.exe")).Path] = "app"
-$roleByPath[(Resolve-Path (Join-Path $repoRoot "src-tauri\binaries\mioproxy-service-x86_64-pc-windows-msvc.exe")).Path] = "service"
-$roleByPath[(Resolve-Path (Join-Path $repoRoot "src-tauri\binaries\mihomo-x86_64-pc-windows-msvc.exe")).Path] = "mihomo"
+foreach ($role in $releaseExecutablePaths.Keys) {
+    $roleByPath[(Resolve-Path $releaseExecutablePaths[$role]).Path] = $role
+}
 
-$paths = @(
-    (Join-Path $repoRoot "src-tauri\target\release\mioproxy.exe"),
-    (Join-Path $repoRoot "src-tauri\binaries\mioproxy-service-x86_64-pc-windows-msvc.exe"),
-    (Join-Path $repoRoot "src-tauri\binaries\mihomo-x86_64-pc-windows-msvc.exe")
-)
+$paths = @($releaseExecutablePaths.Values)
 $paths += Get-ChildItem -LiteralPath $bundleRoot -Recurse -File -Filter "MioProxy_${version}_*.exe" -ErrorAction SilentlyContinue |
     Select-Object -ExpandProperty FullName
 $paths = $paths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Sort-Object -Unique

@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$ManifestPath = ""
+    [string]$ManifestPath = "",
+    [string]$ExpectedSignerThumbprint = "",
+    [string]$ExpectedSignerSubject = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +22,19 @@ function Get-Sha256 {
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+. (Join-Path $PSScriptRoot "release-artifact-paths.ps1")
+$expectedThumbprint = ($ExpectedSignerThumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
+if ([string]::IsNullOrWhiteSpace($expectedThumbprint)) {
+    $expectedThumbprint = (($env:MIOPROXY_EXPECTED_AUTHENTICODE_SIGNER_THUMBPRINT -replace '[^0-9A-Fa-f]', '').ToUpperInvariant())
+}
+if ($expectedThumbprint -notmatch '^[0-9A-F]{40}$') {
+    throw "Expected Authenticode signer thumbprint must be supplied as a 40-hex-character release configuration value."
+}
+$expectedSubject = if ([string]::IsNullOrWhiteSpace($ExpectedSignerSubject)) {
+    [string]$env:MIOPROXY_EXPECTED_AUTHENTICODE_SIGNER_SUBJECT
+} else {
+    $ExpectedSignerSubject
+}
 $version = [string](Get-Content -Raw (Join-Path $repoRoot "package.json") | ConvertFrom-Json).version
 $bundleRoot = Join-Path $repoRoot "src-tauri\target\release\bundle"
 $manifestPath = if ([string]::IsNullOrWhiteSpace($ManifestPath)) { Join-Path $bundleRoot "MioProxy-$version-release-manifest.json" } else { $ManifestPath }
@@ -43,11 +58,7 @@ if (@($manifest.executables).Count -lt 4) {
     throw "Release executable manifest must include MioProxy, Service, Mihomo, and the final installer."
 }
 
-$requiredRoles = @{
-    app = 'target/release/mioproxy.exe'
-    service = 'src-tauri/binaries/mioproxy-service-x86_64-pc-windows-msvc.exe'
-    mihomo = 'src-tauri/binaries/mihomo-x86_64-pc-windows-msvc.exe'
-}
+$requiredRoles = Get-ReleaseExecutableRelativePaths
 foreach ($role in $requiredRoles.Keys) {
     if (@($manifest.executables | Where-Object { $_.path -eq $requiredRoles[$role] }).Count -ne 1) {
         throw "Release executable manifest is missing the required $role executable."
@@ -81,10 +92,17 @@ foreach ($item in $manifest.executables) {
     if ($null -eq $signature.TimeStamperCertificate) {
         throw "Authenticode timestamp is missing for $path."
     }
+    $actualThumbprint = ([string]$signature.SignerCertificate.Thumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
+    if ($actualThumbprint -ne $expectedThumbprint) {
+        throw "Authenticode signer thumbprint mismatch for $path (expected=$expectedThumbprint, actual=$actualThumbprint)."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($expectedSubject) -and [string]$signature.SignerCertificate.Subject -ne $expectedSubject) {
+        throw "Authenticode signer subject mismatch for $path (expected=$expectedSubject, actual=$($signature.SignerCertificate.Subject))."
+    }
     if ([string]$item.role -eq 'mihomo' -and ([string]$item.preAuthenticodeSha256).ToLowerInvariant() -ne ([string]$sidecarManifest.upstreamBinarySha256).ToLowerInvariant()) {
         throw "Mihomo pre-Authenticode hash does not match the pinned upstream extracted binary hash."
     }
-    Write-Host ("Verified {0} | pre-Authenticode {1} | distributed/post-Authenticode {2} | signer {3} | timestamped" -f $item.path, $item.preAuthenticodeSha256, $item.distributedSha256, $signature.SignerCertificate.Subject) -ForegroundColor Green
+    Write-Host ("Verified {0} | pre-Authenticode {1} | distributed/post-Authenticode {2} | signer {3} ({4}) | timestamped" -f $item.path, $item.preAuthenticodeSha256, $item.distributedSha256, $signature.SignerCertificate.Subject, $actualThumbprint) -ForegroundColor Green
 }
 
 Write-Host "Windows release verification passed for MioProxy $version." -ForegroundColor Green

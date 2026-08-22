@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "product": "MioProxy",
+  "executables": [
+    {
+      "role": "app",
+      "path": "src-tauri/target/release/mioproxy.exe"
+    }
+  ]
+}

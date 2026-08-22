@@ -88,21 +88,21 @@ fn required_from_candidate(candidate: &str) -> Result<RequiredGeodata, String> {
     Ok(required_from_value(&value))
 }
 
-fn configured_url(value: &Value, key: &str, default: &str) -> Result<String, String> {
+fn configured_url(value: &Value, key: &str, default: &str) -> Result<(String, bool), String> {
     let Some(candidate) = value
         .get("geox-url")
         .and_then(Value::as_mapping)
         .and_then(|mapping| mapping.get(Value::String(key.to_string())))
         .and_then(Value::as_str)
     else {
-        return Ok(default.to_string());
+        return Ok((default.to_string(), false));
     };
     let url = candidate.trim();
     let parsed = reqwest::Url::parse(url).map_err(|_| format!("geodata {key} URL 无效"))?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
         return Err(format!("geodata {key} URL 必须是 http 或 https 地址"));
     }
-    Ok(url.to_string())
+    Ok((url.to_string(), true))
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -138,7 +138,30 @@ fn bundled_bytes(file: &str, bundled_dirs: &[PathBuf]) -> Result<Option<Vec<u8>>
     Ok(None)
 }
 
-async fn download_geodata(file: &str, url: &str) -> Result<Vec<u8>, String> {
+fn validate_downloaded_geodata(
+    file: &str,
+    bytes: &[u8],
+    expected_sha256: Option<&str>,
+) -> Result<(), String> {
+    if bytes.len() > MAX_DOWNLOAD_BYTES || !is_nonempty_geodata(bytes) {
+        return Err(format!("下载的 {file} 不像有效 geodata 文件"));
+    }
+    if let Some(expected) = expected_sha256 {
+        let actual = digest(bytes);
+        if actual != expected {
+            return Err(format!(
+                "下载的 {file} SHA-256 {actual} 与 MioProxy 固定摘要 {expected} 不匹配"
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn download_geodata(
+    file: &str,
+    url: &str,
+    expected_sha256: Option<&str>,
+) -> Result<Vec<u8>, String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(45))
         .build()
@@ -155,9 +178,7 @@ async fn download_geodata(file: &str, url: &str) -> Result<Vec<u8>, String> {
         .bytes()
         .await
         .map_err(|error| format!("读取下载的 {file} 失败：{error}"))?;
-    if bytes.len() > MAX_DOWNLOAD_BYTES || !is_nonempty_geodata(&bytes) {
-        return Err(format!("下载的 {file} 不像有效 geodata 文件"));
-    }
+    validate_downloaded_geodata(file, &bytes, expected_sha256)?;
     Ok(bytes.to_vec())
 }
 
@@ -207,8 +228,13 @@ async fn replacement_for(
                 } else {
                     DEFAULT_GEOIP_URL
                 };
-                let url = configured_url(&value, key, default)?;
-                download_geodata(file, &url).await?
+                let (url, explicitly_configured) = configured_url(&value, key, default)?;
+                let expected_sha256 = if explicitly_configured {
+                    None
+                } else {
+                    Some(expected_bundled_digest(file))
+                };
+                download_geodata(file, &url, expected_sha256).await?
             };
             if !is_nonempty_geodata(&bytes) {
                 return Err(format!("{file} staging 内容无效"));
@@ -333,8 +359,9 @@ mod tests {
     use crate::config::mihomo_path_for_external_process;
 
     use super::{
-        is_geodata_error, required_from_candidate, uuid_suffix, validation_category,
-        RequiredGeodata, GEOIP_FILE, GEOSITE_FILE,
+        configured_url, is_geodata_error, required_from_candidate, uuid_suffix,
+        validate_downloaded_geodata, validation_category, RequiredGeodata, BUNDLED_GEOSITE_SHA256,
+        DEFAULT_GEOSITE_URL, GEOIP_FILE, GEOSITE_FILE,
     };
 
     #[test]
@@ -356,6 +383,33 @@ mod tests {
         let error = r"Invalid GeoSite.dat: remove \\?\C:\Users\fukan\AppData\Roaming\dev.MioProxy/GeoSite.dat: The filename, directory name, or volume label syntax is incorrect.";
         assert!(is_geodata_error(error));
         assert_eq!(validation_category(error), "Windows 路径");
+    }
+
+    #[test]
+    fn default_geodata_recovery_is_pinned_but_custom_geox_url_is_not() {
+        let default_value = serde_yaml::from_str::<serde_yaml::Value>("{}").unwrap();
+        let (default_url, explicitly_configured) =
+            configured_url(&default_value, "geosite", DEFAULT_GEOSITE_URL).unwrap();
+        assert_eq!(default_url, DEFAULT_GEOSITE_URL);
+        assert!(!explicitly_configured);
+
+        let custom_value = serde_yaml::from_str::<serde_yaml::Value>(
+            "geox-url:\n  geosite: https://example.test/geosite.dat\n",
+        )
+        .unwrap();
+        let (custom_url, explicitly_configured) =
+            configured_url(&custom_value, "geosite", DEFAULT_GEOSITE_URL).unwrap();
+        assert_eq!(custom_url, "https://example.test/geosite.dat");
+        assert!(explicitly_configured);
+
+        let mismatched = vec![b'G'; 1024];
+        assert!(validate_downloaded_geodata(
+            GEOSITE_FILE,
+            &mismatched,
+            Some(BUNDLED_GEOSITE_SHA256)
+        )
+        .is_err());
+        assert!(validate_downloaded_geodata(GEOSITE_FILE, &mismatched, None).is_ok());
     }
 
     #[cfg(windows)]

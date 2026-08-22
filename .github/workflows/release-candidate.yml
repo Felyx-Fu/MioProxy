@@ -3,11 +3,6 @@ name: MioProxy Signed Release Candidate
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: Source branch or commit to build as the signed RC
-        required: false
-        default: main
-        type: string
       expected_version:
         description: Optional expected product version; defaults to the repository version
         required: false
@@ -20,17 +15,14 @@ permissions:
 jobs:
   windows-release-candidate:
     name: Windows x86_64 signed RC
+    if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
-    env:
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      MIOPROXY_AUTHENTICODE_CERTIFICATE_PASSWORD: ${{ secrets.MIOPROXY_AUTHENTICODE_CERTIFICATE_PASSWORD }}
-      MIOPROXY_AUTHENTICODE_TIMESTAMP_URL: ${{ secrets.MIOPROXY_AUTHENTICODE_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
     steps:
-      - name: Check out requested source
-        uses: actions/checkout@v4
+      - name: Check out protected main source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ inputs.ref }}
+          ref: main
+          persist-credentials: false
 
       - name: Resolve and verify repository product version
         id: resolve_version
@@ -55,13 +47,13 @@ jobs:
           Write-Host "Resolved signed RC product version: $version"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20.19.5
           cache: npm
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.93.0
+        uses: dtolnay/rust-toolchain@d8dfd7155fea72af4ad34a8fe97364d210e2d020 # 1.93.0
         with:
           targets: x86_64-pc-windows-msvc
           components: rustfmt, clippy
@@ -76,38 +68,6 @@ jobs:
 
       - name: Enforce production npm audit gate
         run: npm audit --omit=dev --audit-level=high
-
-      - name: Verify updater signing secret is present
-        shell: pwsh
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
-            throw "TAURI_SIGNING_PRIVATE_KEY is not configured in GitHub Actions Secrets."
-          }
-          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
-            throw "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is not configured for the encrypted signing key."
-          }
-
-      - name: Configure Authenticode signing certificate
-        shell: pwsh
-        env:
-          WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64 }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64)) {
-            throw "WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64 is not configured."
-          }
-          if ([string]::IsNullOrWhiteSpace($env:MIOPROXY_AUTHENTICODE_CERTIFICATE_PASSWORD)) {
-            throw "MIOPROXY_AUTHENTICODE_CERTIFICATE_PASSWORD is not configured."
-          }
-          if ([string]::IsNullOrWhiteSpace($env:MIOPROXY_AUTHENTICODE_TIMESTAMP_URL)) {
-            throw "MIOPROXY_AUTHENTICODE_TIMESTAMP_URL is not configured."
-          }
-          $certificatePath = Join-Path $env:RUNNER_TEMP 'mioproxy-authenticode.pfx'
-          $recordPath = Join-Path $env:RUNNER_TEMP 'mioproxy-authenticode-record.jsonl'
-          Remove-Item -LiteralPath $recordPath -Force -ErrorAction SilentlyContinue
-          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64))
-          "MIOPROXY_AUTHENTICODE_CERTIFICATE_PATH=$certificatePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "MIOPROXY_AUTHENTICODE_RECORD_PATH=$recordPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Remove-Item Env:WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64
 
       - name: Prepare official Mihomo sidecar
         env:
@@ -130,6 +90,7 @@ jobs:
         run: |
           npm run build
           npm run test:ui
+          npm run test:release-manifest
           cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
           cargo check --locked --manifest-path src-tauri/Cargo.toml
           cargo test --locked --manifest-path src-tauri/Cargo.toml
@@ -153,9 +114,32 @@ jobs:
 
       - name: Build signed Windows NSIS RC from deterministic inputs
         shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          MIOPROXY_AUTHENTICODE_CERTIFICATE_PASSWORD: ${{ secrets.MIOPROXY_AUTHENTICODE_CERTIFICATE_PASSWORD }}
+          MIOPROXY_AUTHENTICODE_TIMESTAMP_URL: ${{ secrets.MIOPROXY_AUTHENTICODE_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+          WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64 }}
         run: |
-          & npx tauri build --ci --config scripts/tauri-windows-release.json
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) { throw "TAURI_SIGNING_PRIVATE_KEY is not configured." }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) { throw "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is not configured." }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64)) { throw "WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64 is not configured." }
+          if ([string]::IsNullOrWhiteSpace($env:MIOPROXY_AUTHENTICODE_CERTIFICATE_PASSWORD)) { throw "MIOPROXY_AUTHENTICODE_CERTIFICATE_PASSWORD is not configured." }
+          if ([string]::IsNullOrWhiteSpace($env:MIOPROXY_AUTHENTICODE_TIMESTAMP_URL)) { throw "MIOPROXY_AUTHENTICODE_TIMESTAMP_URL is not configured." }
+          $certificatePath = Join-Path $env:RUNNER_TEMP 'mioproxy-authenticode.pfx'
+          $recordPath = Join-Path $env:RUNNER_TEMP 'mioproxy-authenticode-record.jsonl'
+          Remove-Item -LiteralPath $recordPath -Force -ErrorAction SilentlyContinue
+          try {
+            [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_AUTHENTICODE_CERTIFICATE_BASE64))
+            $env:MIOPROXY_AUTHENTICODE_CERTIFICATE_PATH = $certificatePath
+            $env:MIOPROXY_AUTHENTICODE_RECORD_PATH = $recordPath
+            "MIOPROXY_AUTHENTICODE_RECORD_PATH=$recordPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            & npx tauri build --ci --config scripts/tauri-windows-release.json
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          finally {
+            if (Test-Path -LiteralPath $certificatePath) { Remove-Item -LiteralPath $certificatePath -Force }
+          }
 
       - name: Assert V1 Windows packaging is NSIS-only
         shell: pwsh
@@ -165,10 +149,14 @@ jobs:
 
       - name: Record and verify RC hashes and Authenticode signatures
         shell: pwsh
+        env:
+          EXPECTED_AUTHENTICODE_SIGNER_THUMBPRINT: ${{ vars.MIOPROXY_AUTHENTICODE_SIGNER_THUMBPRINT }}
+          EXPECTED_AUTHENTICODE_SIGNER_SUBJECT: ${{ vars.MIOPROXY_AUTHENTICODE_SIGNER_SUBJECT }}
         run: |
           & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/write-release-manifest.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/verify-windows-release.ps1
+          if ([string]::IsNullOrWhiteSpace($env:EXPECTED_AUTHENTICODE_SIGNER_THUMBPRINT)) { throw "MIOPROXY_AUTHENTICODE_SIGNER_THUMBPRINT repository variable is required." }
+          & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/verify-windows-release.ps1 -ExpectedSignerThumbprint $env:EXPECTED_AUTHENTICODE_SIGNER_THUMBPRINT -ExpectedSignerSubject $env:EXPECTED_AUTHENTICODE_SIGNER_SUBJECT
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Write artifact-only updater metadata for the RC
@@ -187,7 +175,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload signed RC evidence only
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ steps.resolve_version.outputs.artifact_name }}
           if-no-files-found: error
