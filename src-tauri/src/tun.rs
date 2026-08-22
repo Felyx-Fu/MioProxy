@@ -695,7 +695,7 @@ async fn load_tun_runtime(app: &AppHandle) -> Result<(), String> {
     let path = config::config_path_at(&data_dir);
     mihomo::api_put(
         "/configs?force=true",
-        json!({ "path": path.display().to_string() }),
+        json!({ "path": config::mihomo_path_string(&path) }),
     )
     .await
     .map_err(|error| format!("Mihomo 加载 TUN Runtime 失败：{error}"))?;
@@ -711,7 +711,7 @@ async fn restore_non_tun_runtime(
     if mihomo::owns_core(app) {
         mihomo::api_put(
             "/configs?force=true",
-            json!({ "path": path.display().to_string() }),
+            json!({ "path": config::mihomo_path_string(&path) }),
         )
         .await
         .map_err(|error| format!("Mihomo 恢复非 TUN Runtime 失败：{error}"))?;

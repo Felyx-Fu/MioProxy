@@ -109,6 +109,21 @@ mockIPC((cmd: string, args?: InvokeArgs) => {
 const [{ default: App }, ReactDOM] = await Promise.all([import("./App"), import("react-dom/client")]);
 ReactDOM.createRoot(document.getElementById("root")!).render(<App />);
 
+window.setTimeout(() => {
+  const surface = document.getElementById("main-content");
+  if (!surface) {
+    document.documentElement.dataset.smokeGenericContextMenu = "missing-surface";
+    document.documentElement.dataset.smokeContextMenuActions = "missing-surface";
+    return;
+  }
+  const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+  surface.dispatchEvent(event);
+  document.documentElement.dataset.smokeGenericContextMenu = event.defaultPrevented ? "blocked" : "exposed";
+  document.documentElement.dataset.smokeContextMenuActions = event.defaultPrevented
+    ? "none"
+    : "back-refresh-save-print-more-tools";
+}, 0);
+
 const traffic: TrafficSnapshot = {
   timestamp: Date.now(),
   up: 1_650_000,

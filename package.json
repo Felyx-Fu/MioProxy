@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test:ui": "vitest run --config vitest.config.ts",
     "tauri": "tauri",
     "release:build": "powershell -ExecutionPolicy Bypass -File ./scripts/build-windows-release.ps1",
     "mihomo:setup": "powershell -ExecutionPolicy Bypass -File ./scripts/setup-mihomo.ps1",
@@ -23,10 +24,14 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "6.6.3",
+    "@testing-library/react": "16.1.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "25.0.1",
     "typescript": "~5.7.2",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "vitest": "2.1.9"
   }
 }

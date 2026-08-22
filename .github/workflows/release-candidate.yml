@@ -1,16 +1,25 @@
-name: MioProxy Release
+name: MioProxy Signed Release Candidate
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Source branch or commit to build as the signed RC
+        required: false
+        default: main
+        type: string
+      expected_version:
+        description: Optional expected product version; defaults to the repository version
+        required: false
+        default: ''
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  windows-release:
-    name: Windows x86_64 release
+  windows-release-candidate:
+    name: Windows x86_64 signed RC
     runs-on: windows-latest
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -18,17 +27,32 @@ jobs:
       MIOPROXY_AUTHENTICODE_CERTIFICATE_PASSWORD: ${{ secrets.MIOPROXY_AUTHENTICODE_CERTIFICATE_PASSWORD }}
       MIOPROXY_AUTHENTICODE_TIMESTAMP_URL: ${{ secrets.MIOPROXY_AUTHENTICODE_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
     steps:
-      - name: Check out source
+      - name: Check out requested source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
-      - name: Verify release version is consistent
+      - name: Resolve and verify repository product version
+        id: resolve_version
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
         run: |
-          $expected = $env:RELEASE_TAG.TrimStart('v')
-          & powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/check-version-consistency.ps1 -ExpectedVersion $expected
+          $expected = [string]$env:EXPECTED_VERSION
+          if ([string]::IsNullOrWhiteSpace($expected)) {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/check-version-consistency.ps1
+          } else {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/check-version-consistency.ps1 -ExpectedVersion $expected.Trim()
+          }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = [string](Get-Content -Raw ./package.json | ConvertFrom-Json).version
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "The repository product version resolved to an empty value."
+          }
+          "MIOPROXY_RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "artifact_name=MioProxy-$version-signed-rc-$env:GITHUB_RUN_ID" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Resolved signed RC product version: $version"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -87,7 +111,7 @@ jobs:
 
       - name: Prepare official Mihomo sidecar
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: npm run mihomo:setup
 
       - name: Verify pinned Mihomo packaging and source availability
@@ -123,11 +147,11 @@ jobs:
             throw "Release validation mutated tracked or untracked repository files."
           }
 
-      - name: Clean exact release output directory
+      - name: Clean exact RC output directory
         shell: pwsh
         run: Remove-Item -LiteralPath './src-tauri/target/release/bundle' -Recurse -Force -ErrorAction SilentlyContinue
 
-      - name: Build deterministic-input signed Windows bundles from the checked-out tag
+      - name: Build signed Windows NSIS RC from deterministic inputs
         shell: pwsh
         run: |
           & npx tauri build --ci --config scripts/tauri-windows-release.json
@@ -139,7 +163,7 @@ jobs:
           & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/verify-nsis-release.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Record and verify release hashes and Authenticode signatures
+      - name: Record and verify RC hashes and Authenticode signatures
         shell: pwsh
         run: |
           & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/write-release-manifest.ps1
@@ -147,12 +171,13 @@ jobs:
           & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/verify-windows-release.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Write updater manifest for the exact verified artifacts
+      - name: Write artifact-only updater metadata for the RC
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RC_TAG: rc-${{ github.run_id }}
+          RC_BASE_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts
         run: |
-          & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/write-updater-manifest.ps1 -Tag $env:RELEASE_TAG
+          & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/write-updater-manifest.ps1 -Tag $env:RC_TAG -BaseUrl $env:RC_BASE_URL -Notes 'Signed RC verification metadata; artifact-only and not an official updater endpoint.'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify NSIS updater metadata and signatures
@@ -161,22 +186,22 @@ jobs:
           & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/verify-nsis-release.ps1 -RequireUpdaterMetadata
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Publish exact verified release assets
-        uses: softprops/action-gh-release@v2
+      - name: Upload signed RC evidence only
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.ref_name }}
-          name: MioProxy ${{ github.ref_name }}
-          body: Signed Windows x86_64 NSIS release for MioProxy. SHA-256 and Authenticode records are included; MSI is not an official V1 artifact.
-          draft: false
-          prerelease: false
-          files: |
+          name: ${{ steps.resolve_version.outputs.artifact_name }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
             src-tauri/target/release/bundle/nsis/MioProxy_*_x64-setup.exe
             src-tauri/target/release/bundle/nsis/MioProxy_*_x64-setup.exe.sig
             src-tauri/target/release/bundle/latest.json
             src-tauri/target/release/bundle/MioProxy-*-release-manifest.json
             src-tauri/target/release/bundle/MioProxy-*-SHA256SUMS.txt
+            src-tauri/binaries/THIRD_PARTY_NOTICES.txt
+            config/mihomo-release.json
 
-      - name: Remove Authenticode certificate material from the runner
+      - name: Remove Authenticode certificate and hash-record material from the runner
         if: always()
         shell: pwsh
         run: |

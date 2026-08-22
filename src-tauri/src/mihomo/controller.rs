@@ -246,6 +246,35 @@ rules:
     Ok(config)
 }
 
+async fn validate_gui_config(
+    app: &AppHandle,
+    data_dir: &Path,
+    config: &Path,
+) -> Result<(), String> {
+    let data_dir = crate::config::mihomo_path_string(data_dir);
+    let config = crate::config::mihomo_path_string(config);
+    let output = app
+        .shell()
+        .sidecar("mihomo")
+        .map_err(|error| format!("找不到 Mihomo sidecar：{error}"))?
+        .args(["-t", "-d"])
+        .arg(data_dir)
+        .args(["-f"])
+        .arg(config)
+        .output()
+        .await
+        .map_err(|error| format!("执行 Mihomo 配置校验失败：{error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(format!(
+        "Mihomo 配置校验失败：{}",
+        if stderr.is_empty() { stdout } else { stderr }
+    ))
+}
+
 pub(crate) async fn api_get(path: &str) -> Result<Value, String> {
     api_get_with_timeout(path, Duration::from_secs(2)).await
 }
@@ -560,7 +589,7 @@ fn status_for(
         state,
         running: state == CoreUserState::Ready,
         controller: CONTROLLER.to_string(),
-        config_path: config.display().to_string(),
+        config_path: crate::config::mihomo_path_string(&config),
         mixed_port: mixed_port(app)?,
         mode: mode(app)?,
         recovery_message,
@@ -670,6 +699,49 @@ async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatu
         Ok::<_, String>((dir, config, mixed_port))
     })();
     let (dir, config, mixed_port) = record_start_result(state, prepared)?;
+    let bundled_geodata_dirs = crate::config::bundled_geodata_dirs(app);
+    crate::geodata::ensure_for_candidate(&dir, &config, &bundled_geodata_dirs)
+        .await
+        .map_err(|error| {
+            format!(
+                "Mihomo 启动前 geodata 准备失败（{}）：{error}",
+                crate::geodata::validation_category(&error)
+            )
+        })?;
+    if let Err(error) = validate_gui_config(app, &dir, &config).await {
+        if crate::geodata::is_geodata_error(&error) {
+            let replacement = crate::geodata::replace_after_validation_failure(
+                &dir,
+                &config,
+                &bundled_geodata_dirs,
+            )
+            .await
+            .map_err(|repair| {
+                format!(
+                    "Mihomo 启动前配置校验失败（{}），geodata 修复失败：{repair}",
+                    crate::geodata::validation_category(&error)
+                )
+            })?;
+            if let Err(retry_error) = validate_gui_config(app, &dir, &config).await {
+                let restore_error = replacement.restore().err();
+                return Err(match restore_error {
+                    Some(restore_error) => format!(
+                        "Mihomo 启动前配置校验失败（{}），已保留当前 Runtime；geodata 回滚失败：{restore_error}；重试错误：{retry_error}",
+                        crate::geodata::validation_category(&retry_error)
+                    ),
+                    None => format!(
+                        "Mihomo 启动前配置校验失败（{}），已保留当前 Runtime：{retry_error}",
+                        crate::geodata::validation_category(&retry_error)
+                    ),
+                });
+            }
+        } else {
+            return Err(format!(
+                "Mihomo 启动前配置校验失败（{}）：{error}",
+                crate::geodata::validation_category(&error)
+            ));
+        }
+    }
     let command = record_start_result(
         state,
         app.shell()
@@ -678,9 +750,9 @@ async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatu
     )?
     .args(vec![
         "-d".to_string(),
-        dir.display().to_string(),
+        crate::config::mihomo_path_string(&dir),
         "-f".to_string(),
-        config.display().to_string(),
+        crate::config::mihomo_path_string(&config),
     ]);
 
     let (mut rx, child) = record_start_result(
@@ -981,7 +1053,7 @@ pub async fn mihomo_reload(app: AppHandle) -> Result<Value, String> {
     ensure_managed_core(&app).await?;
     api_put(
         "/configs?force=true",
-        serde_json::json!({ "path": config.display().to_string() }),
+        serde_json::json!({ "path": crate::config::mihomo_path_string(&config) }),
     )
     .await
 }

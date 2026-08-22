@@ -1,0 +1,21 @@
+{
+  "bundle": {
+    "windows": {
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "signCommand": {
+        "cmd": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "./scripts/sign-windows-artifact.ps1",
+          "-Path",
+          "%1"
+        ]
+      }
+    }
+  }
+}

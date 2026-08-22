@@ -2136,7 +2136,7 @@ rules:
                 state,
                 running: ready,
                 controller: mihomo::CONTROLLER.to_string(),
-                config_path: self.config_path().display().to_string(),
+                config_path: config::mihomo_path_string(&self.config_path()),
                 mixed_port,
                 mode,
                 recovery_message,
@@ -2454,6 +2454,60 @@ rules:
                     self.mihomo_path.display()
                 ));
             }
+            let config_path = self.config_path();
+            let bundled_geodata_dirs = crate::geodata::bundled_search_dirs(&self.mihomo_path);
+            crate::geodata::ensure_for_candidate(
+                &self.data_dir,
+                &config_path,
+                &bundled_geodata_dirs,
+            )
+            .await
+            .map_err(|error| {
+                format!(
+                    "Mihomo 启动前 geodata 准备失败（{}）：{error}",
+                    crate::geodata::validation_category(&error)
+                )
+            })?;
+            if let Err(error) =
+                crate::core_update::validate_config(&self.mihomo_path, &self.data_dir, &config_path)
+            {
+                if crate::geodata::is_geodata_error(&error) {
+                    let replacement = crate::geodata::replace_after_validation_failure(
+                        &self.data_dir,
+                        &config_path,
+                        &bundled_geodata_dirs,
+                    )
+                    .await
+                    .map_err(|repair| {
+                        format!(
+                            "Mihomo 启动前配置校验失败（{}），geodata 修复失败：{repair}",
+                            crate::geodata::validation_category(&error)
+                        )
+                    })?;
+                    if let Err(retry_error) = crate::core_update::validate_config(
+                        &self.mihomo_path,
+                        &self.data_dir,
+                        &config_path,
+                    ) {
+                        let restore_error = replacement.restore().err();
+                        return Err(match restore_error {
+                            Some(restore_error) => format!(
+                                "Mihomo 启动前配置校验失败（{}），已保留当前 Runtime；geodata 回滚失败：{restore_error}；重试错误：{retry_error}",
+                                crate::geodata::validation_category(&retry_error)
+                            ),
+                            None => format!(
+                                "Mihomo 启动前配置校验失败（{}），已保留当前 Runtime：{retry_error}",
+                                crate::geodata::validation_category(&retry_error)
+                            ),
+                        });
+                    }
+                } else {
+                    return Err(format!(
+                        "Mihomo 启动前配置校验失败（{}）：{error}",
+                        crate::geodata::validation_category(&error)
+                    ));
+                }
+            }
             let mut minimum_mixed_port = None;
             let mut last_error = "Mihomo 未通过启动健康检查".to_string();
             for _ in 0..4 {
@@ -2466,8 +2520,11 @@ rules:
                 )?;
                 let mut command = Command::new(&self.mihomo_path);
                 command
-                    .args(["-d", self.data_dir.to_string_lossy().as_ref()])
-                    .args(["-f", self.config_path().to_string_lossy().as_ref()])
+                    .args(["-d", config::mihomo_path_string(&self.data_dir).as_str()])
+                    .args([
+                        "-f",
+                        config::mihomo_path_string(&self.config_path()).as_str(),
+                    ])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null());
                 let mut child = command
@@ -2573,7 +2630,7 @@ rules:
             }
             mihomo::api_put(
                 "/configs?force=true",
-                json!({ "path": self.config_path().display().to_string() }),
+                json!({ "path": config::mihomo_path_string(&self.config_path()) }),
             )
             .await
         }
@@ -2596,14 +2653,18 @@ rules:
             let previous_stable = config::read_text_file_at(&stable, "读取当前 Runtime 配置")?
                 .ok_or_else(|| "当前 Runtime 配置不存在，拒绝无回滚点应用 Profile".to_string())?;
             write_atomic(&candidate, yaml.as_bytes())?;
-            let result = mihomo::api_put(
-                "/configs?force=true",
-                json!({ "path": candidate.display().to_string() }),
+            let result = config::load_candidate_with_geodata(
+                &self.data_dir,
+                &candidate,
+                &crate::geodata::bundled_search_dirs(&self.mihomo_path),
             )
             .await;
             if let Err(error) = result {
                 let _ = config::remove_file(&candidate, "清理候选配置");
-                return Err(format!("Mihomo 配置校验失败：{error}"));
+                return Err(format!(
+                    "Mihomo 配置校验失败（{}）：{error}；已保留当前配置",
+                    crate::geodata::validation_category(&error)
+                ));
             }
             let finish = async {
                 config::verify_controller_runtime(Some(expected_tun)).await?;
@@ -2620,7 +2681,7 @@ rules:
                 let controller_restore = if stable_restore.is_ok() {
                     mihomo::api_put(
                         "/configs?force=true",
-                        json!({ "path": stable.display().to_string() }),
+                        json!({ "path": config::mihomo_path_string(&stable) }),
                     )
                     .await
                     .map(|_| ())
@@ -2643,7 +2704,7 @@ rules:
             Ok(crate::config::ConfigApplyResult {
                 profile_id: profile_id.to_string(),
                 profile_name,
-                path: stable.display().to_string(),
+                path: config::mihomo_path_string(&stable),
                 controller_validated: true,
                 override_active,
             })
@@ -2681,9 +2742,10 @@ rules:
                     Ok(()) => "；Runtime 诊断已保存".to_string(),
                     Err(_) => "；Runtime 诊断保存失败".to_string(),
                 };
-            let load = match mihomo::api_put(
-                "/configs?force=true",
-                json!({ "path": candidate.display().to_string() }),
+            let load = match config::load_candidate_with_geodata(
+                &self.data_dir,
+                &candidate,
+                &crate::geodata::bundled_search_dirs(&self.mihomo_path),
             )
             .await
             {
@@ -2705,7 +2767,7 @@ rules:
                 let controller_restore = if stable_restore.is_ok() {
                     mihomo::api_put(
                         "/configs?force=true",
-                        json!({ "path": stable.display().to_string() }),
+                        json!({ "path": config::mihomo_path_string(&stable) }),
                     )
                     .await
                     .map(|_| ())

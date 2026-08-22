@@ -10,4 +10,6 @@ artifacts/
 .DS_Store
 src-tauri/target/
 src-tauri/binaries/*.exe
+src-tauri/binaries/GeoIP.dat
+src-tauri/binaries/GeoSite.dat
 !src-tauri/binaries/README.md

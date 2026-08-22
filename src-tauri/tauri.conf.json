@@ -32,16 +32,11 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "windows": {
       "nsis": {
         "installMode": "perMachine",
         "installerHooks": "./windows/hooks.nsh"
-      },
-      "wix": {
-        "fragmentPaths": ["./windows/fragments/service.wxs"],
-        "componentGroupRefs": ["MioProxyServiceInstaller"],
-        "upgradeCode": "594472c6-aeaf-5a2e-8c11-45d0429014d3"
       }
     },
     "icon": [

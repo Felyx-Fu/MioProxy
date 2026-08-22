@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Update, type DownloadEvent } from "@tauri-apps/plugin-updater";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
 import { mihomoApi, type CoreState, type CoreStatus, type CoreUpdateStatus, type MihomoVersion, type Profile, type ProxiesResponse, type ProxyPathState, type ProxyState, type ServiceConnectionStatus, type StartupSettings, type SystemProxyStatus, type TunStatusSnapshot, type UpdatePreferences, type UpdateStatus } from "./api/mihomo";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { ToastHost, type ToastMessage, type ToastTone } from "./components/Feedback";
@@ -720,8 +720,20 @@ export default function App() {
   const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
   const connectionCount = connections.data ? connections.data.connections.length : null;
 
+  function handleApplicationContextMenu(event: MouseEvent<HTMLDivElement>) {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (
+      target?.closest(
+        ".window-titlebar, input, textarea, [contenteditable=\"true\"]",
+      )
+    ) {
+      return;
+    }
+    event.preventDefault();
+  }
+
   return (
-    <div className="app-frame">
+    <div className="app-frame" data-context-menu-policy="block-browser" onContextMenu={handleApplicationContextMenu}>
       {isNativeRuntime() ? <WindowTitleBar /> : <PreviewTitleBar />}
       <div className="app-shell">
         <Sidebar page={page} onChange={setPage} />

@@ -7,5 +7,31 @@
   "assetUrl": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.30/mihomo-windows-amd64-compatible-v1.19.30.zip",
   "releaseUrl": "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.30",
   "sourceUrl": "https://github.com/MetaCubeX/mihomo/archive/refs/tags/v1.19.30.tar.gz",
-  "sha256": "289fde5e29d37a5b3326480590d8b3551c5bf7f8737290355c19bce74d57a563"
+  "upstreamArchiveSha256": "289fde5e29d37a5b3326480590d8b3551c5bf7f8737290355c19bce74d57a563",
+  "upstreamBinarySha256": "6ac25fcb26afe8e1bea24b6e6e80805bf884a33232d12e2d78dfa0b6c529ac14",
+  "geodata": {
+    "project": "MetaCubeX/meta-rules-dat",
+    "sourceRepository": "https://github.com/MetaCubeX/meta-rules-dat",
+    "releaseTag": "latest",
+    "releaseVersion": "Release 2026-08-22 06:48",
+    "releaseCommit": "4178770badecb1b349fbcd62c737e0d7a2079729",
+    "releasePublishedAt": "2026-08-21T22:50:37Z",
+    "releaseUrl": "https://github.com/MetaCubeX/meta-rules-dat/releases/tag/latest",
+    "license": "GNU General Public License, version 3 (GPL-3.0)",
+    "licenseUrl": "https://github.com/MetaCubeX/meta-rules-dat/blob/4178770badecb1b349fbcd62c737e0d7a2079729/LICENSE",
+    "sourceWorkflowUrl": "https://github.com/MetaCubeX/meta-rules-dat/blob/4178770badecb1b349fbcd62c737e0d7a2079729/.github/workflows/run.yml",
+    "sourceAttributionUrl": "https://github.com/MetaCubeX/meta-rules-dat/blob/4178770badecb1b349fbcd62c737e0d7a2079729/README.md",
+    "geoSite": {
+      "file": "GeoSite.dat",
+      "url": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
+      "checksumUrl": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat.sha256sum",
+      "upstreamSha256": "8c9e9ec13807174ffb3582d95655e00559af3fb30253b5e30c0385e46366d9dc"
+    },
+    "geoIp": {
+      "file": "GeoIP.dat",
+      "url": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
+      "checksumUrl": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat.sha256sum",
+      "upstreamSha256": "8ebcb11333f7deed4bf2740f2ce3249aa8997ef03d437150c7ae373c011cd72a"
+    }
+  }
 }

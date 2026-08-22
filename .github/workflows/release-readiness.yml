@@ -17,11 +17,11 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 20.19.5
           cache: npm
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.93.0
         with:
           targets: x86_64-pc-windows-msvc
           components: rustfmt, clippy
@@ -39,6 +39,9 @@ jobs:
         shell: pwsh
         run: |
           git diff --exit-code -- package-lock.json src-tauri/Cargo.lock
+
+      - name: Enforce production npm audit gate
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Prepare official Mihomo sidecar
         env:
@@ -60,6 +63,7 @@ jobs:
       - name: Run locked source gates
         run: |
           npm run build
+          npm run test:ui
           cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
           cargo check --locked --manifest-path src-tauri/Cargo.toml
           cargo test --locked --manifest-path src-tauri/Cargo.toml
@@ -70,7 +74,14 @@ jobs:
       - name: Build unsigned Windows installers without publishing
         shell: pwsh
         run: |
+          Remove-Item -LiteralPath './src-tauri/target/release/bundle' -Recurse -Force -ErrorAction SilentlyContinue
           & npx tauri build --ci --no-sign --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Assert V1 Windows packaging is NSIS-only
+        shell: pwsh
+        run: |
+          & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/verify-nsis-release.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Fail if readiness validation changed repository files

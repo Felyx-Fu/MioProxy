@@ -92,7 +92,10 @@ export function WindowTitleBar() {
   }
 
   function handleContextMenu(event: MouseEvent<HTMLDivElement>) {
-    if (isWindowControl(event.target)) return;
+    if (isWindowControl(event.target)) {
+      event.preventDefault();
+      return;
+    }
     event.preventDefault();
     void invoke("window_show_system_menu").catch(() => undefined);
   }

@@ -16,6 +16,8 @@ use sha2::{Digest, Sha256};
 use tauri::Manager;
 use zip::ZipArchive;
 
+use crate::config;
+
 const MIHOMO_RELEASE_ENDPOINT: &str =
     "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest";
 const MAX_RELEASE_JSON_BYTES: usize = 8 * 1024 * 1024;
@@ -294,9 +296,9 @@ pub(crate) fn validate_config(
     ensure_regular_file(staged_path, "staged Mihomo Core")?;
     let output = Command::new(staged_path)
         .args(["-t", "-d"])
-        .arg(data_dir)
+        .arg(config::mihomo_path_for_external_process(data_dir))
         .args(["-f"])
-        .arg(config_path)
+        .arg(config::mihomo_path_for_external_process(config_path))
         .output()
         .map_err(|error| format!("执行 Mihomo 配置校验失败：{error}"))?;
     if output.status.success() {

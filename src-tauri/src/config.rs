@@ -2,7 +2,7 @@ use std::{
     fs,
     io::{self, Read, Write},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener},
-    path::Path,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -169,8 +169,99 @@ pub(crate) fn config_path_at(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join("config.yaml")
 }
 
+/// Returns a path safe to pass across the Mihomo process/Controller boundary.
+/// Windows filesystem APIs may expose `\\?\` paths, but Mihomo expects an ordinary
+/// DOS or UNC path when resolving its data directory and GeoIP/GeoSite files.
+pub(crate) fn mihomo_path_for_external_process(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let mut value = path.as_os_str().to_string_lossy().replace('/', "\\");
+        if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+            value = format!(r"\\{rest}");
+        } else if let Some(rest) = value.strip_prefix(r"\\?\") {
+            value = rest.to_string();
+        }
+        PathBuf::from(value)
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
+pub(crate) fn mihomo_path_string(path: &Path) -> String {
+    mihomo_path_for_external_process(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+pub(crate) fn bundled_geodata_dirs(app: &AppHandle) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        dirs.push(resource_dir.clone());
+        dirs.push(resource_dir.join("binaries"));
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            dirs.push(parent.to_path_buf());
+            dirs.push(parent.join("resources").join("binaries"));
+            dirs.push(parent.join("binaries"));
+        }
+    }
+    dirs
+}
+
 pub(crate) fn candidate_path_at(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join(CANDIDATE_FILE)
+}
+
+pub(crate) async fn load_candidate_with_geodata(
+    data_dir: &Path,
+    candidate: &Path,
+    bundled_dirs: &[PathBuf],
+) -> Result<(), String> {
+    crate::geodata::ensure_for_candidate(data_dir, candidate, bundled_dirs).await?;
+    match mihomo::api_put(
+        "/configs?force=true",
+        json!({ "path": mihomo_path_string(candidate) }),
+    )
+    .await
+    {
+        Ok(_) => Ok(()),
+        Err(error) if crate::geodata::is_geodata_error(&error) => {
+            let replacement =
+                crate::geodata::replace_after_validation_failure(data_dir, candidate, bundled_dirs)
+                    .await
+                    .map_err(|repair| {
+                        format!(
+                    "Mihomo 配置校验失败（{}），geodata 修复失败：{repair}；原错误：{error}",
+                    crate::geodata::validation_category(&error)
+                )
+                    })?;
+            match mihomo::api_put(
+                "/configs?force=true",
+                json!({ "path": mihomo_path_string(candidate) }),
+            )
+            .await
+            {
+                Ok(_) => Ok(()),
+                Err(retry_error) => {
+                    let restore_error = replacement.restore().err();
+                    Err(match restore_error {
+                        Some(restore_error) => format!(
+                            "Mihomo 配置校验失败（{}），已保留当前配置；geodata 回滚失败：{restore_error}；重试错误：{retry_error}",
+                            crate::geodata::validation_category(&retry_error)
+                        ),
+                        None => format!(
+                            "Mihomo 配置校验失败（{}），已保留当前配置；重试错误：{retry_error}",
+                            crate::geodata::validation_category(&retry_error)
+                        ),
+                    })
+                }
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn override_path_at(data_dir: &Path) -> std::path::PathBuf {
@@ -452,6 +543,15 @@ pub(crate) fn read_text_file_at(path: &Path, label: &str) -> Result<Option<Strin
     file.read_to_string(&mut content)
         .map_err(|e| format!("{label}失败：{e}"))?;
     Ok(Some(content))
+}
+
+pub(crate) fn read_binary_file_at(path: &Path, label: &str) -> Result<Option<Vec<u8>>, String> {
+    ensure_not_reparse(path)?;
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("{label}失败：{error}")),
+    }
 }
 
 pub(crate) fn remove_file(path: &Path, label: &str) -> Result<(), String> {
@@ -1496,14 +1596,11 @@ pub(crate) async fn apply_config(
         let _ = remove_file(&candidate, "清理候选配置");
         return Err(format!("Core 尚未 Ready，无法应用 Profile：{error}"));
     }
-    if let Err(error) = mihomo::api_put(
-        "/configs?force=true",
-        json!({ "path": candidate.display().to_string() }),
-    )
-    .await
+    if let Err(error) =
+        load_candidate_with_geodata(&data_dir, &candidate, &bundled_geodata_dirs(&app)).await
     {
         let _ = remove_file(&candidate, "清理候选配置");
-        return Err(format!("Mihomo 配置校验失败，已保留当前配置：{error}"));
+        return Err(format!("{error}；已保留当前配置"));
     }
     let finish = async {
         verify_controller_runtime(Some(expected_tun)).await?;
@@ -1515,7 +1612,7 @@ pub(crate) async fn apply_config(
         let controller_restore = if stable_restore.is_ok() {
             mihomo::api_put(
                 "/configs?force=true",
-                json!({ "path": stable.display().to_string() }),
+                json!({ "path": mihomo_path_string(&stable) }),
             )
             .await
             .map(|_| ())
@@ -1538,7 +1635,7 @@ pub(crate) async fn apply_config(
     Ok(ConfigApplyResult {
         profile_id,
         profile_name,
-        path: stable.display().to_string(),
+        path: mihomo_path_string(&stable),
         controller_validated: true,
         override_active,
     })
@@ -1636,6 +1733,7 @@ mod tests {
     use std::{
         fs,
         net::TcpListener,
+        path::Path,
         sync::{Mutex, MutexGuard, OnceLock},
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -1644,10 +1742,10 @@ mod tests {
         active_profile_id_at, active_runtime_value_at, actual_runtime_mixed_port_at,
         apply_auto_outbound_compatibility_with, build_value_at, clear_actual_runtime_mixed_port_at,
         commit_actual_runtime_mixed_port_at, commit_runtime_state_at, listener_owner, merge_values,
-        port_is_available, prepare_runtime_resources_at, preserve_failed_runtime_diagnostics_at,
-        restore_active_runtime_config_at, runtime_mixed_port_at, scan_available_port,
-        select_available_port, set_active_profile_id_at, set_tun_enabled_at, validate_config,
-        ListenerOwner,
+        mihomo_path_for_external_process, port_is_available, prepare_runtime_resources_at,
+        preserve_failed_runtime_diagnostics_at, restore_active_runtime_config_at,
+        runtime_mixed_port_at, scan_available_port, select_available_port,
+        set_active_profile_id_at, set_tun_enabled_at, validate_config, ListenerOwner,
     };
     #[cfg(windows)]
     use super::{windows_tcp_listener_diagnostics, windows_tcp_listener_uses_port};
@@ -1682,6 +1780,26 @@ mod tests {
         apply_auto_outbound_compatibility_with(&mut map, &OutboundCompatibility::default());
         assert!(map.get("interface-name").is_none());
         assert!(map.get("dns").is_none());
+    }
+
+    #[test]
+    fn normalizes_windows_appdata_path_at_the_mihomo_boundary() {
+        let extended = Path::new(r"\\?\C:\Users\fukan\AppData\Roaming\dev.MioProxy/GeoSite.dat");
+        let normalized = mihomo_path_for_external_process(extended);
+
+        #[cfg(windows)]
+        {
+            let normalized = normalized.to_string_lossy();
+            assert_eq!(
+                normalized,
+                r"C:\Users\fukan\AppData\Roaming\dev.MioProxy\GeoSite.dat"
+            );
+            assert!(!normalized.starts_with(r"\\?\"));
+            assert!(!normalized.contains('/'));
+        }
+
+        #[cfg(not(windows))]
+        assert_eq!(normalized, extended);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 mod config;
 mod core_update;
 mod diagnostics;
+mod geodata;
 mod migration;
 mod mihomo;
 mod outbound;
