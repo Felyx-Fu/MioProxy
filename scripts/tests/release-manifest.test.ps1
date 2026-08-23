@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-foreach ($testName in @('release-manifest-path.test.ps1', 'release-manifest-semantics.test.ps1', 'release-integrity-policy.test.ps1')) {
+foreach ($testName in @('release-manifest-path.test.ps1', 'release-manifest-semantics.test.ps1', 'release-integrity-policy.test.ps1', 'release-workflow.test.ps1')) {
     $testPath = Join-Path $PSScriptRoot $testName
     & $testPath
     if (-not $?) { throw "Release manifest test failed: $testName" }

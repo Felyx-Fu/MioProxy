@@ -27,6 +27,24 @@ jobs:
           & powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/check-version-consistency.ps1 -ExpectedVersion $expected
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Load version-specific release notes
+        id: release_notes
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $notesPath = Join-Path $env:GITHUB_WORKSPACE "docs/releases/$($env:RELEASE_TAG).md"
+          if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) {
+            throw "Release notes file is missing for $($env:RELEASE_TAG): $notesPath"
+          }
+          $notes = [System.IO.File]::ReadAllText($notesPath, [System.Text.UTF8Encoding]::new($false))
+          if ([string]::IsNullOrWhiteSpace($notes)) {
+            throw "Release notes file is empty: $notesPath"
+          }
+          $delimiter = "MIOPROXY_RELEASE_NOTES_$([guid]::NewGuid().ToString('N'))"
+          $output = "body<<$delimiter`n$notes`n$delimiter`n"
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, $output, [System.Text.UTF8Encoding]::new($false))
+
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -138,17 +156,27 @@ jobs:
           & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/tests/verify-updater-signature.test.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Upload release evidence artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: MioProxy-${{ github.ref_name }}-release-evidence
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            src-tauri/target/release/bundle/nsis/MioProxy_*_x64-setup.exe.sig
+            src-tauri/target/release/bundle/MioProxy-*-release-manifest.json
+            src-tauri/target/release/bundle/MioProxy-*-SHA256SUMS.txt
+            src-tauri/binaries/THIRD_PARTY_NOTICES.txt
+            config/mihomo-release.json
+
       - name: Publish exact verified release assets
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
         with:
           tag_name: ${{ github.ref_name }}
           name: MioProxy ${{ github.ref_name }}
-          body: Tauri updater-signed Windows x86_64 NSIS release for MioProxy. SHA-256 manifests and updater signatures are included; MSI is not an official V1 artifact.
+          body: ${{ steps.release_notes.outputs.body }}
           draft: false
           prerelease: false
           files: |
             src-tauri/target/release/bundle/nsis/MioProxy_*_x64-setup.exe
-            src-tauri/target/release/bundle/nsis/MioProxy_*_x64-setup.exe.sig
             src-tauri/target/release/bundle/latest.json
-            src-tauri/target/release/bundle/MioProxy-*-release-manifest.json
-            src-tauri/target/release/bundle/MioProxy-*-SHA256SUMS.txt
