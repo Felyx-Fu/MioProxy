@@ -13,13 +13,20 @@ Windows asset here as:
 
 `mihomo-x86_64-pc-windows-msvc.exe` (currently Mihomo v1.19.30)
 
-The setup also resolves the pinned MetaCubeX/meta-rules-dat release tag and
-commit, verifies the release asset digests, and downloads `GeoSite.dat` and
-`GeoIP.dat` beside the Mihomo sidecar. Their exact release version, commit,
-download URLs, SHA-256 values, GPL-3.0 license, and upstream attribution are
-recorded in `config/mihomo-release.json` and `THIRD_PARTY_NOTICES.txt`. The
-files are packaged as resources so Profiles using `GEOSITE` or `GEOIP` rules
-can validate before reload.
+The repository vendors `GeoSite.dat` and `GeoIP.dat` beside the Mihomo
+sidecar. Normal setup and release builds require these files to already exist,
+then verify their pinned SHA-256 values from `config/mihomo-release.json`.
+Normal setup does not download or overwrite them from the mutable
+`MetaCubeX/meta-rules-dat/latest` release. The upstream URLs, exact release
+metadata, GPL-3.0 license, and attribution remain recorded in
+`config/mihomo-release.json` and `THIRD_PARTY_NOTICES.txt` for provenance and
+explicit maintenance. The files are packaged as resources so Profiles using
+`GEOSITE` or `GEOIP` rules can validate before reload.
+
+Explicit geodata inspection or update is handled by
+`scripts/update-geodata.ps1`. Running it without `-Apply` previews the current
+upstream comparison; `scripts/update-geodata.ps1 -Apply` is an explicit
+maintenance action only and is never part of normal setup or release builds.
 
 That target-triple suffix is required by Tauri's `externalBin` sidecar convention.
 

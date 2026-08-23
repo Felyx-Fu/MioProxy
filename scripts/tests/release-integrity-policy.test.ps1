@@ -4,6 +4,8 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 . (Join-Path $repoRoot 'scripts/mihomo-release-policy.ps1')
 $setupText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'scripts/setup-mihomo.ps1')
 $updateText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'scripts/update-geodata.ps1')
+$binaryReadmeText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src-tauri/binaries/README.md')
+$gitignoreText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot '.gitignore')
 
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'config/mihomo-release.json') | ConvertFrom-Json
 if ([string]$manifest.geodata.releaseTag -ne 'latest') {
@@ -11,6 +13,62 @@ if ([string]$manifest.geodata.releaseTag -ne 'latest') {
 }
 if ([string]$manifest.geodata.releaseMetadataPolicy -ne 'informational-for-mutable-tag') {
     throw 'The geodata manifest must label latest release metadata as informational.'
+}
+
+$expectedVendoredGeodata = @(
+    [pscustomobject]@{
+        File = 'GeoSite.dat'
+        RelativePath = 'src-tauri/binaries/GeoSite.dat'
+        Path = Join-Path $repoRoot 'src-tauri/binaries/GeoSite.dat'
+        PinnedSha256 = '8c9e9ec13807174ffb3582d95655e00559af3fb30253b5e30c0385e46366d9dc'
+        ManifestItem = $manifest.geodata.geoSite
+    },
+    [pscustomobject]@{
+        File = 'GeoIP.dat'
+        RelativePath = 'src-tauri/binaries/GeoIP.dat'
+        Path = Join-Path $repoRoot 'src-tauri/binaries/GeoIP.dat'
+        PinnedSha256 = '8ebcb11333f7deed4bf2740f2ce3249aa8997ef03d437150c7ae373c011cd72a'
+        ManifestItem = $manifest.geodata.geoIp
+    }
+)
+
+if ($gitignoreText -notmatch '(?m)^src-tauri/binaries/\*\.exe\r?$') {
+    throw 'Executable binaries must remain ignored by .gitignore.'
+}
+foreach ($resource in $expectedVendoredGeodata) {
+    if ([string]$resource.ManifestItem.file -ne $resource.File) {
+        throw "Manifest geodata resource name is not canonical: $($resource.File)"
+    }
+    if ([string]$resource.ManifestItem.upstreamSha256 -ne $resource.PinnedSha256) {
+        throw "Manifest geodata SHA-256 pin changed unexpectedly: $($resource.File)"
+    }
+    if (-not (Test-Path -LiteralPath $resource.Path -PathType Leaf)) {
+        throw "Expected repository-vendored resource is missing: $($resource.Path)"
+    }
+    if ($gitignoreText -match "(?m)^$([regex]::Escape($resource.RelativePath))\r?$") {
+        throw "Repository-vendored resource is still ignored by .gitignore: $($resource.RelativePath)"
+    }
+    & git -C $repoRoot check-ignore --quiet -- $resource.RelativePath 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        throw "Repository-vendored resource is ignored by Git: $($resource.RelativePath)"
+    }
+}
+
+foreach ($requiredReadmeText in @(
+    'repository vendors `GeoSite.dat` and `GeoIP.dat`',
+    'Normal setup and release builds require these files to already exist',
+    'verify their pinned SHA-256 values',
+    'does not download or overwrite them',
+    'scripts/update-geodata.ps1',
+    'is an explicit',
+    'maintenance action only'
+)) {
+    if ($binaryReadmeText.IndexOf($requiredReadmeText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        throw "Vendored geodata README is missing required architecture wording: $requiredReadmeText"
+    }
+}
+if ($binaryReadmeText -match 'downloads `GeoSite\.dat`|downloads `GeoIP\.dat`') {
+    throw 'Vendored geodata README must not describe normal setup as downloading geodata.'
 }
 
 function New-RepeatedString {
@@ -76,9 +134,17 @@ if ($setupText -notmatch 'Assert-VendoredGeodata') {
 if ($setupText -match 'update-geodata') {
     throw 'Normal Mihomo setup must not invoke the explicit geodata maintenance path.'
 }
+if ($setupText -match '(?im)^\s*(?:Copy-Item|Move-Item|Set-Content|Add-Content|Remove-Item|WriteAllText|WriteAllBytes)[^\r\n]*(?:GeoSite|GeoIP|\$geodata|\$item\.Path)') {
+    throw 'Normal Mihomo setup must not mutate repository-vendored geodata.'
+}
+$vendoredVerificationIndex = $setupText.IndexOf('Assert-VendoredGeodata -Items $geodata', [System.StringComparison]::Ordinal)
+$mihomoNetworkIndex = $setupText.IndexOf('Invoke-RestMethod -Uri "https://api.github.com/repos/$project/releases/tags/$tag"', [System.StringComparison]::Ordinal)
+if ($vendoredVerificationIndex -lt 0 -or $mihomoNetworkIndex -lt 0 -or $vendoredVerificationIndex -gt $mihomoNetworkIndex) {
+    throw 'Normal Mihomo setup must fail closed on vendored geodata before network preparation.'
+}
 $vendoredItems = @(
-    [pscustomobject]@{ File = [string]$manifest.geodata.geoSite.file; Path = Join-Path $repoRoot 'src-tauri/binaries/GeoSite.dat'; UpstreamSha256 = ([string]$manifest.geodata.geoSite.upstreamSha256).ToLowerInvariant() },
-    [pscustomobject]@{ File = [string]$manifest.geodata.geoIp.file; Path = Join-Path $repoRoot 'src-tauri/binaries/GeoIP.dat'; UpstreamSha256 = ([string]$manifest.geodata.geoIp.upstreamSha256).ToLowerInvariant() }
+    [pscustomobject]@{ File = $expectedVendoredGeodata[0].File; Path = $expectedVendoredGeodata[0].Path; UpstreamSha256 = $expectedVendoredGeodata[0].PinnedSha256 },
+    [pscustomobject]@{ File = $expectedVendoredGeodata[1].File; Path = $expectedVendoredGeodata[1].Path; UpstreamSha256 = $expectedVendoredGeodata[1].PinnedSha256 }
 )
 Assert-VendoredGeodata -Items $vendoredItems
 $assetComparison = New-GeodataAssetComparison -File 'GeoSite.dat' -OldSha256 $vendoredItems[0].UpstreamSha256 -NewSha256 (New-RepeatedString -Character 'f' -Length 64)
@@ -125,6 +191,12 @@ try {
     }
     Remove-Item -LiteralPath $testSitePath -ErrorAction Stop
     Assert-ExpectedFailure -CaseName 'Vendored GeoSite.dat is missing' -ScriptBlock {
+        Assert-VendoredGeodata -Items $testItems
+    }
+    [IO.File]::WriteAllText($testSitePath, 'pinned geosite')
+    $testItems[1].UpstreamSha256 = Get-FileSha256 -Path $testIpPath
+    Remove-Item -LiteralPath $testIpPath -ErrorAction Stop
+    Assert-ExpectedFailure -CaseName 'Vendored GeoIP.dat is missing' -ScriptBlock {
         Assert-VendoredGeodata -Items $testItems
     }
 }
