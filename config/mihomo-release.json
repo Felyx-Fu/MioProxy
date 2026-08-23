@@ -13,6 +13,7 @@
     "project": "MetaCubeX/meta-rules-dat",
     "sourceRepository": "https://github.com/MetaCubeX/meta-rules-dat",
     "releaseTag": "latest",
+    "releaseMetadataPolicy": "informational-for-mutable-tag",
     "releaseVersion": "Release 2026-08-22 06:48",
     "releaseCommit": "4178770badecb1b349fbcd62c737e0d7a2079729",
     "releasePublishedAt": "2026-08-21T22:50:37Z",

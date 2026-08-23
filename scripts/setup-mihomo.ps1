@@ -1,5 +1,11 @@
 $ErrorActionPreference = "Stop"
 
+$releasePolicyPath = Join-Path $PSScriptRoot "mihomo-release-policy.ps1"
+if (-not (Test-Path -LiteralPath $releasePolicyPath)) {
+    throw "Mihomo release policy helper is missing: $releasePolicyPath"
+}
+. $releasePolicyPath
+
 function Get-Sha256 {
     param([string]$Path)
 
@@ -33,6 +39,7 @@ $binarySha256 = ([string]$manifest.upstreamBinarySha256).ToLowerInvariant()
 $geodataProject = [string]$manifest.geodata.project
 $geodataSourceRepository = [string]$manifest.geodata.sourceRepository
 $geodataReleaseTag = [string]$manifest.geodata.releaseTag
+$geodataReleaseMetadataPolicy = [string]$manifest.geodata.releaseMetadataPolicy
 $geodataReleaseVersion = [string]$manifest.geodata.releaseVersion
 $geodataReleaseCommit = ([string]$manifest.geodata.releaseCommit).ToLowerInvariant()
 $geodataReleasePublishedAt = [string]$manifest.geodata.releasePublishedAt
@@ -40,8 +47,8 @@ $geodataReleaseUrl = [string]$manifest.geodata.releaseUrl
 $geodataLicense = [string]$manifest.geodata.license
 $geodataLicenseUrl = [string]$manifest.geodata.licenseUrl
 $geodata = @(
-    [pscustomobject]@{ Key = 'geoSite'; File = [string]$manifest.geodata.geoSite.file; Url = [string]$manifest.geodata.geoSite.url; ChecksumUrl = [string]$manifest.geodata.geoSite.checksumUrl; UpstreamSha256 = ([string]$manifest.geodata.geoSite.upstreamSha256).ToLowerInvariant() },
-    [pscustomobject]@{ Key = 'geoIp'; File = [string]$manifest.geodata.geoIp.file; Url = [string]$manifest.geodata.geoIp.url; ChecksumUrl = [string]$manifest.geodata.geoIp.checksumUrl; UpstreamSha256 = ([string]$manifest.geodata.geoIp.upstreamSha256).ToLowerInvariant() }
+    [pscustomobject]@{ Key = 'geoSite'; File = [string]$manifest.geodata.geoSite.file; Path = Join-Path $outDir ([string]$manifest.geodata.geoSite.file); Url = [string]$manifest.geodata.geoSite.url; ChecksumUrl = [string]$manifest.geodata.geoSite.checksumUrl; UpstreamSha256 = ([string]$manifest.geodata.geoSite.upstreamSha256).ToLowerInvariant() },
+    [pscustomobject]@{ Key = 'geoIp'; File = [string]$manifest.geodata.geoIp.file; Path = Join-Path $outDir ([string]$manifest.geodata.geoIp.file); Url = [string]$manifest.geodata.geoIp.url; ChecksumUrl = [string]$manifest.geodata.geoIp.checksumUrl; UpstreamSha256 = ([string]$manifest.geodata.geoIp.upstreamSha256).ToLowerInvariant() }
 )
 
 if ([int]$manifest.schemaVersion -ne 1) { throw "Unsupported Mihomo release manifest schema." }
@@ -58,8 +65,8 @@ if ($manifestSha256 -notmatch '^[0-9a-f]{64}$' -or $binarySha256 -notmatch '^[0-
 if ($geodataProject -ne 'MetaCubeX/meta-rules-dat' -or $geodataSourceRepository -ne 'https://github.com/MetaCubeX/meta-rules-dat') {
     throw "Unexpected GeoSite/GeoIP project or source repository in release manifest."
 }
-if ([string]::IsNullOrWhiteSpace($geodataReleaseTag) -or [string]::IsNullOrWhiteSpace($geodataReleaseVersion) -or $geodataReleaseCommit -notmatch '^[0-9a-f]{40}$' -or [string]::IsNullOrWhiteSpace($geodataReleasePublishedAt)) {
-    throw "GeoSite/GeoIP release tag, version, and commit must be pinned."
+if ([string]::IsNullOrWhiteSpace($geodataReleaseTag) -or $geodataReleaseMetadataPolicy -ne 'informational-for-mutable-tag' -or [string]::IsNullOrWhiteSpace($geodataReleaseVersion) -or $geodataReleaseCommit -notmatch '^[0-9a-f]{40}$' -or [string]::IsNullOrWhiteSpace($geodataReleasePublishedAt)) {
+    throw "GeoSite/GeoIP release tag and informational metadata snapshot are invalid."
 }
 try {
     [DateTimeOffset]::Parse($geodataReleasePublishedAt) | Out-Null
@@ -83,6 +90,8 @@ foreach ($item in $geodata) {
         throw "Pinned geodata entry $($item.Key) must contain a 64-character SHA-256 digest."
     }
 }
+Assert-VendoredGeodata -Items $geodata
+Write-Host "Verified repository-pinned GeoSite.dat and GeoIP.dat; normal setup will not refresh mutable upstream geodata." -ForegroundColor Green
 
 $tempDir = Join-Path $env:TEMP ("mioproxy-mihomo-" + [guid]::NewGuid().ToString("N"))
 $zipFile = Join-Path $tempDir "mihomo.zip"
@@ -115,34 +124,7 @@ try {
     if ($upstreamDigest -notmatch '^sha256:[0-9a-f]{64}$') {
         throw "Upstream release asset $assetName did not provide a valid SHA-256 digest."
     }
-    if ($upstreamDigest.Substring(7) -ne $manifestSha256) {
-        throw "Pinned Mihomo manifest digest does not match the upstream release digest."
-    }
-
-    Write-Host "Resolving pinned GeoSite/GeoIP release $geodataReleaseTag..." -ForegroundColor Cyan
-    $geodataRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/$geodataProject/releases/tags/$geodataReleaseTag" -Headers $githubHeaders
-    if ([string]$geodataRelease.tag_name -ne $geodataReleaseTag -or [string]$geodataRelease.name -ne $geodataReleaseVersion) {
-        throw "Upstream GeoSite/GeoIP release metadata does not match the pinned tag/version."
-    }
-    $expectedPublishedAt = [DateTimeOffset]::Parse($geodataReleasePublishedAt).ToUniversalTime().Ticks
-    $actualPublishedAt = [DateTimeOffset]::Parse([string]$geodataRelease.published_at).ToUniversalTime().Ticks
-    if ($actualPublishedAt -ne $expectedPublishedAt) {
-        throw "Upstream GeoSite/GeoIP release published_at does not match the pinned release metadata."
-    }
-    $geodataRef = Invoke-RestMethod -Uri "https://api.github.com/repos/$geodataProject/git/ref/tags/$geodataReleaseTag" -Headers $githubHeaders
-    if ([string]$geodataRef.object.type -ne 'commit' -or ([string]$geodataRef.object.sha).ToLowerInvariant() -ne $geodataReleaseCommit) {
-        throw "Upstream GeoSite/GeoIP release tag does not resolve to the pinned commit."
-    }
-    foreach ($item in $geodata) {
-        $upstreamGeoAsset = $geodataRelease.assets | Where-Object { $_.name -eq $item.File.ToLowerInvariant() } | Select-Object -First 1
-        if (-not $upstreamGeoAsset -or [string]$upstreamGeoAsset.browser_download_url -ne $item.Url) {
-            throw "Pinned GeoSite/GeoIP asset was not found at the expected release URL: $($item.File)"
-        }
-        $upstreamGeoDigest = ([string]$upstreamGeoAsset.digest).ToLowerInvariant()
-        if ($upstreamGeoDigest -ne "sha256:$($item.UpstreamSha256)") {
-            throw "Pinned GeoSite/GeoIP manifest digest does not match the upstream release digest: $($item.File)"
-        }
-    }
+    Assert-PinnedSha256 -Expected $manifestSha256 -Actual $upstreamDigest.Substring(7) -Artifact "Mihomo $tag archive"
 
     Write-Host "[2/4] Downloading $assetName..." -ForegroundColor Cyan
     Invoke-WebRequest -Uri $assetUrl -OutFile $zipFile -UseBasicParsing
@@ -155,9 +137,7 @@ try {
         $zipStream.Dispose()
         $sha256.Dispose()
     }
-    if ($actualDigest -ne $manifestSha256) {
-        throw "SHA-256 verification failed for $assetName."
-    }
+    Assert-PinnedSha256 -Expected $manifestSha256 -Actual $actualDigest -Artifact $assetName
     Write-Host "SHA-256 verified: $manifestSha256" -ForegroundColor Green
 
     Write-Host "[3/4] Extracting..." -ForegroundColor Cyan
@@ -165,24 +145,10 @@ try {
     $exe = Get-ChildItem -Path $tempDir -Filter "mihomo*.exe" -Recurse | Select-Object -First 1
     if (-not $exe) { throw "Downloaded archive did not contain mihomo.exe." }
     $actualBinaryDigest = Get-Sha256 -Path $exe.FullName
-    if ($actualBinaryDigest -ne $binarySha256) {
-        throw "SHA-256 verification failed for the extracted Mihomo executable."
-    }
+    Assert-PinnedSha256 -Expected $binarySha256 -Actual $actualBinaryDigest -Artifact "extracted Mihomo executable"
     Copy-Item $exe.FullName $outFile -Force
 
-    foreach ($item in $geodata) {
-        $geodataPath = Join-Path $outDir $item.File
-        Write-Host "Downloading pinned $($item.File)..." -ForegroundColor Cyan
-        Invoke-WebRequest -Uri $item.Url -OutFile $geodataPath -UseBasicParsing
-        $actualGeodataDigest = Get-Sha256 -Path $geodataPath
-        if ($actualGeodataDigest -ne $item.UpstreamSha256) {
-            Remove-Item -LiteralPath $geodataPath -Force -ErrorAction SilentlyContinue
-            throw "SHA-256 verification failed for pinned geodata $($item.File)."
-        }
-        Write-Host "SHA-256 verified: $($item.File) ($($item.UpstreamSha256))" -ForegroundColor Green
-    }
-
-    Write-Host "[4/4] Ready: $outFile and pinned geodata resources" -ForegroundColor Green
+    Write-Host "[4/4] Ready: $outFile and repository-pinned geodata resources" -ForegroundColor Green
     Write-Host "Mihomo version: $tag" -ForegroundColor Green
 }
 finally {

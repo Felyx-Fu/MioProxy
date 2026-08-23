@@ -3,6 +3,10 @@ param()
 
 $ErrorActionPreference = 'Stop'
 
+$releasePolicyPath = Join-Path $PSScriptRoot 'mihomo-release-policy.ps1'
+if (-not (Test-Path -LiteralPath $releasePolicyPath)) { throw "Mihomo release policy helper is missing: $releasePolicyPath" }
+. $releasePolicyPath
+
 function Get-Sha256 {
     param([string]$Path)
 
@@ -40,21 +44,16 @@ $binaryDigest = ([string]$manifest.upstreamBinarySha256).ToLowerInvariant()
 $geodata = $manifest.geodata
 $notice = Get-Content -LiteralPath $noticePath -Raw
 
-if ((Get-Sha256 -Path $binaryPath) -ne $binaryDigest) {
-    throw "Pinned Mihomo raw binary SHA-256 mismatch."
-}
+Assert-PinnedSha256 -Expected $binaryDigest -Actual (Get-Sha256 -Path $binaryPath) -Artifact 'bundled Mihomo executable'
 
 if ($tag -ne "v$version") { throw "Mihomo manifest tag/version are inconsistent." }
-foreach ($item in @(
-    [pscustomobject]@{ File = [string]$manifest.geodata.geoSite.file; Path = $geoSitePath; Sha256 = ([string]$manifest.geodata.geoSite.upstreamSha256).ToLowerInvariant() },
-    [pscustomobject]@{ File = [string]$manifest.geodata.geoIp.file; Path = $geoIpPath; Sha256 = ([string]$manifest.geodata.geoIp.upstreamSha256).ToLowerInvariant() }
-)) {
-    if ((Get-Sha256 -Path $item.Path) -ne $item.Sha256) {
-        throw "Pinned geodata SHA-256 mismatch for $($item.File)."
-    }
-}
-if ([string]$geodata.project -ne 'MetaCubeX/meta-rules-dat' -or [string]$geodata.releaseTag -ne 'latest' -or [string]$geodata.releaseCommit -notmatch '^[0-9a-f]{40}$') {
-    throw 'GeoSite/GeoIP provenance is not pinned to the expected MetaCubeX release commit.'
+$vendoredGeodata = @(
+    [pscustomobject]@{ File = [string]$manifest.geodata.geoSite.file; Path = $geoSitePath; UpstreamSha256 = ([string]$manifest.geodata.geoSite.upstreamSha256).ToLowerInvariant() },
+    [pscustomobject]@{ File = [string]$manifest.geodata.geoIp.file; Path = $geoIpPath; UpstreamSha256 = ([string]$manifest.geodata.geoIp.upstreamSha256).ToLowerInvariant() }
+)
+Assert-VendoredGeodata -Items $vendoredGeodata
+if ([string]$geodata.project -ne 'MetaCubeX/meta-rules-dat' -or [string]$geodata.releaseTag -ne 'latest' -or [string]$geodata.releaseMetadataPolicy -ne 'informational-for-mutable-tag' -or [string]$geodata.releaseCommit -notmatch '^[0-9a-f]{40}$') {
+    throw 'GeoSite/GeoIP provenance or mutable-release metadata policy is invalid.'
 }
 foreach ($requiredText in @(
     "Bundled release: Mihomo $tag",
@@ -67,6 +66,7 @@ foreach ($requiredText in @(
     "Release: $([string]$manifest.releaseUrl)",
     "Bundled GeoSite/GeoIP project: $([string]$geodata.project)",
     "Geodata release version: $([string]$geodata.releaseVersion)",
+    'Geodata latest release metadata: informational only; SHA-256 values are the integrity pins.',
     "Geodata release commit: $([string]$geodata.releaseCommit)",
     "Geodata license: $([string]$geodata.license)",
     "Geodata release: $([string]$geodata.releaseUrl)",
