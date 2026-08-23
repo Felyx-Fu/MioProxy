@@ -23,12 +23,15 @@ proxy runtime. Add a subscription, choose the route that fits the moment, and
 see what is happening through one clear interface for profiles, proxies,
 rules, traffic, connections, and logs.
 
+<p align="center">
+  <img src="docs/images/dashboard.png" alt="MioProxy dashboard" width="900">
+</p>
+
 ## Features
 
 - **Mihomo-managed core** — MioProxy manages a separate Mihomo core and keeps
   its runtime state behind the application and Windows Service boundary.
-- **Subscriptions and profiles** — Add, update, and apply subscription or
-  local profile sources from the desktop UI.
+- **Subscriptions and profiles** — Add, update, and apply subscription profiles from the desktop UI.
 - **Proxy groups and node selection** — Inspect groups, switch nodes, and
   choose the active route without leaving the application.
 - **Latency testing** — Test node reachability and compare latency when
@@ -51,10 +54,10 @@ Download the latest Windows x86_64 build from
 [GitHub Releases](https://github.com/Felyx-Fu/MioProxy/releases/latest).
 
 Windows may display **“Unknown publisher”** for the installer because MioProxy
-currently does not use a commercial Windows Authenticode certificate. This is
-separate from Tauri updater cryptographic signatures: updater artifacts are
-verified with the Tauri updater public key, while Authenticode is the Windows
-certificate system that controls the publisher identity shown by Windows.
+does not currently use Windows Authenticode code signing. This is separate from
+Tauri updater cryptographic signatures: updater artifacts are verified with the
+Tauri updater public key, while Windows publisher identity is controlled by
+Authenticode certificates.
 
 ## Quick Start
 
@@ -65,10 +68,6 @@ certificate system that controls the publisher identity shown by Windows.
 5. Enable **System Proxy** or **TUN**.
 
 ## Screenshots
-
-<p align="center">
-  <img src="docs/images/dashboard.png" alt="MioProxy dashboard" width="900">
-</p>
 
 <p align="center">
   <img src="docs/images/proxies.png" alt="MioProxy proxy groups and nodes" width="49%">
