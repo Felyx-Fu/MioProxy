@@ -54,5 +54,7 @@ The corresponding source for the Mihomo binary is available from the listed
 upstream source archive. This notice is shipped with the application resources
 and must remain with redistributed artifacts.
 
-MioProxy is a separate work and keeps its own licensing choice; this notice
-does not license MioProxy under GPL-3.0.
+MioProxy itself is licensed under the GNU General Public License v3.0.
+This notice documents the separate third-party components distributed with MioProxy
+and does not replace their respective copyright, attribution, source-availability,
+or redistribution obligations.
