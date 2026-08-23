@@ -23,4 +23,7 @@ maintained in `config/mihomo-release.json` and repeated in the packaged notice.
 
 If you distribute MioProxy together with a Mihomo binary, comply with Mihomo's GPL-3.0 redistribution requirements and include the corresponding notices/source availability required by that license.
 
-The MioProxy source template itself is intentionally marked private/unlicensed until you choose a license for your own project.
+MioProxy itself is licensed under the GNU General Public License v3.0.
+This notice documents the separate third-party components distributed with MioProxy
+and does not replace their respective copyright, attribution, source-availability,
+or redistribution obligations.
