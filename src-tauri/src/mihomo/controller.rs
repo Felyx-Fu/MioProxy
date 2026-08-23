@@ -1,7 +1,8 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{ErrorKind, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, OnceLock,
@@ -29,10 +30,36 @@ use super::{logs, traffic};
 pub(crate) const CONTROLLER: &str = "127.0.0.1:19090";
 const CONTROLLER_SECRET_FILE: &str = "controller-secret";
 const DEFAULT_DELAY_URL: &str = "https://www.gstatic.com/generate_204";
+const DELAY_TIMEOUT_MS: u64 = 5_000;
+const DELAY_OUTER_TIMEOUT_SECS: u64 = 7;
 static CONTROLLER_SECRET: OnceLock<String> = OnceLock::new();
 // Keep fallback-core startup and termination recovery in one lifecycle critical
 // section. In particular, `child` must not be cleared until TUN rollback is done.
 static CORE_LIFECYCLE_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyEntryKind {
+    Ordinary,
+    Provider,
+    Group,
+    Builtin,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyDelayRequest {
+    pub group: String,
+    pub proxy: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub test_url: Option<String>,
+    #[serde(default)]
+    pub expected_status: Option<String>,
+    #[serde(default)]
+    pub kind: Option<ProxyEntryKind>,
+}
 
 #[cfg(windows)]
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
@@ -203,6 +230,45 @@ struct RuntimeConfig {
     mode: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct RuntimeProxyGroup {
+    name: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(rename = "expected-status", default)]
+    expected_status: Option<serde_yaml::Value>,
+    #[serde(default)]
+    proxies: Vec<String>,
+    #[serde(rename = "use", default)]
+    use_providers: Vec<String>,
+    #[serde(rename = "include-all", default)]
+    include_all: bool,
+    #[serde(rename = "include-all-proxies", default)]
+    include_all_proxies: bool,
+    #[serde(rename = "include-all-providers", default)]
+    include_all_providers: bool,
+}
+
+#[derive(Deserialize, Default)]
+struct RuntimeProxyGroupConfig {
+    #[serde(rename = "proxy-groups", default)]
+    proxy_groups: Vec<RuntimeProxyGroup>,
+    #[serde(rename = "proxy-providers", default)]
+    proxy_providers: BTreeMap<String, serde_yaml::Value>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeProxyMemberContext {
+    kind: ProxyEntryKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_candidates: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_resolution: Option<&'static str>,
+}
+
 pub(crate) fn runtime_paths(
     app: &AppHandle,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
@@ -280,13 +346,22 @@ pub(crate) async fn api_get(path: &str) -> Result<Value, String> {
 }
 
 async fn api_get_with_timeout(path: &str, timeout: Duration) -> Result<Value, String> {
-    let url = format!("http://{CONTROLLER}{path}");
+    api_get_with_timeout_at(&format!("http://{CONTROLLER}"), path, timeout, secret()).await
+}
+
+async fn api_get_with_timeout_at(
+    base_url: &str,
+    path: &str,
+    timeout: Duration,
+    bearer: &str,
+) -> Result<Value, String> {
+    let url = format!("{base_url}{path}");
     Client::builder()
         .timeout(timeout)
         .build()
         .map_err(|e| e.to_string())?
         .get(url)
-        .bearer_auth(secret())
+        .bearer_auth(bearer)
         .send()
         .await
         .map_err(|e| e.to_string())?
@@ -380,6 +455,57 @@ pub(crate) async fn api_delete(path: &str) -> Result<Value, String> {
         return Ok(Value::Null);
     }
     serde_json::from_str(&body).map_err(|e| e.to_string())
+}
+
+fn effective_delay_url(url: Option<&str>) -> String {
+    url.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_DELAY_URL)
+        .to_string()
+}
+
+fn delay_request_path(request: &ProxyDelayRequest) -> Result<String, String> {
+    if request.group.trim().is_empty() {
+        return Err("延迟测试请求缺少代理组上下文".to_string());
+    }
+    if request.proxy.trim().is_empty() {
+        return Err("延迟测试请求缺少代理节点".to_string());
+    }
+
+    let proxy = encode_path_segment(&request.proxy);
+    let provider_allowed = !matches!(
+        request.kind,
+        Some(ProxyEntryKind::Group) | Some(ProxyEntryKind::Builtin)
+    );
+    let endpoint = request
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| provider_allowed && !value.is_empty())
+        .map(|provider| {
+            format!(
+                "/providers/proxies/{}/{}/healthcheck",
+                encode_path_segment(provider),
+                proxy,
+            )
+        })
+        .unwrap_or_else(|| format!("/proxies/{proxy}/delay"));
+
+    let test_url = effective_delay_url(request.test_url.as_deref());
+    let mut path = format!(
+        "{endpoint}?url={}&timeout={DELAY_TIMEOUT_MS}",
+        encode_path_segment(&test_url),
+    );
+    if let Some(expected_status) = request
+        .expected_status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        path.push_str("&expected=");
+        path.push_str(&encode_path_segment(expected_status));
+    }
+    Ok(path)
 }
 
 pub(crate) fn encode_path_segment(value: &str) -> String {
@@ -992,9 +1118,352 @@ pub async fn mihomo_version() -> Result<Value, String> {
     api_get("/version").await
 }
 
+fn expected_status_string(value: &serde_yaml::Value) -> Option<String> {
+    match value {
+        serde_yaml::Value::String(value) => Some(value.clone()),
+        serde_yaml::Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn proxy_entries_mut(value: &mut Value) -> Option<&mut serde_json::Map<String, Value>> {
+    if value.get("proxies").and_then(Value::as_object).is_some() {
+        value.get_mut("proxies").and_then(Value::as_object_mut)
+    } else {
+        value.as_object_mut()
+    }
+}
+
+fn provider_entries(value: &Value) -> Option<&serde_json::Map<String, Value>> {
+    value
+        .get("providers")
+        .and_then(Value::as_object)
+        .or_else(|| value.as_object())
+}
+
+fn provider_contains_node(provider: &Value, node: &str) -> bool {
+    provider
+        .get("proxies")
+        .and_then(Value::as_array)
+        .is_some_and(|nodes| {
+            nodes.iter().any(|entry| {
+                entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .or_else(|| entry.as_str())
+                    == Some(node)
+            })
+        })
+}
+
+fn is_actual_proxy_provider(provider: &Value) -> bool {
+    matches!(
+        provider.get("vehicleType").and_then(Value::as_str),
+        Some("HTTP" | "File" | "Inline")
+    )
+}
+
+fn explicit_provider_hint(entry: Option<&Value>) -> Option<String> {
+    ["provider-name", "providerName"]
+        .into_iter()
+        .find_map(|key| {
+            entry
+                .and_then(|value| value.get(key))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+}
+
+fn is_proxy_group_type(entry: Option<&Value>) -> bool {
+    matches!(
+        entry
+            .and_then(|value| value.get("type"))
+            .and_then(Value::as_str),
+        Some(
+            "Selector"
+                | "URLTest"
+                | "Fallback"
+                | "LoadBalance"
+                | "Relay"
+                | "Smart"
+                | "Random"
+                | "Script"
+        )
+    )
+}
+
+fn proxy_entry_kind(entry: Option<&Value>) -> ProxyEntryKind {
+    if is_proxy_group_type(entry) {
+        return ProxyEntryKind::Group;
+    }
+    if matches!(
+        entry
+            .and_then(|value| value.get("type"))
+            .and_then(Value::as_str),
+        Some("Direct" | "Reject" | "RejectDrop" | "Pass" | "PassRule" | "Compatible")
+    ) {
+        return ProxyEntryKind::Builtin;
+    }
+    ProxyEntryKind::Ordinary
+}
+
+fn provider_source_names(
+    group: &RuntimeProxyGroup,
+    config: &RuntimeProxyGroupConfig,
+    providers: &serde_json::Map<String, Value>,
+) -> BTreeSet<String> {
+    let mut sources = BTreeSet::new();
+    for provider in &group.use_providers {
+        if providers
+            .get(provider)
+            .is_some_and(is_actual_proxy_provider)
+        {
+            sources.insert(provider.clone());
+        }
+    }
+    if group.include_all || group.include_all_providers {
+        for provider in config.proxy_providers.keys() {
+            if providers
+                .get(provider)
+                .is_some_and(is_actual_proxy_provider)
+            {
+                sources.insert(provider.clone());
+            }
+        }
+    }
+    sources
+}
+
+fn runtime_proxy_member_context(
+    group: Option<&RuntimeProxyGroup>,
+    config: Option<&RuntimeProxyGroupConfig>,
+    provider_data: Option<&Value>,
+    node: &str,
+    node_entry: Option<&Value>,
+) -> RuntimeProxyMemberContext {
+    let kind = proxy_entry_kind(node_entry);
+    if matches!(kind, ProxyEntryKind::Group | ProxyEntryKind::Builtin) {
+        return RuntimeProxyMemberContext {
+            kind,
+            provider: None,
+            provider_candidates: None,
+            provider_resolution: None,
+        };
+    }
+
+    let providers = provider_data.and_then(provider_entries);
+    if let Some(hint) = explicit_provider_hint(node_entry) {
+        if providers
+            .and_then(|entries| entries.get(&hint))
+            .is_some_and(|provider| {
+                is_actual_proxy_provider(provider) && provider_contains_node(provider, node)
+            })
+        {
+            return RuntimeProxyMemberContext {
+                kind: ProxyEntryKind::Provider,
+                provider: Some(hint),
+                provider_candidates: None,
+                provider_resolution: Some("resolved"),
+            };
+        }
+        if providers.is_none() {
+            return RuntimeProxyMemberContext {
+                kind: ProxyEntryKind::Ordinary,
+                provider: None,
+                provider_candidates: None,
+                provider_resolution: Some("unresolved"),
+            };
+        }
+    }
+
+    let Some(group) = group else {
+        return RuntimeProxyMemberContext {
+            kind: ProxyEntryKind::Ordinary,
+            provider: None,
+            provider_candidates: None,
+            provider_resolution: None,
+        };
+    };
+    let has_provider_sources =
+        !group.use_providers.is_empty() || group.include_all || group.include_all_providers;
+    let has_only_all_proxy_source = group.include_all_proxies && !has_provider_sources;
+    if !has_provider_sources || has_only_all_proxy_source {
+        return RuntimeProxyMemberContext {
+            kind: ProxyEntryKind::Ordinary,
+            provider: None,
+            provider_candidates: None,
+            provider_resolution: None,
+        };
+    }
+
+    let Some(config) = config else {
+        return RuntimeProxyMemberContext {
+            kind: ProxyEntryKind::Ordinary,
+            provider: None,
+            provider_candidates: None,
+            provider_resolution: Some("unresolved"),
+        };
+    };
+    let Some(providers) = providers else {
+        return RuntimeProxyMemberContext {
+            kind: ProxyEntryKind::Ordinary,
+            provider: None,
+            provider_candidates: None,
+            provider_resolution: Some("unresolved"),
+        };
+    };
+
+    let sources = provider_source_names(group, config, providers);
+    let candidates = sources
+        .into_iter()
+        .filter(|provider| {
+            providers.get(provider).is_some_and(|entry| {
+                is_actual_proxy_provider(entry) && provider_contains_node(entry, node)
+            })
+        })
+        .collect::<Vec<_>>();
+    let explicit_proxy_member = group.proxies.iter().any(|member| member == node);
+
+    match candidates.as_slice() {
+        [provider] if !explicit_proxy_member => RuntimeProxyMemberContext {
+            kind: ProxyEntryKind::Provider,
+            provider: Some(provider.clone()),
+            provider_candidates: None,
+            provider_resolution: Some("resolved"),
+        },
+        [] => RuntimeProxyMemberContext {
+            kind: ProxyEntryKind::Ordinary,
+            provider: None,
+            provider_candidates: None,
+            provider_resolution: None,
+        },
+        _ => RuntimeProxyMemberContext {
+            kind: ProxyEntryKind::Ordinary,
+            provider: None,
+            provider_candidates: Some(candidates),
+            provider_resolution: Some("ambiguous"),
+        },
+    }
+}
+
+fn merge_runtime_proxy_group_context_from_config(
+    proxies: &mut Value,
+    config: &RuntimeProxyGroupConfig,
+    provider_data: Option<&Value>,
+) {
+    let Some(groups) = proxy_entries_mut(proxies) else {
+        return;
+    };
+    let group_names = groups.keys().cloned().collect::<Vec<_>>();
+
+    for group_name in group_names {
+        let runtime_group = config
+            .proxy_groups
+            .iter()
+            .find(|group| group.name == group_name);
+        let member_names = groups
+            .get(&group_name)
+            .and_then(|entry| entry.get("all"))
+            .and_then(Value::as_array)
+            .map(|members| {
+                members
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>()
+            });
+
+        let member_contexts = member_names.map(|members| {
+            members
+                .into_iter()
+                .map(|node| {
+                    let node_entry = groups.get(&node);
+                    let context = runtime_proxy_member_context(
+                        runtime_group,
+                        Some(config),
+                        provider_data,
+                        &node,
+                        node_entry,
+                    );
+                    (
+                        node,
+                        serde_json::to_value(context).expect("latency member context serializes"),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>()
+        });
+
+        let Some(entry) = groups.get_mut(&group_name).and_then(Value::as_object_mut) else {
+            continue;
+        };
+        if let Some(group) = runtime_group {
+            if let Some(url) = group.url.as_ref().filter(|value| !value.trim().is_empty()) {
+                entry.insert("testUrl".to_string(), Value::String(url.clone()));
+            }
+            if let Some(expected_status) = group
+                .expected_status
+                .as_ref()
+                .and_then(expected_status_string)
+            {
+                entry.insert("expectedStatus".to_string(), Value::String(expected_status));
+            }
+        }
+        if let Some(member_contexts) = member_contexts {
+            entry.insert("memberContexts".to_string(), Value::Object(member_contexts));
+        }
+    }
+}
+
+#[cfg(test)]
+fn merge_runtime_proxy_group_context(proxies: &mut Value, yaml: &str) {
+    let Ok(config) = serde_yaml::from_str::<RuntimeProxyGroupConfig>(yaml) else {
+        return;
+    };
+    merge_runtime_proxy_group_context_from_config(proxies, &config, None);
+}
+
+async fn authoritative_runtime_config(app: &AppHandle) -> Option<String> {
+    let service_path = crate::service::request_service_status(app)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|status| {
+            let path = PathBuf::from(status.core.config_path.trim());
+            (!path.as_os_str().is_empty() && path.is_absolute()).then_some(path)
+        });
+    let path = match service_path {
+        Some(path) => path,
+        None => runtime_paths(app).ok()?.1,
+    };
+    crate::config::read_text_file_at(&path, "读取 Mihomo Runtime 配置")
+        .ok()
+        .flatten()
+}
+
 #[tauri::command]
-pub async fn mihomo_proxies() -> Result<Value, String> {
-    api_get("/proxies").await
+pub async fn mihomo_proxies(app: AppHandle) -> Result<Value, String> {
+    let mut proxies = api_get("/proxies").await?;
+    let provider_data = api_get("/providers/proxies").await.ok();
+    let runtime_config = authoritative_runtime_config(&app)
+        .await
+        .and_then(|yaml| serde_yaml::from_str::<RuntimeProxyGroupConfig>(&yaml).ok());
+    if let Some(config) = runtime_config.as_ref() {
+        merge_runtime_proxy_group_context_from_config(&mut proxies, config, provider_data.as_ref());
+    } else {
+        // Keep the raw /proxies response renderable when the generated Runtime
+        // is missing or stale. Explicit provider hints are still accepted only
+        // after validation against /providers/proxies; no name-only identity is
+        // fabricated from an unavailable Runtime source.
+        let empty_config = RuntimeProxyGroupConfig::default();
+        merge_runtime_proxy_group_context_from_config(
+            &mut proxies,
+            &empty_config,
+            provider_data.as_ref(),
+        );
+    }
+    Ok(proxies)
 }
 
 #[tauri::command]
@@ -1077,26 +1546,27 @@ pub async fn mihomo_select_proxy(
 }
 
 #[tauri::command]
-pub async fn mihomo_proxy_delay(proxy: String, url: Option<String>) -> Result<Value, String> {
-    let target = url.unwrap_or_else(|| DEFAULT_DELAY_URL.to_string());
-    api_get_with_timeout(
-        &format!(
-            "/proxies/{}/delay?url={}&timeout=5000",
-            encode_path_segment(&proxy),
-            encode_path_segment(&target),
-        ),
-        Duration::from_secs(7),
-    )
-    .await
+pub async fn mihomo_proxy_delay(request: ProxyDelayRequest) -> Result<Value, String> {
+    let path = delay_request_path(&request)?;
+    api_get_with_timeout(&path, Duration::from_secs(DELAY_OUTER_TIMEOUT_SECS)).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        all_ready_signals, classify_user_state, gui_status_is_authoritative,
-        required_listener_ready, selected_node_from_snapshot, CoreStatus, CoreUserState,
+        all_ready_signals, api_get_with_timeout_at, classify_user_state, delay_request_path,
+        effective_delay_url, encode_path_segment, expected_status_string,
+        gui_status_is_authoritative, is_actual_proxy_provider, merge_runtime_proxy_group_context,
+        merge_runtime_proxy_group_context_from_config, required_listener_ready,
+        runtime_proxy_member_context, selected_node_from_snapshot, CoreStatus, CoreUserState,
+        ProxyDelayRequest, ProxyEntryKind, RuntimeProxyGroupConfig, DEFAULT_DELAY_URL,
+        DELAY_OUTER_TIMEOUT_SECS, DELAY_TIMEOUT_MS,
     };
     use crate::config::{ListenerOwner, TcpListenerDiagnostic};
+    use serde_json::Value;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     fn listener(
         address_family: &str,
@@ -1112,6 +1582,22 @@ mod tests {
             state: "listen".to_string(),
             owning_pid,
             owner,
+        }
+    }
+
+    fn delay_request(
+        proxy: &str,
+        provider: Option<&str>,
+        test_url: Option<&str>,
+        kind: Option<ProxyEntryKind>,
+    ) -> ProxyDelayRequest {
+        ProxyDelayRequest {
+            group: "PROXY".to_string(),
+            proxy: proxy.to_string(),
+            provider: provider.map(ToOwned::to_owned),
+            test_url: test_url.map(ToOwned::to_owned),
+            expected_status: None,
+            kind,
         }
     }
 
@@ -1267,5 +1753,661 @@ mod tests {
             selected_node_from_snapshot(&legacy_root).as_deref(),
             Some("legacy-node")
         );
+    }
+
+    #[test]
+    fn ordinary_delay_path_uses_proxy_endpoint_and_keeps_mihomo_timeout() {
+        let mut request = delay_request(
+            "ordinary node",
+            None,
+            Some("https://example.test/ping?a=b&c=d"),
+            Some(ProxyEntryKind::Ordinary),
+        );
+        request.expected_status = Some("204".to_string());
+        let path = delay_request_path(&request).expect("ordinary delay path");
+
+        assert!(path.starts_with("/proxies/ordinary%20node/delay?"));
+        assert!(path.contains("url=https%3A%2F%2Fexample.test%2Fping%3Fa%3Db%26c%3Dd"));
+        assert!(path.contains("timeout=5000"));
+        assert!(path.ends_with("&expected=204"));
+    }
+
+    #[test]
+    fn provider_delay_path_encodes_provider_and_proxy_as_independent_segments() {
+        let provider = "提供 者/alpha?beta";
+        let proxy = "节点 /alpha?beta";
+        let path = delay_request_path(&delay_request(
+            proxy,
+            Some(provider),
+            None,
+            Some(ProxyEntryKind::Provider),
+        ))
+        .expect("provider delay path");
+        let expected_prefix = format!(
+            "/providers/proxies/{}/{}/healthcheck?",
+            encode_path_segment(provider),
+            encode_path_segment(proxy),
+        );
+
+        assert!(path.starts_with(&expected_prefix));
+        assert!(!path.contains("/alpha?beta"));
+        assert!(path.contains("timeout=5000"));
+    }
+
+    #[test]
+    fn group_and_builtin_entries_do_not_use_provider_healthcheck_even_with_stale_metadata() {
+        for kind in [ProxyEntryKind::Group, ProxyEntryKind::Builtin] {
+            let path = delay_request_path(&delay_request(
+                "nested entry",
+                Some("provider-that-must-not-be-used"),
+                None,
+                Some(kind),
+            ))
+            .expect("ordinary nested/builtin delay path");
+            assert!(path.starts_with("/proxies/nested%20entry/delay?"));
+        }
+    }
+
+    #[test]
+    fn delay_url_falls_back_to_https_gstatic() {
+        assert_eq!(effective_delay_url(None), DEFAULT_DELAY_URL);
+        assert_eq!(effective_delay_url(Some("")), DEFAULT_DELAY_URL);
+        assert_eq!(effective_delay_url(Some("  ")), DEFAULT_DELAY_URL);
+        assert_eq!(
+            effective_delay_url(Some(" https://delay.example.test/204 ")),
+            "https://delay.example.test/204"
+        );
+    }
+
+    #[test]
+    fn runtime_proxy_group_config_is_exposed_as_latency_context() {
+        let mut proxies = serde_json::json!({
+            "proxies": {
+                "AUTO": { "type": "URLTest", "history": [] },
+                "PROXY": { "type": "Selector", "history": [] }
+            }
+        });
+        merge_runtime_proxy_group_context(
+            &mut proxies,
+            r#"
+proxy-groups:
+  - name: AUTO
+    type: url-test
+    url: https://group.example.test/204
+    expected-status: 204
+  - name: PROXY
+    type: select
+"#,
+        );
+
+        assert_eq!(
+            proxies["proxies"]["AUTO"]["testUrl"],
+            "https://group.example.test/204"
+        );
+        assert_eq!(proxies["proxies"]["AUTO"]["expectedStatus"], "204");
+        assert!(proxies["proxies"]["PROXY"].get("testUrl").is_none());
+        assert_eq!(
+            expected_status_string(&serde_yaml::Value::Number(204.into())),
+            Some("204".to_string())
+        );
+    }
+
+    fn provider_group_fixture() -> (Value, RuntimeProxyGroupConfig, Value) {
+        let proxies = serde_json::json!({
+            "proxies": {
+                "PROXY": {
+                    "type": "Selector",
+                    "all": ["HK-1", "DIRECT"],
+                    "history": []
+                },
+                "HK-1": {"type": "Vless", "provider-name": ""},
+                "DIRECT": {"type": "Direct"}
+            }
+        });
+        let config = serde_yaml::from_str::<RuntimeProxyGroupConfig>(
+            r#"
+proxy-providers:
+  PROXY:
+    type: http
+proxy-groups:
+  - name: PROXY
+    type: select
+    use: [PROXY]
+    proxies: [DIRECT]
+"#,
+        )
+        .expect("provider group config");
+        let providers = serde_json::json!({
+            "providers": {
+                "PROXY": {
+                    "vehicleType": "HTTP",
+                    "proxies": [{"name": "HK-1"}]
+                },
+                "default": {
+                    "vehicleType": "Compatible",
+                    "proxies": [{"name": "HK-1"}]
+                }
+            }
+        });
+        (proxies, config, providers)
+    }
+
+    #[test]
+    fn actual_proxy_provider_vehicle_types_are_whitelisted() {
+        for vehicle_type in ["HTTP", "File", "Inline"] {
+            let provider = serde_json::json!({"vehicleType": vehicle_type});
+            assert!(is_actual_proxy_provider(&provider), "{vehicle_type}");
+        }
+    }
+
+    #[test]
+    fn synthetic_missing_and_unknown_vehicle_types_are_not_actual_providers() {
+        for provider in [
+            serde_json::json!({"vehicleType": "Compatible"}),
+            serde_json::json!({}),
+            serde_json::json!({"vehicleType": "Other"}),
+        ] {
+            assert!(!is_actual_proxy_provider(&provider));
+        }
+    }
+
+    #[test]
+    fn empty_provider_name_resolves_from_group_use_source() {
+        let (mut proxies, config, providers) = provider_group_fixture();
+        merge_runtime_proxy_group_context_from_config(&mut proxies, &config, Some(&providers));
+
+        assert_eq!(
+            proxies["proxies"]["PROXY"]["memberContexts"]["HK-1"]["kind"],
+            "provider"
+        );
+        assert_eq!(
+            proxies["proxies"]["PROXY"]["memberContexts"]["HK-1"]["provider"],
+            "PROXY"
+        );
+        assert_eq!(
+            proxies["proxies"]["PROXY"]["memberContexts"]["HK-1"]["providerResolution"],
+            "resolved"
+        );
+    }
+
+    #[test]
+    fn duplicate_provider_membership_does_not_override_group_use_source() {
+        let (mut proxies, config, providers) = provider_group_fixture();
+        merge_runtime_proxy_group_context_from_config(&mut proxies, &config, Some(&providers));
+
+        let context = &proxies["proxies"]["PROXY"]["memberContexts"]["HK-1"];
+        assert_eq!(context["provider"], "PROXY");
+        assert_ne!(context["provider"], "default");
+        assert_eq!(context["providerCandidates"], Value::Null);
+    }
+
+    #[test]
+    fn explicit_provider_hints_require_an_actual_provider_vehicle_type() {
+        let compatible_providers = serde_json::json!({
+            "providers": {
+                "default": {
+                    "vehicleType": "Compatible",
+                    "proxies": [{"name": "same node"}]
+                }
+            }
+        });
+        let compatible_node = serde_json::json!({
+            "type": "Vless",
+            "provider-name": "default"
+        });
+        let compatible_context = runtime_proxy_member_context(
+            None,
+            None,
+            Some(&compatible_providers),
+            "same node",
+            Some(&compatible_node),
+        );
+        assert_eq!(compatible_context.kind, ProxyEntryKind::Ordinary);
+        assert_eq!(compatible_context.provider, None);
+
+        let actual_providers = serde_json::json!({
+            "providers": {
+                "provider-a": {
+                    "vehicleType": "HTTP",
+                    "proxies": [{"name": "same node"}]
+                }
+            }
+        });
+        let actual_node = serde_json::json!({
+            "type": "Vless",
+            "providerName": "provider-a"
+        });
+        let actual_context = runtime_proxy_member_context(
+            None,
+            None,
+            Some(&actual_providers),
+            "same node",
+            Some(&actual_node),
+        );
+        assert_eq!(actual_context.kind, ProxyEntryKind::Provider);
+        assert_eq!(actual_context.provider.as_deref(), Some("provider-a"));
+    }
+
+    #[test]
+    fn compatible_only_node_uses_the_ordinary_delay_endpoint() {
+        let config = serde_yaml::from_str::<RuntimeProxyGroupConfig>(
+            r#"
+proxy-groups:
+  - name: AUTO
+    type: select
+    use: [default]
+"#,
+        )
+        .expect("compatible-only group config");
+        let providers = serde_json::json!({
+            "providers": {
+                "default": {
+                    "vehicleType": "Compatible",
+                    "proxies": [{"name": "same node"}]
+                }
+            }
+        });
+        let node = serde_json::json!({"type": "Vless", "provider-name": ""});
+        let context = runtime_proxy_member_context(
+            config.proxy_groups.first(),
+            Some(&config),
+            Some(&providers),
+            "same node",
+            Some(&node),
+        );
+
+        assert_eq!(context.kind, ProxyEntryKind::Ordinary);
+        assert_eq!(context.provider, None);
+
+        let path = delay_request_path(&delay_request(
+            "same node",
+            context.provider.as_deref(),
+            None,
+            Some(context.kind),
+        ))
+        .expect("ordinary delay path");
+        assert!(path.starts_with("/proxies/same%20node/delay?"));
+    }
+
+    #[test]
+    fn live_style_compatible_providers_do_not_create_artificial_ambiguity() {
+        let config = serde_yaml::from_str::<RuntimeProxyGroupConfig>(
+            r#"
+proxy-providers:
+  PROXY:
+    type: http
+proxy-groups:
+  - name: AUTO
+    type: select
+    use: [PROXY]
+"#,
+        )
+        .expect("live-style group config");
+        let providers = serde_json::json!({
+            "providers": {
+                "PROXY": {
+                    "vehicleType": "Compatible",
+                    "proxies": [{"name": "HK-1"}, {"name": "SG-1"}]
+                },
+                "default": {
+                    "vehicleType": "Compatible",
+                    "proxies": [{"name": "HK-1"}, {"name": "SG-1"}]
+                }
+            }
+        });
+
+        for node_name in ["HK-1", "SG-1"] {
+            let node = serde_json::json!({"type": "Vless", "provider-name": ""});
+            let context = runtime_proxy_member_context(
+                config.proxy_groups.first(),
+                Some(&config),
+                Some(&providers),
+                node_name,
+                Some(&node),
+            );
+
+            assert_eq!(context.kind, ProxyEntryKind::Ordinary);
+            assert_eq!(context.provider, None);
+            assert_eq!(context.provider_candidates, None);
+            assert_ne!(context.provider_resolution, Some("ambiguous"));
+        }
+    }
+
+    #[test]
+    fn group_generated_compatible_provider_named_proxy_is_ordinary() {
+        let config = serde_yaml::from_str::<RuntimeProxyGroupConfig>(
+            r#"
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [HK-1]
+"#,
+        )
+        .expect("group-generated provider config");
+        let providers = serde_json::json!({
+            "providers": {
+                "PROXY": {
+                    "vehicleType": "Compatible",
+                    "proxies": [{"name": "HK-1"}]
+                },
+                "default": {
+                    "vehicleType": "Compatible",
+                    "proxies": [{"name": "HK-1"}]
+                }
+            }
+        });
+        let node = serde_json::json!({"type": "Vless", "provider-name": ""});
+        let context = runtime_proxy_member_context(
+            config.proxy_groups.first(),
+            Some(&config),
+            Some(&providers),
+            "HK-1",
+            Some(&node),
+        );
+
+        assert_eq!(context.kind, ProxyEntryKind::Ordinary);
+        assert_eq!(context.provider, None);
+    }
+
+    #[test]
+    fn multiple_eligible_providers_remain_ambiguous() {
+        let mut proxies = serde_json::json!({
+            "proxies": {
+                "AUTO": {"type": "Selector", "all": ["same node"]},
+                "same node": {"type": "Vless", "provider-name": ""}
+            }
+        });
+        let config = serde_yaml::from_str::<RuntimeProxyGroupConfig>(
+            r#"
+proxy-providers:
+  provider-a: {type: http}
+  provider-b: {type: file}
+proxy-groups:
+  - name: AUTO
+    type: select
+    use: [provider-a, provider-b]
+"#,
+        )
+        .expect("ambiguous provider config");
+        let providers = serde_json::json!({
+            "providers": {
+                "provider-a": {
+                    "vehicleType": "HTTP",
+                    "proxies": [{"name": "same node"}]
+                },
+                "provider-b": {
+                    "vehicleType": "File",
+                    "proxies": [{"name": "same node"}]
+                }
+            }
+        });
+
+        merge_runtime_proxy_group_context_from_config(&mut proxies, &config, Some(&providers));
+
+        let context = &proxies["proxies"]["AUTO"]["memberContexts"]["same node"];
+        assert_eq!(context["kind"], "ordinary");
+        assert_eq!(context["provider"], Value::Null);
+        assert_eq!(context["providerResolution"], "ambiguous");
+        assert_eq!(
+            context["providerCandidates"],
+            serde_json::json!(["provider-a", "provider-b"])
+        );
+    }
+
+    #[test]
+    fn include_all_provider_sources_ignore_compatible_entries() {
+        for include_key in ["include-all", "include-all-providers"] {
+            let mut proxies = serde_json::json!({
+                "proxies": {
+                    "AUTO": {"type": "Selector", "all": ["same node"]},
+                    "same node": {"type": "Vless", "provider-name": ""}
+                }
+            });
+            let yaml = format!(
+                r#"
+proxy-providers:
+  PROXY: {{type: http}}
+proxy-groups:
+  - name: AUTO
+    type: select
+    {include_key}: true
+"#
+            );
+            let config = serde_yaml::from_str::<RuntimeProxyGroupConfig>(&yaml)
+                .expect("include-all provider config");
+            let providers = serde_json::json!({
+                "providers": {
+                    "PROXY": {
+                        "vehicleType": "HTTP",
+                        "proxies": [{"name": "same node"}]
+                    },
+                    "default": {
+                        "vehicleType": "Compatible",
+                        "proxies": [{"name": "same node"}]
+                    }
+                }
+            });
+
+            merge_runtime_proxy_group_context_from_config(&mut proxies, &config, Some(&providers));
+
+            let context = &proxies["proxies"]["AUTO"]["memberContexts"]["same node"];
+            assert_eq!(context["kind"], "provider");
+            assert_eq!(context["provider"], "PROXY");
+            assert_eq!(context["providerResolution"], "resolved");
+            assert_eq!(context["providerCandidates"], Value::Null);
+        }
+    }
+
+    #[test]
+    fn group_source_context_separates_provider_and_ordinary_same_name() {
+        let mut proxies = serde_json::json!({
+            "proxies": {
+                "PROVIDER-GROUP": {"type": "Selector", "all": ["same node"]},
+                "ORDINARY-GROUP": {"type": "Selector", "all": ["same node"]},
+                "same node": {"type": "Vless", "provider-name": ""}
+            }
+        });
+        let config = serde_yaml::from_str::<RuntimeProxyGroupConfig>(
+            r#"
+proxy-providers:
+  provider-a: {type: http}
+proxy-groups:
+  - name: PROVIDER-GROUP
+    type: select
+    use: [provider-a]
+  - name: ORDINARY-GROUP
+    type: select
+    proxies: [same node]
+"#,
+        )
+        .expect("same-name config");
+        let providers = serde_json::json!({
+            "providers": {
+                "provider-a": {
+                    "vehicleType": "HTTP",
+                    "proxies": [{"name": "same node"}]
+                }
+            }
+        });
+
+        merge_runtime_proxy_group_context_from_config(&mut proxies, &config, Some(&providers));
+
+        assert_eq!(
+            proxies["proxies"]["PROVIDER-GROUP"]["memberContexts"]["same node"]["provider"],
+            "provider-a"
+        );
+        assert_eq!(
+            proxies["proxies"]["ORDINARY-GROUP"]["memberContexts"]["same node"]["kind"],
+            "ordinary"
+        );
+        assert_eq!(
+            proxies["proxies"]["ORDINARY-GROUP"]["memberContexts"]["same node"]["provider"],
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn nested_group_and_builtin_members_keep_their_kinds() {
+        let mut proxies = serde_json::json!({
+            "proxies": {
+                "OUTER": {
+                    "type": "Selector",
+                    "all": ["NESTED", "DIRECT"]
+                },
+                "NESTED": {"type": "URLTest", "all": ["node"]},
+                "DIRECT": {"type": "Direct"},
+                "node": {"type": "Vless", "provider-name": ""}
+            }
+        });
+        let config = serde_yaml::from_str::<RuntimeProxyGroupConfig>(
+            r#"
+proxy-groups:
+  - name: OUTER
+    type: select
+    proxies: [NESTED, DIRECT]
+  - name: NESTED
+    type: url-test
+    proxies: [node]
+"#,
+        )
+        .expect("nested group config");
+
+        merge_runtime_proxy_group_context_from_config(&mut proxies, &config, None);
+
+        assert_eq!(
+            proxies["proxies"]["OUTER"]["memberContexts"]["NESTED"]["kind"],
+            "group"
+        );
+        assert_eq!(
+            proxies["proxies"]["OUTER"]["memberContexts"]["DIRECT"]["kind"],
+            "builtin"
+        );
+    }
+
+    #[test]
+    fn unavailable_or_stale_runtime_config_does_not_fabricate_provider_identity() {
+        let (mut proxies, _config, providers) = provider_group_fixture();
+        let before = proxies.clone();
+        merge_runtime_proxy_group_context(&mut proxies, "proxy-groups: [");
+        assert_eq!(proxies, before);
+
+        let empty_config = RuntimeProxyGroupConfig::default();
+        merge_runtime_proxy_group_context_from_config(
+            &mut proxies,
+            &empty_config,
+            Some(&providers),
+        );
+        assert_eq!(
+            proxies["proxies"]["PROXY"]["memberContexts"]["HK-1"]["kind"],
+            "ordinary"
+        );
+        assert_eq!(
+            proxies["proxies"]["PROXY"]["memberContexts"]["HK-1"]["provider"],
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn controller_timeout_is_above_mihomo_delay_timeout() {
+        assert!(std::hint::black_box(DELAY_OUTER_TIMEOUT_SECS) * 1_000 > DELAY_TIMEOUT_MS);
+    }
+
+    #[tokio::test]
+    async fn mocked_504_is_reported_for_normal_endpoint_but_provider_healthcheck_can_succeed() {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind mock controller");
+        let address = listener.local_addr().expect("mock controller address");
+        let server = tokio::spawn(async move {
+            let mut paths = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.expect("accept mock request");
+                let mut buffer = vec![0_u8; 4_096];
+                let length = stream.read(&mut buffer).await.expect("read mock request");
+                let request = String::from_utf8_lossy(&buffer[..length]);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or_default()
+                    .to_string();
+                paths.push(path.clone());
+                if path.starts_with("/providers/proxies/") {
+                    let body = r#"{"delay":321}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("write provider response");
+                } else {
+                    stream
+                        .write_all(b"HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .await
+                        .expect("write normal timeout response");
+                }
+            }
+            paths
+        });
+        let base_url = format!("http://{address}");
+
+        let normal_request = delay_request("ordinary", None, None, Some(ProxyEntryKind::Ordinary));
+        let normal_path = delay_request_path(&normal_request).expect("normal path");
+        let normal_result = api_get_with_timeout_at(
+            &base_url,
+            &normal_path,
+            Duration::from_secs(1),
+            "test-token",
+        )
+        .await;
+        assert!(normal_result
+            .expect_err("normal endpoint must surface 504")
+            .contains("504"));
+
+        let provider_request = delay_request(
+            "provider node",
+            Some("provider"),
+            None,
+            Some(ProxyEntryKind::Provider),
+        );
+        let provider_path = delay_request_path(&provider_request).expect("provider path");
+        let provider_result = api_get_with_timeout_at(
+            &base_url,
+            &provider_path,
+            Duration::from_secs(1),
+            "test-token",
+        )
+        .await
+        .expect("provider healthcheck response");
+        assert_eq!(provider_result["delay"].as_u64(), Some(321));
+
+        let paths = server.await.expect("mock controller task");
+        assert_eq!(paths.len(), 2);
+        assert!(paths[0].starts_with("/proxies/ordinary/delay?"));
+        assert!(paths[1].starts_with("/providers/proxies/provider/provider%20node/healthcheck?"));
+    }
+
+    #[tokio::test]
+    async fn mocked_controller_timeout_is_reported_as_an_error() {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind mock controller");
+        let address = listener.local_addr().expect("mock controller address");
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.expect("accept mock request");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        let result = api_get_with_timeout_at(
+            &format!("http://{address}"),
+            "/proxies/node/delay?url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204&timeout=5000",
+            Duration::from_millis(20),
+            "test-token",
+        )
+        .await;
+        assert!(result.is_err());
+        server.await.expect("mock controller task");
     }
 }

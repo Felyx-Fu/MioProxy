@@ -1,8 +1,8 @@
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Update, type DownloadEvent } from "@tauri-apps/plugin-updater";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
-import { mihomoApi, type CoreState, type CoreStatus, type CoreUpdateStatus, type MihomoVersion, type Profile, type ProxiesResponse, type ProxyPathState, type ProxyState, type ServiceConnectionStatus, type StartupSettings, type SystemProxyStatus, type TunStatusSnapshot, type UpdatePreferences, type UpdateStatus } from "./api/mihomo";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { mihomoApi, type CoreState, type CoreStatus, type CoreUpdateStatus, type MihomoVersion, type Profile, type ProxiesResponse, type ProxyDelayContext, type ProxyPathState, type ProxyState, type ServiceConnectionStatus, type StartupSettings, type SystemProxyStatus, type TunStatusSnapshot, type UpdatePreferences, type UpdateStatus } from "./api/mihomo";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { ToastHost, type ToastMessage, type ToastTone } from "./components/Feedback";
 import { PreviewTitleBar } from "./components/PreviewTitleBar";
@@ -22,6 +22,7 @@ import { useConnections } from "./hooks/useConnections";
 import { useTraffic } from "./hooks/useTraffic";
 import { useLogs } from "./hooks/useLogs";
 import { isNativeRuntime } from "./appearance/AppearanceProvider";
+import { currentNodeDelayContext, proxyDelayBusyKey, proxyDelayKey } from "./utils/latency";
 
 export default function App() {
   const [page, setPage] = useState<Page>("home");
@@ -42,13 +43,13 @@ export default function App() {
   const [profileBusyId, setProfileBusyId] = useState<string | null>(null);
   const [proxyLoading, setProxyLoading] = useState(false);
   const [proxyBusy, setProxyBusy] = useState<string | null>(null);
-  const [delayByProxy, setDelayByProxy] = useState<Record<string, number>>({});
-  const [delayStatusByProxy, setDelayStatusByProxy] = useState<Record<string, "available" | "unavailable">>({});
+  const [delayByKey, setDelayByKey] = useState<Record<string, number>>({});
+  const [delayStatusByKey, setDelayStatusByKey] = useState<Record<string, "available" | "unavailable">>({});
   const [error, setError] = useState<string | null>(null);
   const [coreRecoveryError, setCoreRecoveryError] = useState<string | null>(null);
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ currentVersion: "0.9.2", updating: false, checkpoint: null, recoveryError: null });
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ currentVersion: "1.0.1", updating: false, checkpoint: null, recoveryError: null });
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateDownloading, setUpdateDownloading] = useState(false);
@@ -427,23 +428,39 @@ export default function App() {
       ? "PROXY"
       : selectableProxyGroups[0]?.[0] ?? null;
   const currentNode = resolvedProxyGroup ? proxies?.proxies[resolvedProxyGroup]?.now ?? null : null;
+  const currentDelayContext = useMemo<ProxyDelayContext | null>(() => {
+    return currentNodeDelayContext(proxies, resolvedProxyGroup, currentNode);
+  }, [
+    currentNode,
+    proxies?.proxies[currentNode ?? ""]?.type,
+    proxies?.proxies[currentNode ?? ""]?.["provider-name"],
+    proxies?.proxies[currentNode ?? ""]?.providerName,
+    proxies?.proxies[resolvedProxyGroup ?? ""]?.testUrl,
+    proxies?.proxies[resolvedProxyGroup ?? ""]?.expectedStatus,
+    proxies?.proxies[resolvedProxyGroup ?? ""]?.memberContexts?.[currentNode ?? ""]?.kind,
+    proxies?.proxies[resolvedProxyGroup ?? ""]?.memberContexts?.[currentNode ?? ""]?.provider,
+    proxies?.proxies[resolvedProxyGroup ?? ""]?.memberContexts?.[currentNode ?? ""]?.providerResolution,
+    proxies?.proxies[resolvedProxyGroup ?? ""]?.memberContexts?.[currentNode ?? ""]?.providerCandidates?.join("\u001f"),
+    resolvedProxyGroup,
+  ]);
+  const currentDelayKey = currentDelayContext ? proxyDelayKey(currentDelayContext) : null;
   useEffect(() => {
-    if (!coreReady || !currentNode) return;
+    if (!coreReady || !currentDelayContext || !currentDelayKey) return;
     let active = true;
     setProxyPathState("unknown");
-    void mihomoApi.proxyDelay(currentNode).then((result) => {
+    void mihomoApi.proxyDelay(currentDelayContext).then((result) => {
       if (!active) return;
-      setDelayByProxy((current) => ({ ...current, [currentNode]: result.delay }));
-      setDelayStatusByProxy((current) => ({ ...current, [currentNode]: "available" }));
+      setDelayByKey((current) => ({ ...current, [currentDelayKey]: result.delay }));
+      setDelayStatusByKey((current) => ({ ...current, [currentDelayKey]: "available" }));
       setProxyPathState("healthy");
     }).catch(() => {
       if (active) {
-        setDelayStatusByProxy((current) => ({ ...current, [currentNode]: "unavailable" }));
+        setDelayStatusByKey((current) => ({ ...current, [currentDelayKey]: "unavailable" }));
         setProxyPathState("unavailable");
       }
     });
     return () => { active = false; };
-  }, [coreReady, currentNode]);
+  }, [coreReady, currentDelayContext, currentDelayKey]);
 
   async function addProfile(name: string, url: string) {
     setError(null);
@@ -530,19 +547,20 @@ export default function App() {
     }
   }
 
-  async function testProxyDelay(proxy: string) {
+  async function testProxyDelay(context: ProxyDelayContext) {
     if (proxyRequestInFlight.current) return;
     proxyRequestInFlight.current = true;
-    setProxyBusy(`delay:${proxy}`);
+    const delayKey = proxyDelayKey(context);
+    setProxyBusy(proxyDelayBusyKey(context));
     setError(null);
     try {
-      const result = await mihomoApi.proxyDelay(proxy);
-      setDelayByProxy((current) => ({ ...current, [proxy]: result.delay }));
-      setDelayStatusByProxy((current) => ({ ...current, [proxy]: "available" }));
-      if (proxy === currentNode) setProxyPathState("healthy");
+      const result = await mihomoApi.proxyDelay(context);
+      setDelayByKey((current) => ({ ...current, [delayKey]: result.delay }));
+      setDelayStatusByKey((current) => ({ ...current, [delayKey]: "available" }));
+      if (context.proxy === currentNode && context.group === resolvedProxyGroup) setProxyPathState("healthy");
     } catch (e) {
-      setDelayStatusByProxy((current) => ({ ...current, [proxy]: "unavailable" }));
-      if (proxy === currentNode) setProxyPathState("unavailable");
+      setDelayStatusByKey((current) => ({ ...current, [delayKey]: "unavailable" }));
+      if (context.proxy === currentNode && context.group === resolvedProxyGroup) setProxyPathState("unavailable");
     } finally {
       proxyRequestInFlight.current = false;
       setProxyBusy(null);
@@ -738,11 +756,11 @@ export default function App() {
       <div className="app-shell">
         <Sidebar page={page} onChange={setPage} />
         <main className="content" id="main-content">
-          {page === "home" && <DashboardPage status={status} coreState={coreState} version={version} proxyStatus={proxyStatus} proxyState={proxyState} tunStatus={tunSnapshot} tunBusy={tunBusy} traffic={traffic.snapshot} connectionCount={connectionCount} currentNode={currentNode} delay={currentNode ? delayByProxy[currentNode] ?? null : null} proxyPathState={proxyPathState} memory={connections.data?.memory ?? null} selectedProfile={selectedProfile} appliedProfileName={appliedProfileSession?.name ?? null} error={coreRecoveryError ?? error} tunError={tunError} onRequestProxyTransition={() => void requestSystemProxyTransition()} onRequestTunTransition={() => void requestTunTransition()} onNavigate={setPage} />}
+          {page === "home" && <DashboardPage status={status} coreState={coreState} version={version} proxyStatus={proxyStatus} proxyState={proxyState} tunStatus={tunSnapshot} tunBusy={tunBusy} traffic={traffic.snapshot} connectionCount={connectionCount} currentNode={currentNode} delay={currentDelayKey ? delayByKey[currentDelayKey] ?? null : null} proxyPathState={proxyPathState} memory={connections.data?.memory ?? null} selectedProfile={selectedProfile} appliedProfileName={appliedProfileSession?.name ?? null} error={coreRecoveryError ?? error} tunError={tunError} onRequestProxyTransition={() => void requestSystemProxyTransition()} onRequestTunTransition={() => void requestTunTransition()} onNavigate={setPage} />}
           {page === "connections" && <ConnectionsPage state={connections} onRefresh={connections.refresh} onClose={connections.closeConnection} onCloseAll={connections.closeAllConnections} />}
           {page === "logs" && <LogsPage state={logs} />}
           {page === "profiles" && <ProfilesPage profiles={profiles} selectedId={selectedProfileId} appliedId={appliedProfileSession?.id ?? null} busyId={profileBusyId} error={error} onSelect={setSelectedProfileId} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} onNavigate={setPage} />}
-          {page === "proxies" && <ProxiesPage data={proxies} loading={proxyLoading} busyProxy={proxyBusy} delayByProxy={delayByProxy} delayStatusByProxy={delayStatusByProxy} profilesLoaded={profilesLoaded} profileCount={profiles.length} onRefresh={refreshProxies} onSelect={selectProxy} onDelay={testProxyDelay} />}
+          {page === "proxies" && <ProxiesPage data={proxies} loading={proxyLoading} busyProxy={proxyBusy} delayByKey={delayByKey} delayStatusByKey={delayStatusByKey} profilesLoaded={profilesLoaded} profileCount={profiles.length} onRefresh={refreshProxies} onSelect={selectProxy} onDelay={testProxyDelay} />}
           {page === "rules" && <RulesPage running={coreReady} />}
           {page === "dns" && <DnsPage profileId={selectedProfileId} />}
           {page === "overrides" && <OverridesPage profileId={selectedProfileId} />}

@@ -30,11 +30,11 @@ const proxies: ProxiesResponse = {
   proxies: {
     PROXY: { type: "Selector", now: "US-01", all: proxyNodes },
     Default: { type: "Selector", now: "US-01", all: proxyNodes.slice(0, 8) },
-    "US Nodes": { type: "URLTest", now: "US-01", all: proxyNodes.filter((node) => node.startsWith("US") || node.startsWith("CA")) },
-    "EU Nodes": { type: "Fallback", now: "DE-01", all: ["DE-01", "DE-02", "UK-01", "FR-01"] },
+    "US Nodes": { type: "URLTest", now: "US-01", all: proxyNodes.filter((node) => node.startsWith("US") || node.startsWith("CA")), testUrl: "https://www.gstatic.com/generate_204", expectedStatus: "204" },
+    "EU Nodes": { type: "Fallback", now: "DE-01", all: ["DE-01", "DE-02", "UK-01", "FR-01"], testUrl: "https://www.cloudflare.com/cdn-cgi/trace" },
     Streaming: { type: "Selector", now: "SG-01", all: ["US-01", "JP-01", "SG-01", "HK-01"] },
     Backup: { type: "LoadBalance", now: "CA-01", all: ["CA-01", "DE-01", "SG-01"] },
-    ...Object.fromEntries(proxyNodes.map((node, index) => [node, { type: index % 3 === 0 ? "Trojan" : "Vmess", history: [] }])),
+    ...Object.fromEntries(proxyNodes.map((node, index) => [node, { type: index % 3 === 0 ? "Trojan" : "Vmess", history: [], ...(index === 0 ? { "provider-name": "smoke-provider" } : {}) }])),
   },
 };
 
@@ -82,14 +82,17 @@ mockIPC((cmd: string, args?: InvokeArgs) => {
     case "mihomo_status": return { state: "ready", running: true, controller: "127.0.0.1:19090", configPath: "C:\\ProgramData\\MioProxy\\runtime\\config.yaml", mixedPort: 7890, mode: "rule", recoveryMessage: null };
     case "mihomo_version": return { meta: true, version: "1.19.29" };
     case "mihomo_proxies": return proxies;
-    case "mihomo_proxy_delay": return { delay: delayByNode[String((args as Record<string, unknown> | undefined)?.proxy)] ?? 120 };
+    case "mihomo_proxy_delay": {
+      const request = (args as Record<string, unknown> | undefined)?.request as Record<string, unknown> | undefined;
+      return { delay: delayByNode[String(request?.proxy)] ?? 120 };
+    }
     case "mihomo_connections": return connections;
     case "system_proxy_status": return { enabled: true, coreRunning: true, mixedPort: 7890, proxyServer: "127.0.0.1:7890", managed: true, desiredEnabled: true, actualState: "mioproxyEndpoint", owner: "mioproxy", externalDetected: false, windowsState: "mioproxy", stateConsistent: true };
     case "startup_status": return { enabled: true, startMinimized: true };
     case "profile_list": return profiles;
     case "tun_status": return { status: "running", message: null, admin: true, profileId: "global", snapshot: null, desiredEnabled: true, actualState: "mioproxyTun", owner: "mioproxy", externalDetected: false };
-    case "service_status_command": return { reachable: true, protocolVersion: 1, serviceVersion: "0.9.2", versionMismatch: false, error: null, admin: true, ownsCore: true, coreRunning: true, ownershipConflict: false, tunStatus: "running", tunMessage: null, desiredCoreRunning: true, coreRecoveryMessage: null };
-    case "update_status": return { currentVersion: "0.9.2", updating: false, checkpoint: null, recoveryError: null };
+    case "service_status_command": return { reachable: true, protocolVersion: 1, serviceVersion: "1.0.1", versionMismatch: false, error: null, admin: true, ownsCore: true, coreRunning: true, ownershipConflict: false, tunStatus: "running", tunMessage: null, desiredCoreRunning: true, coreRecoveryMessage: null };
+    case "update_status": return { currentVersion: "1.0.1", updating: false, checkpoint: null, recoveryError: null };
     case "update_preferences_status": return { checkOnStartup: false, autoDownload: false };
     case "mihomo_core_update_status": return { currentVersion: "1.19.29", availableVersion: null, assetName: null, phase: "idle", error: null };
     case "mihomo_rules": return { rules: [

@@ -44,10 +44,29 @@ export type MihomoVersion = {
   version?: string;
 };
 
+export type ProxyEntryKind = "ordinary" | "provider" | "group" | "builtin";
+
+export type ProviderResolution = "resolved" | "ambiguous" | "unresolved";
+
+export type ProxyMemberContext = {
+  kind: ProxyEntryKind;
+  provider?: string;
+  providerCandidates?: string[];
+  providerResolution?: ProviderResolution;
+};
+
 export type ProxyGroup = {
   type?: string;
   now?: string;
   all?: string[];
+  testUrl?: string;
+  expectedStatus?: string;
+  /** Backend-enriched, group-scoped provider/source identity. */
+  memberContexts?: Record<string, ProxyMemberContext>;
+  /** Mihomo exposes provider identity on provider-backed proxy entries. */
+  "provider-name"?: string;
+  /** Allows normalized fixtures/compatibility adapters to preserve the same identity. */
+  providerName?: string;
   history?: Array<{ time: string; delay: number }>;
 };
 
@@ -85,6 +104,15 @@ export type RuleProvidersResponse = Record<string, RuleProvider> | { providers?:
 
 export type DelayResponse = {
   delay: number;
+};
+
+export type ProxyDelayContext = {
+  group: string;
+  proxy: string;
+  provider?: string;
+  testUrl?: string;
+  expectedStatus?: string;
+  kind: ProxyEntryKind;
 };
 
 export type TrafficPoint = {
@@ -267,7 +295,7 @@ export const mihomoApi = {
   ruleProviderUpdate: (name: string) => invoke<unknown>("mihomo_rule_provider_update", { name }),
   reload: () => invoke<unknown>("mihomo_reload"),
   selectProxy: (group: string, proxy: string) => invoke<unknown>("mihomo_select_proxy", { group, proxy }),
-  proxyDelay: (proxy: string, url?: string) => invoke<DelayResponse>("mihomo_proxy_delay", { proxy, url }),
+  proxyDelay: (request: ProxyDelayContext) => invoke<DelayResponse>("mihomo_proxy_delay", { request }),
   connections: () => invoke<ConnectionsResponse>("mihomo_connections"),
   closeConnection: (id: string) => invoke<void>("mihomo_close_connection", { id }),
   closeAllConnections: () => invoke<void>("mihomo_close_all_connections"),
