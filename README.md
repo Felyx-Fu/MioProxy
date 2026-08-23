@@ -1,47 +1,122 @@
+<div align="center">
+
 # MioProxy
 
-MioProxy is a Windows desktop proxy client built with Tauri 2, React,
-TypeScript, Vite and Rust. The current architecture separates the normal-user
-GUI from the elevated Windows Service that owns the managed Mihomo runtime.
+**A modern Windows proxy client powered by Mihomo.**
 
-## Current architecture
+Subscriptions · Proxy Groups · System Proxy · TUN · Rules · Traffic · Secure Updates
+
+[![Latest GitHub release](https://img.shields.io/github/v/release/Felyx-Fu/MioProxy?display_name=tag&sort=semver)](https://github.com/Felyx-Fu/MioProxy/releases/latest)
+[![Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)](https://github.com/Felyx-Fu/MioProxy)
+[![GPL-3.0 license](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
+[![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+
+[Download](https://github.com/Felyx-Fu/MioProxy/releases/latest) · [Releases](https://github.com/Felyx-Fu/MioProxy/releases) · [Issues](https://github.com/Felyx-Fu/MioProxy/issues)
+
+</div>
+
+## Preview
+
+MioProxy is a focused Windows desktop client for managing a Mihomo-powered
+proxy runtime. Add a subscription, choose the route that fits the moment, and
+see what is happening through one clear interface for profiles, proxies,
+rules, traffic, connections, and logs.
+
+## Features
+
+- **Mihomo-managed core** — MioProxy manages a separate Mihomo core and keeps
+  its runtime state behind the application and Windows Service boundary.
+- **Subscriptions and profiles** — Add, update, and apply subscription or
+  local profile sources from the desktop UI.
+- **Proxy groups and node selection** — Inspect groups, switch nodes, and
+  choose the active route without leaving the application.
+- **Latency testing** — Test node reachability and compare latency when
+  selecting a route.
+- **System Proxy** — Enable or disable Windows System Proxy from MioProxy.
+- **TUN** — Use Mihomo TUN mode when application-wide traffic handling is
+  needed.
+- **Rules, GeoSite, and GeoIP** — Work with rule modes and geodata-backed
+  routing controls.
+- **Connections, traffic, and logs** — Inspect active connections, traffic
+  flow, runtime logs, and recent activity.
+- **Windows desktop integration** — Use a native Tauri window, tray controls,
+  Windows Service integration, and a desktop-oriented settings flow.
+- **Secure updates** — Tauri updater artifacts and metadata are protected by
+  cryptographic signatures that the updater verifies before applying an update.
+
+## Download
+
+Download the latest Windows x86_64 build from
+[GitHub Releases](https://github.com/Felyx-Fu/MioProxy/releases/latest).
+
+Windows may display **“Unknown publisher”** for the installer because MioProxy
+currently does not use a commercial Windows Authenticode certificate. This is
+separate from Tauri updater cryptographic signatures: updater artifacts are
+verified with the Tauri updater public key, while Authenticode is the Windows
+certificate system that controls the publisher identity shown by Windows.
+
+## Quick Start
+
+1. Install MioProxy.
+2. Add a subscription or Profile.
+3. Apply it.
+4. Select a node.
+5. Enable **System Proxy** or **TUN**.
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/images/dashboard.png" alt="MioProxy dashboard" width="900">
+</p>
+
+<p align="center">
+  <img src="docs/images/proxies.png" alt="MioProxy proxy groups and nodes" width="49%">
+  <img src="docs/images/rules.png" alt="MioProxy rules" width="49%">
+</p>
+
+## Why MioProxy
+
+MioProxy keeps everyday proxy controls close at hand while leaving the
+Mihomo core to do the routing work it is built for. The UI is organized around
+the tasks users actually perform: add a source, select a route, inspect live
+traffic, and understand what the runtime is doing.
+
+The Windows Service provides a clear privilege boundary for managed runtime
+operations. System Proxy and TUN changes are ownership-aware, and recovery
+paths are designed to avoid silently taking over externally managed network
+state.
+
+## Architecture
 
 ```text
-React / TypeScript UI
-        │ Tauri commands
-        ▼
-MioProxy GUI (normal user)
-        │ authenticated named-pipe IPC
-        ▼
-MioProxy Service (administrator)
-        ├── managed Mihomo Core lifecycle
-        ├── managed TUN, routes, DNS and recovery snapshots
-        └── runtime configuration and update coordination
-                 │
-                 ▼
-              Windows network
+React / TypeScript
+       ↓
+Tauri / Rust
+       ↓
+MioProxy Windows Service
+       ↓
+Managed Mihomo Core
+       ↓
+Windows Network
 ```
 
-- The GUI does not call the Mihomo Controller directly. Rust owns Controller
-  authentication, response handling and redaction before data reaches the UI.
-- The Service owns the managed Mihomo process and rejects ambiguous ownership
-  or incompatible IPC peers.
-- MioProxy System Proxy is represented through an ownership-aware Windows
-  snapshot. An external endpoint or PAC/WPAD owner is never overwritten.
-- MioProxy TUN is managed by the Service. TUN enable/disable uses runtime
-  snapshots and recovery paths; an externally owned TUN is observed as external
-  and is not killed or taken over.
-- The tray and window shell are Tauri/Win32 integrations. Closing from the
-  Windows taskbar exits normally; the explicit title-bar action hides to tray.
+The normal-user GUI communicates with the Windows Service through authenticated
+IPC. The Service owns the managed Mihomo lifecycle, runtime configuration, and
+managed network transitions; the core remains a separate Mihomo process.
 
-## Development prerequisites
+## Development
 
-1. Node.js 20 or newer
-2. Rust stable with the MSVC Windows target
-3. Microsoft C++ Build Tools / Visual Studio Build Tools
-4. WebView2 Runtime
+### Prerequisites
 
-Install dependencies and prepare the local sidecars from the repository root:
+- Node.js 20 or newer
+- Rust stable with the MSVC Windows target
+- Microsoft C++ Build Tools or Visual Studio Build Tools
+- WebView2 Runtime
+
+### Run locally
+
+From the repository root:
 
 ```powershell
 npm ci
@@ -50,103 +125,48 @@ npm run service:build
 npm run tauri dev
 ```
 
-`mihomo:setup` resolves the repository-pinned Mihomo release in
-`config/mihomo-release.json`, verifies the upstream SHA-256 digest, and places
-the exact sidecar at `src-tauri/binaries/mihomo-x86_64-pc-windows-msvc.exe`.
-The current pinned release is Mihomo v1.19.30; the packaged notice records its
-asset, digest, release page, and source archive.
+`mihomo:setup` downloads the repository-pinned Mihomo release, verifies its
+SHA-256 digest, and prepares the Windows sidecar used by the application.
 
-## Runtime defaults
-
-The first managed Core start creates a runtime configuration under
-`%APPDATA%\dev.MioProxy`. The settings page reports the actual paths and
-runtime state. The generated baseline uses a local mixed port, loopback
-Controller, `allow-lan: false`, and rule mode. A real proxy node appears only
-after a Profile is added and downloaded.
-
-## Validation and release readiness
-
-The non-network quality gates are reproducible locally:
+### Validate changes
 
 ```powershell
 npm run build
-powershell -ExecutionPolicy Bypass -File .\scripts\check-version-consistency.ps1
+npm run test:ui
 cargo fmt --manifest-path .\src-tauri\Cargo.toml -- --check
 cargo check --locked --manifest-path .\src-tauri\Cargo.toml
 cargo test --locked --manifest-path .\src-tauri\Cargo.toml
 cargo clippy --locked --manifest-path .\src-tauri\Cargo.toml --all-targets --all-features -- -D warnings
 ```
 
-For the explicit Windows coexistence path, start with both System Proxy and
-MioProxy TUN already enabled and run:
+The source checks above do not replace real Windows acceptance testing for
+taskbar, tray, DPI, TUN, System Proxy, and external-network behavior.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\release-system-proxy-tun-readiness.ps1 -Execute -ConfirmManualNetworkChanges
-```
+## Security & Release Integrity
 
-The harness refuses an external TUN or externally owned System Proxy, does not
-kill processes, and records only redacted readiness evidence. It asks for the
-System Proxy toggle in the GUI, uses authenticated Service IPC for the managed
-TUN transition, probes domestic/foreign HTTPS and DNS, and requires the final
-state to match the initial state. A manual run is required before claiming the
-Windows network acceptance gate; this repository does not claim that run has
-already passed.
+- **Updater verification:** Tauri updater signatures are generated in the
+  protected release workflow and verified against the public key configured in
+  [`src-tauri/tauri.conf.json`](src-tauri/tauri.conf.json).
+- **Artifact provenance:** Windows release checks record SHA-256 values for
+  shipped executables, verify the pinned Mihomo input, enforce version
+  consistency, and test updater metadata and tamper detection. See
+  [`docs/release-trust.md`](docs/release-trust.md) for the detailed release
+  record.
+- **Dependency review:** The production dependency audit is kept separate from
+  development-tool findings; the current triage is documented in
+  [`docs/npm-audit-triage.md`](docs/npm-audit-triage.md).
+- **Windows publisher status:** MioProxy does not claim Authenticode signing or
+  installer reputation guarantees. The project currently relies on Tauri
+  updater cryptographic signatures for update integrity.
 
-The pre-tag GitHub Actions workflow is `MioProxy Release Readiness`. It is
-started with `workflow_dispatch`, performs the locked build/test/lint gates and
-an unsigned Windows bundle build, and never creates a GitHub Release.
+## Third-party Software
 
-## Dependency security status
+MioProxy distributes Mihomo as a separate GPL-3.0 sidecar. The pinned upstream
+version, source availability, digest, and redistribution details are listed in
+[`THIRD_PARTY.md`](THIRD_PARTY.md) and retained in the packaged notices.
 
-The Windows release surface is checked explicitly with:
+## License
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\check-windows-dependency-surface.ps1
-```
+MioProxy is licensed under the GNU General Public License v3.0.
 
-The shared cross-platform `src-tauri/Cargo.lock` contains `glib 0.18.5` only
-through Tauri's non-Windows GTK3 dependency graph. The `x86_64-pc-windows-msvc`
-release graph does not select `glib`, and it is not compiled into the Windows
-application or installer. GitHub Dependabot may still report
-[GHSA-wrw7-89jp-8q8g](https://github.com/advisories/GHSA-wrw7-89jp-8q8g) from
-the cross-platform lockfile.
-
-Forcing `glib 0.20` into this graph is not a safe fix: the current Tauri GTK3
-stack requires the `0.18` API line. The complete cross-platform fix belongs to
-the upstream Tauri/GTK migration; MioProxy does not silently replace that
-stack or claim the unsupported Linux path is patched. The Windows release
-workflow fails if `glib` ever enters the Windows target dependency surface.
-
-## Windows release build
-
-The updater signing private key is never stored in this repository. For a local
-signed build:
-
-```powershell
-npm run release:build
-```
-
-The script accepts `-SigningKeyPath` or
-`TAURI_SIGNING_PRIVATE_KEY_PATH`. It prefers the generic
-`%USERPROFILE%\.tauri\mioproxy.key` name and retains a compatibility fallback
-for an existing legacy key file. Never commit the private key or password.
-
-All five release version sources must agree: `package.json`, `package-lock.json`,
-`src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`.
-
-## Third-party software
-
-Mihomo is GPL-3.0 software distributed as an independent sidecar. The
-repository notice is [THIRD_PARTY.md](THIRD_PARTY.md), and the packaged resource
-notice is `binaries/THIRD_PARTY_NOTICES.txt`. It contains the pinned upstream
-version, digest, source, release, and license links required for redistribution
-information. MioProxy's
-own source remains private/unlicensed until a separate licensing decision is
-made.
-
-## Scope boundary
-
-This repository intentionally does not claim Windows Snap/DPI/Mica behavior,
-external-network reachability, or installer reputation as browser/build-only
-facts. Those remain explicit Windows acceptance checks and must be reported as
-`MANUAL PENDING` until performed on the target machine.
+See [`LICENSE`](LICENSE) for the complete license text.
