@@ -1,16 +1,55 @@
-import { ArrowDownAZ, Check, Eye, Gauge, LocateFixed, Network, RefreshCw, Search } from "lucide-react";
-import { KeyboardEvent, MouseEvent, useEffect, useMemo, useState } from "react";
-import type { ProxiesResponse, ProxyDelayContext } from "../api/mihomo";
+import { ArrowDownAZ, Check, ChevronDown, ChevronRight, Eye, Gauge, LocateFixed, Network, RefreshCw, Search } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { CoreMode, ProxiesResponse, ProxyDelayContext, ProxyGroup } from "../api/mihomo";
 import { ContextMenu } from "../components/ContextMenu";
 import { useI18n } from "../i18n/I18nProvider";
+import type { MessageKey } from "../locales/en-US";
 import { latencyTone } from "../utils/format";
 import { createProxyDelayContext, proxyDelayBusyKey, proxyDelayKey } from "../utils/latency";
 
 const GROUP_TYPES = new Set(["Selector", "URLTest", "Fallback", "LoadBalance"]);
+const CORE_MODES: CoreMode[] = ["rule", "global", "direct"];
 type SortMode = "name" | "delay";
 
-export function ProxiesPage({ data, loading, busyProxy, delayByKey, delayStatusByKey, profilesLoaded, profileCount, onRefresh, onSelect, onDelay }: {
+const GROUP_TYPE_LABELS: Record<string, MessageKey> = {
+  Selector: "proxies.groupType.selector",
+  URLTest: "proxies.groupType.urlTest",
+  Fallback: "proxies.groupType.fallback",
+  LoadBalance: "proxies.groupType.loadBalance",
+};
+
+const MODE_LABELS: Record<CoreMode, MessageKey> = {
+  rule: "proxies.mode.rule",
+  global: "proxies.mode.global",
+  direct: "proxies.mode.direct",
+};
+
+const MODE_DESCRIPTIONS: Record<CoreMode, MessageKey> = {
+  rule: "proxies.mode.ruleDescription",
+  global: "proxies.mode.globalDescription",
+  direct: "proxies.mode.directDescription",
+};
+
+type GroupModel = {
+  name: string;
+  group: ProxyGroup;
+  allNodes: string[];
+  nodes: string[];
+  matchesGroup: boolean;
+};
+
+type ContextMenuState = {
+  x: number;
+  y: number;
+  group: string;
+  node: string;
+};
+
+export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByKey, delayStatusByKey, profilesLoaded, profileCount, onRefresh, onModeChange, onSelect, onDelay }: {
   data: ProxiesResponse | null;
+  mode: CoreMode | null;
+  modeBusy: boolean;
   loading: boolean;
   busyProxy: string | null;
   delayByKey: Record<string, number>;
@@ -18,80 +57,132 @@ export function ProxiesPage({ data, loading, busyProxy, delayByKey, delayStatusB
   profilesLoaded: boolean;
   profileCount: number;
   onRefresh: () => void;
+  onModeChange: (mode: CoreMode) => Promise<void>;
   onSelect: (group: string, proxy: string) => Promise<void>;
   onDelay: (context: ProxyDelayContext) => Promise<void>;
 }) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortMode>("name");
-  const groups = useMemo(() => Object.entries(data?.proxies ?? {}).filter(([, value]) => GROUP_TYPES.has(value.type ?? "")), [data]);
-  const [selectedGroupName, setSelectedGroupName] = useState<string | null>(null);
-  const [inspectedNode, setInspectedNode] = useState<string | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; node: string } | null>(null);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  const [inspectedNode, setInspectedNode] = useState<{ group: string; node: string } | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const expansionInitialized = useRef(false);
+
+  const groups = useMemo(() => {
+    const runtimeGroups = Object.entries(data?.proxies ?? {}).filter(([, value]) => GROUP_TYPES.has(value.type ?? ""));
+    const groupsByName = new Map(runtimeGroups);
+    const fallbackOrder = [...groupsByName.keys()].sort((a, b) => a.localeCompare(b));
+    const orderedNames = [...(data?.groupOrder ?? []), ...fallbackOrder];
+    const seen = new Set<string>();
+    return orderedNames.flatMap((name) => {
+      const group = groupsByName.get(name);
+      if (!group || seen.has(name)) return [];
+      seen.add(name);
+      return [[name, group] as const];
+    });
+  }, [data]);
 
   useEffect(() => {
     if (!groups.length) {
-      setSelectedGroupName(null);
+      expansionInitialized.current = false;
+      setExpandedGroups(new Set());
       setInspectedNode(null);
+      setContextMenu(null);
       return;
     }
-    if (!selectedGroupName || !groups.some(([name]) => name === selectedGroupName)) setSelectedGroupName(groups[0][0]);
-  }, [groups, selectedGroupName]);
+    const validNames = new Set(groups.map(([name]) => name));
+    setExpandedGroups((current) => {
+      const next = new Set([...current].filter((name) => validNames.has(name)));
+      if (!expansionInitialized.current) {
+        next.add(groups[0][0]);
+        expansionInitialized.current = true;
+      }
+      return next;
+    });
+    setInspectedNode((current) => current && validNames.has(current.group) ? current : null);
+  }, [groups]);
 
-  const selectedEntry = groups.find(([name]) => name === selectedGroupName) ?? groups[0] ?? null;
-  const selectedGroup = selectedEntry?.[1] ?? null;
-  const delayContextFor = (node: string | null): ProxyDelayContext | null => {
-    if (!node || !selectedEntry) return null;
-    return createProxyDelayContext(selectedEntry[0], selectedEntry[1], node, data?.proxies[node]);
-  };
-  const nodes = useMemo(() => {
-    if (!selectedEntry) return [];
-    const term = query.trim().toLowerCase();
-    return [...(selectedEntry[1].all ?? [])]
-      .filter((node) => !term || node.toLowerCase().includes(term))
-      .sort((a, b) => sort === "delay"
-        ? (delayByKey[proxyDelayKey(delayContextFor(a)!)] ?? Number.POSITIVE_INFINITY) - (delayByKey[proxyDelayKey(delayContextFor(b)!)] ?? Number.POSITIVE_INFINITY) || a.localeCompare(b)
-        : a.localeCompare(b));
-  }, [data, delayByKey, query, selectedEntry, sort]);
-  const selectedNode = inspectedNode && nodes.includes(inspectedNode) ? inspectedNode : selectedGroup?.now && nodes.includes(selectedGroup.now) ? selectedGroup.now : nodes[0] ?? null;
-  const selectedNodeContext = delayContextFor(selectedNode);
-  const selectedNodeKey = selectedNodeContext ? proxyDelayKey(selectedNodeContext) : null;
-  const selectedNodeDelay = selectedNodeKey ? delayByKey[selectedNodeKey] : undefined;
-  const selectedNodeDelayStatus = selectedNodeKey ? delayStatusByKey[selectedNodeKey] : undefined;
-  const selectedNodeStatus = !selectedNode
-    ? "—"
-    : selectedNode === selectedGroup?.now
-      ? t("proxies.state.selected")
-      : selectedNodeDelayStatus === "unavailable"
-        ? t("proxies.state.unavailable")
-        : selectedNodeDelay === undefined
-          ? t("proxies.state.notTested")
-          : t("proxies.state.available");
+  const term = query.trim().toLocaleLowerCase();
+  const groupModels = useMemo<GroupModel[]>(() => groups
+    .map(([name, group]) => {
+      const allNodes = [...(group.all ?? [])];
+      const matchesGroup = Boolean(term) && name.toLocaleLowerCase().includes(term);
+      const nodes = allNodes
+        .filter((node) => !term || matchesGroup || node.toLocaleLowerCase().includes(term))
+        .sort((a, b) => sort === "delay"
+          ? (delayByKey[proxyDelayKey(createProxyDelayContext(name, group, a, data?.proxies[a]))] ?? Number.POSITIVE_INFINITY)
+            - (delayByKey[proxyDelayKey(createProxyDelayContext(name, group, b, data?.proxies[b]))] ?? Number.POSITIVE_INFINITY)
+            || a.localeCompare(b)
+          : a.localeCompare(b));
+      return { name, group, allNodes, nodes, matchesGroup };
+    })
+    .filter((model) => !term || model.matchesGroup || model.nodes.length > 0),
+  [data, delayByKey, groups, sort, term]);
+
   const totalNodes = groups.reduce((total, [, group]) => total + (group.all?.length ?? 0), 0);
+  const focusedModel = groupModels.find((model) => model.name === inspectedNode?.group) ?? groupModels[0] ?? null;
+  const focusedNode = focusedModel
+    ? inspectedNode?.group === focusedModel.name && focusedModel.nodes.includes(inspectedNode.node)
+      ? inspectedNode.node
+      : focusedModel.group.now && focusedModel.nodes.includes(focusedModel.group.now)
+        ? focusedModel.group.now
+        : focusedModel.nodes[0] ?? null
+    : null;
+  const focusedContext = focusedModel && focusedNode
+    ? createProxyDelayContext(focusedModel.name, focusedModel.group, focusedNode, data?.proxies[focusedNode])
+    : null;
 
-  function moveSelection(event: KeyboardEvent<HTMLTableSectionElement>) {
-    if (!nodes.length) return;
-    const currentIndex = Math.max(0, selectedNode ? nodes.indexOf(selectedNode) : 0);
+  function toggleGroup(name: string) {
+    setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
+
+  function focusNode(group: string, node: string) {
+    setInspectedNode({ group, node });
+  }
+
+  function moveSelection(event: ReactKeyboardEvent<HTMLElement>, model: GroupModel, node: string) {
+    if (event.target !== event.currentTarget || !model.nodes.length) return;
+    const currentIndex = Math.max(0, model.nodes.indexOf(node));
     let nextIndex = currentIndex;
-    if (event.key === "ArrowDown") nextIndex = Math.min(nodes.length - 1, currentIndex + 1);
-    else if (event.key === "ArrowUp") nextIndex = Math.max(0, currentIndex - 1);
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") nextIndex = Math.min(model.nodes.length - 1, currentIndex + 1);
+    else if (event.key === "ArrowUp" || event.key === "ArrowLeft") nextIndex = Math.max(0, currentIndex - 1);
     else if (event.key === "Home") nextIndex = 0;
-    else if (event.key === "End") nextIndex = nodes.length - 1;
-    else if (event.key === "Enter" && selectedNode && selectedEntry && busyProxy === null) {
+    else if (event.key === "End") nextIndex = model.nodes.length - 1;
+    else if (event.key === "Enter" && busyProxy === null) {
       event.preventDefault();
-      void onSelect(selectedEntry[0], selectedNode);
+      void onSelect(model.name, node);
       return;
     } else return;
     event.preventDefault();
-    setInspectedNode(nodes[nextIndex]);
-    document.getElementById(`proxy-row-${nextIndex}`)?.focus();
+    const nextNode = model.nodes[nextIndex];
+    focusNode(model.name, nextNode);
+    document.getElementById(nodeElementId(model.name, nextNode))?.focus();
   }
 
-  function openContextMenu(event: MouseEvent, node: string) {
+  function openContextMenu(event: ReactMouseEvent, group: string, node: string) {
     event.preventDefault();
-    setInspectedNode(node);
-    setContextMenu({ x: event.clientX, y: event.clientY, node });
+    focusNode(group, node);
+    setContextMenu({ x: event.clientX, y: event.clientY, group, node });
   }
+
+  function locateFocused() {
+    if (!focusedModel?.group.now) return;
+    focusNode(focusedModel.name, focusedModel.group.now);
+    setExpandedGroups((current) => new Set(current).add(focusedModel.name));
+  }
+
+  const contextEntry = contextMenu
+    ? groups.find(([name]) => name === contextMenu.group) ?? null
+    : null;
+  const contextDelay = contextMenu && contextEntry
+    ? createProxyDelayContext(contextEntry[0], contextEntry[1], contextMenu.node, data?.proxies[contextMenu.node])
+    : null;
 
   return (
     <section className="page-stack proxies-page">
@@ -99,84 +190,131 @@ export function ProxiesPage({ data, loading, busyProxy, delayByKey, delayStatusB
         <div><h1>{t("proxies.title")}</h1><p>{data ? t("proxies.description.count", { nodes: totalNodes, groups: groups.length }) : t("proxies.description.waiting")}</p></div>
       </header>
 
+      <section className="proxy-mode-panel surface-panel" aria-labelledby="proxy-mode-title">
+        <div className="proxy-mode-copy">
+          <span className="section-kicker">{t("proxies.mode.label")}</span>
+          <strong id="proxy-mode-title">{t("proxies.mode.title")}</strong>
+          <p>{t("proxies.mode.description")}</p>
+        </div>
+        <div className="proxy-mode-options" role="group" aria-label={t("proxies.mode.label")}>
+          {CORE_MODES.map((coreMode) => (
+            <button
+              key={coreMode}
+              type="button"
+              className={`proxy-mode-option${mode === coreMode ? " active" : ""}`}
+              aria-pressed={mode === coreMode}
+              disabled={modeBusy || mode === null}
+              onClick={() => void onModeChange(coreMode)}
+            >
+              <span>{t(MODE_LABELS[coreMode])}</span>
+              <small>{t(MODE_DESCRIPTIONS[coreMode])}</small>
+            </button>
+          ))}
+        </div>
+        {modeBusy && <span className="proxy-mode-pending"><span className="state-dot" />{t("proxies.mode.switching")}</span>}
+      </section>
+
       {groups.length === 0 ? (
         <div className="empty-card surface-panel"><Network size={24} /><strong>{t(!profilesLoaded ? "proxies.empty.loadingTitle" : profileCount === 0 ? "proxies.empty.noProfilesTitle" : "proxies.empty.noGroupsTitle")}</strong><p>{t(!profilesLoaded ? "proxies.empty.loadingDescription" : profileCount === 0 ? "proxies.empty.noProfilesDescription" : "proxies.empty.noGroupsDescription")}</p></div>
       ) : (
-        <div className="proxy-workspace split-workspace">
-          <aside className="master-pane surface-panel" aria-label={t("proxies.groups.label")}>
-            <div className="pane-heading"><div><span>{t("proxies.groups.label")}</span><small>{groups.length}</small></div></div>
-            <div className="master-list">
-              {groups.map(([name, group]) => (
-                <button key={name} type="button" className={selectedEntry?.[0] === name ? "master-row selected" : "master-row"} onClick={() => { setSelectedGroupName(name); setInspectedNode(null); }}>
-                  <span><strong>{name}</strong><small>{group.type ?? t("proxies.groups.fallbackType")}</small></span>
-                  <em>{group.all?.length ?? 0}</em>
-                </button>
-              ))}
-            </div>
-          </aside>
+        <div className="proxy-center-stack">
+          <div className="proxy-center-toolbar surface-panel">
+            <label className="search-box"><Search size={15} /><input data-page-search value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("proxies.search.placeholder")} aria-label={t("proxies.search.label")} /></label>
+            <label className="select-field"><ArrowDownAZ size={14} /><select value={sort} onChange={(event) => setSort(event.target.value as SortMode)} aria-label={t("proxies.sort.label")}><option value="name">{t("proxies.sort.name")}</option><option value="delay">{t("proxies.sort.latency")}</option></select></label>
+            <button className="toolbar-button" type="button" onClick={() => focusedContext && void onDelay(focusedContext)} disabled={!focusedContext || busyProxy !== null}><Gauge size={15} />{t("proxies.action.testSelected")}</button>
+            <button className="icon-button" type="button" onClick={locateFocused} disabled={!focusedModel?.group.now} aria-label={t("proxies.action.locate")} title={t("proxies.action.locate")}><LocateFixed size={15} /></button>
+            <button className="icon-button" type="button" onClick={onRefresh} disabled={loading} aria-label={t("proxies.action.refresh")} title={t("proxies.action.refresh")}><RefreshCw size={15} className={loading ? "spin" : ""} /></button>
+          </div>
 
-          <div className="data-pane surface-panel">
-            <div className="compact-toolbar">
-              <label className="search-box"><Search size={15} /><input data-page-search value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("proxies.search.placeholder")} aria-label={t("proxies.search.label")} /></label>
-              <label className="select-field"><ArrowDownAZ size={14} /><select value={sort} onChange={(event) => setSort(event.target.value as SortMode)} aria-label={t("proxies.sort.label")}><option value="name">{t("proxies.sort.name")}</option><option value="delay">{t("proxies.sort.latency")}</option></select></label>
-              <button className="toolbar-button" type="button" onClick={() => selectedNodeContext && void onDelay(selectedNodeContext)} disabled={!selectedNodeContext || busyProxy !== null}><Gauge size={15} />{t("proxies.action.testSelected")}</button>
-              <button className="icon-button" type="button" onClick={() => { if (selectedGroup?.now) setInspectedNode(selectedGroup.now); }} disabled={!selectedGroup?.now} aria-label={t("proxies.action.locate")} title={t("proxies.action.locate")}><LocateFixed size={15} /></button>
-              <button className="icon-button" type="button" onClick={onRefresh} disabled={loading} aria-label={t("proxies.action.refresh")} title={t("proxies.action.refresh")}><RefreshCw size={15} className={loading ? "spin" : ""} /></button>
-            </div>
+          <div className="proxy-strategy-stack">
+            {groupModels.map((model, index) => {
+              const expanded = expandedGroups.has(model.name) || (Boolean(term) && (model.matchesGroup || model.nodes.length > 0));
+              const groupId = `proxy-group-${index}-${encodeURIComponent(model.name)}`;
+              const labelId = `${groupId}-label`;
+              const activeContext = model.group.now
+                ? createProxyDelayContext(model.name, model.group, model.group.now, data?.proxies[model.group.now])
+                : null;
+              const activeKey = activeContext ? proxyDelayKey(activeContext) : null;
+              const activeDelay = activeKey ? delayByKey[activeKey] : undefined;
+              const activeDelayStatus = activeKey ? delayStatusByKey[activeKey] : undefined;
+              const globalEmphasis = mode === "global" && model.name === "GLOBAL";
+              return (
+                <section key={model.name} className={`proxy-strategy-card surface-panel${globalEmphasis ? " global-emphasis" : ""}`} data-global-active={globalEmphasis ? "true" : "false"} aria-labelledby={labelId}>
+                  <button className="proxy-strategy-header" type="button" aria-expanded={expanded} aria-controls={`${groupId}-content`} onClick={() => toggleGroup(model.name)}>
+                    <span className="proxy-strategy-heading">
+                      <strong id={labelId}>{model.name}</strong>
+                      <span>{model.group.type ?? t("proxies.groups.fallbackType")} · {t(GROUP_TYPE_LABELS[model.group.type ?? ""] ?? "proxies.groups.fallbackType")}</span>
+                    </span>
+                    <span className="proxy-strategy-summary">
+                      <span><small>{t("proxies.group.current")}</small><strong>{model.group.now ?? "—"}</strong></span>
+                      <span><small>{t("proxies.group.nodeCount")}</small><strong>{model.allNodes.length}</strong></span>
+                      <span><small>{t("proxies.table.latency")}</small><strong className={`latency-${activeDelayStatus === "unavailable" ? "slow" : latencyTone(activeDelay)}`}>{activeDelayStatus === "unavailable" ? t("proxies.state.unavailable") : activeDelay === undefined ? "—" : `${activeDelay} ms`}</strong></span>
+                    </span>
+                    {expanded ? <ChevronDown size={17} aria-hidden="true" /> : <ChevronRight size={17} aria-hidden="true" />}
+                  </button>
 
-            <div className="compact-table-wrap proxy-table-wrap">
-              <table className="compact-table proxy-table">
-                <thead><tr><th>{t("proxies.table.node")}</th><th>{t("proxies.table.type")}</th><th>{t("proxies.table.latency")}</th><th>{t("proxies.table.status")}</th></tr></thead>
-                <tbody tabIndex={0} onKeyDown={moveSelection} aria-label={t("proxies.table.nodesLabel")}>
-                  {nodes.map((node, index) => {
-                    const delayContext = delayContextFor(node);
-                    const delayKey = delayContext ? proxyDelayKey(delayContext) : null;
-                    const delay = delayKey ? delayByKey[delayKey] : undefined;
-                    const delayStatus = delayKey ? delayStatusByKey[delayKey] : undefined;
-                    const active = node === selectedGroup?.now;
-                    const inspecting = node === selectedNode;
-                    const type = data?.proxies[node]?.type ?? "—";
-                    const testing = delayContext ? busyProxy === proxyDelayBusyKey(delayContext) : false;
-                    const selecting = busyProxy === `${selectedEntry?.[0]}:${node}`;
-                    return (
-                      <tr
-                        id={`proxy-row-${index}`}
-                        key={node}
-                        tabIndex={-1}
-                        className={`${inspecting ? "selected-row " : ""}${active ? "active-row" : ""}`}
-                        onClick={() => setInspectedNode(node)}
-                        onDoubleClick={() => selectedEntry && busyProxy === null && void onSelect(selectedEntry[0], node)}
-                        onContextMenu={(event) => openContextMenu(event, node)}
-                      >
-                        <td><strong>{node}</strong>{active && <span className="row-badge">{t("proxies.state.selected")}</span>}</td>
-                        <td>{type}</td>
-                        <td><button className={`table-link latency-${delayStatus === "unavailable" ? "slow" : latencyTone(delay)}`} type="button" onClick={(event) => { event.stopPropagation(); if (delayContext) void onDelay(delayContext); }} disabled={busyProxy !== null}>{testing ? t("proxies.state.testing") : delayStatus === "unavailable" ? t("proxies.action.retry") : delay === undefined ? t("proxies.action.test") : `${delay} ms`}</button></td>
-                        <td>{selecting ? <StateText tone="warning">{t("proxies.state.switching")}</StateText> : delayStatus === "unavailable" ? <StateText tone="error">{t("proxies.state.unavailable")}</StateText> : <StateText tone={delay === undefined ? "muted" : "success"}>{t(delay === undefined ? "proxies.state.notTested" : "proxies.state.available")}</StateText>}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              {!nodes.length && <div className="table-empty"><Search size={18} /><span>{t("proxies.empty.noSearchResults")}</span></div>}
-            </div>
-
-            <footer className="detail-strip">
-              <div><span>{t("proxies.details.selectedNode")}</span><strong>{selectedNode ?? "—"}</strong></div>
-              <dl><div><dt>{t("proxies.details.group")}</dt><dd>{selectedEntry?.[0] ?? "—"}</dd></div><div><dt>{t("proxies.table.type")}</dt><dd>{selectedNode ? data?.proxies[selectedNode]?.type ?? "—" : "—"}</dd></div><div><dt>{t("proxies.table.latency")}</dt><dd>{selectedNodeDelay !== undefined ? `${selectedNodeDelay} ms` : "—"}</dd></div><div><dt>{t("proxies.table.status")}</dt><dd>{selectedNodeStatus}</dd></div></dl>
-              <button className="primary-button" type="button" onClick={() => selectedNode && selectedEntry && void onSelect(selectedEntry[0], selectedNode)} disabled={!selectedNode || selectedNode === selectedGroup?.now || busyProxy !== null}>{t("proxies.action.useNode")}</button>
-            </footer>
+                  {expanded && <div id={`${groupId}-content`} className="proxy-strategy-content">
+                    {model.nodes.length ? (
+                      <div className="proxy-node-grid" role="list" aria-label={`${model.name} ${t("proxies.table.nodesLabel")}`}>
+                        {model.nodes.map((node) => {
+                          const delayContext = createProxyDelayContext(model.name, model.group, node, data?.proxies[node]);
+                          const delayKey = proxyDelayKey(delayContext);
+                          const delay = delayByKey[delayKey];
+                          const delayStatus = delayStatusByKey[delayKey];
+                          const active = node === model.group.now;
+                          const inspecting = inspectedNode?.group === model.name && inspectedNode.node === node;
+                          const testing = busyProxy === proxyDelayBusyKey(delayContext);
+                          const selecting = busyProxy === `${model.name}:${node}`;
+                          const type = data?.proxies[node]?.type ?? "—";
+                          return (
+                            <article
+                              key={node}
+                              id={nodeElementId(model.name, node)}
+                              className={`proxy-node-card${active ? " active" : ""}${inspecting ? " inspected" : ""}`}
+                              data-active={active ? "true" : "false"}
+                              data-inspected={inspecting ? "true" : "false"}
+                              role="listitem"
+                              tabIndex={0}
+                              onClick={() => focusNode(model.name, node)}
+                              onDoubleClick={() => busyProxy === null && void onSelect(model.name, node)}
+                              onContextMenu={(event) => openContextMenu(event, model.name, node)}
+                              onKeyDown={(event) => moveSelection(event, model, node)}
+                            >
+                              <div className="proxy-node-heading"><strong title={node}>{node}</strong>{active && <span className="row-badge">{t("proxies.state.selected")}</span>}</div>
+                              <div className="proxy-node-meta"><span>{type}</span><StateText tone={selecting || testing ? "warning" : delayStatus === "unavailable" ? "error" : delay === undefined ? "muted" : "success"}>{selecting ? t("proxies.state.switching") : testing ? t("proxies.state.testing") : delayStatus === "unavailable" ? t("proxies.state.unavailable") : delay === undefined ? t("proxies.state.notTested") : t("proxies.state.available")}</StateText></div>
+                              <div className="proxy-node-footer">
+                                <button className={`table-link latency-${delayStatus === "unavailable" ? "slow" : latencyTone(delay)}`} type="button" onClick={(event) => { event.stopPropagation(); void onDelay(delayContext); }} disabled={busyProxy !== null}>
+                                  <Gauge size={12} />{testing ? t("proxies.state.testing") : delayStatus === "unavailable" ? t("proxies.action.retry") : delay === undefined ? t("proxies.action.test") : `${delay} ms`}
+                                </button>
+                                <button className="compact-action" type="button" onClick={(event) => { event.stopPropagation(); void onSelect(model.name, node); }} disabled={active || busyProxy !== null}>{t("proxies.action.useNode")}</button>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    ) : <div className="table-empty"><Search size={18} /><span>{t("proxies.empty.noSearchResults")}</span></div>}
+                  </div>}
+                </section>
+              );
+            })}
+            {term && !groupModels.length && <div className="empty-card surface-panel"><Search size={20} /><span>{t("proxies.empty.noSearchResults")}</span></div>}
           </div>
         </div>
       )}
-      {contextMenu && selectedEntry && <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} actions={[
-        { label: t("proxies.context.inspect"), icon: <Eye size={14} />, onSelect: () => setInspectedNode(contextMenu.node) },
-        { label: t("proxies.action.useNode"), icon: <Check size={14} />, disabled: contextMenu.node === selectedGroup?.now || busyProxy !== null, onSelect: () => void onSelect(selectedEntry[0], contextMenu.node) },
-        { label: t("proxies.context.testLatency"), icon: <Gauge size={14} />, disabled: busyProxy !== null || !delayContextFor(contextMenu.node), onSelect: () => { const context = delayContextFor(contextMenu.node); if (context) void onDelay(context); } },
+
+      {contextMenu && contextEntry && <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} actions={[
+        { label: t("proxies.context.inspect"), icon: <Eye size={14} />, onSelect: () => { focusNode(contextMenu.group, contextMenu.node); setExpandedGroups((current) => new Set(current).add(contextMenu.group)); } },
+        { label: t("proxies.action.useNode"), icon: <Check size={14} />, disabled: contextMenu.node === contextEntry[1].now || busyProxy !== null, onSelect: () => void onSelect(contextMenu.group, contextMenu.node) },
+        { label: t("proxies.context.testLatency"), icon: <Gauge size={14} />, disabled: busyProxy !== null || !contextDelay, onSelect: () => { if (contextDelay) void onDelay(contextDelay); } },
       ]} />}
     </section>
   );
 }
 
-function StateText({ tone, children }: { tone: "success" | "warning" | "error" | "muted"; children: React.ReactNode }) {
+function nodeElementId(group: string, node: string) {
+  return `proxy-node-${encodeURIComponent(group)}-${encodeURIComponent(node)}`;
+}
+
+function StateText({ tone, children }: { tone: "success" | "warning" | "error" | "muted"; children: ReactNode }) {
   return <span className={`state-text tone-${tone}`}><span className="state-dot" />{children}</span>;
 }

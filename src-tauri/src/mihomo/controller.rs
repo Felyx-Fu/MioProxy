@@ -13,7 +13,7 @@ use std::{
 #[cfg(windows)]
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 
-use reqwest::Client;
+use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
@@ -372,7 +372,12 @@ async fn api_get_with_timeout_at(
         .map_err(|e| e.to_string())
 }
 
-async fn api_put_with_secret(path: &str, payload: Value, bearer: &str) -> Result<Value, String> {
+async fn api_write_with_secret(
+    method: Method,
+    path: &str,
+    payload: Value,
+    bearer: &str,
+) -> Result<Value, String> {
     let url = format!("http://{CONTROLLER}{path}");
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
@@ -384,7 +389,7 @@ async fn api_put_with_secret(path: &str, payload: Value, bearer: &str) -> Result
             )
         })?;
     let request = client
-        .put(url)
+        .request(method, url)
         .bearer_auth(bearer)
         .json(&payload)
         .build()
@@ -434,7 +439,11 @@ async fn api_put_with_secret(path: &str, payload: Value, bearer: &str) -> Result
 }
 
 pub(crate) async fn api_put(path: &str, payload: Value) -> Result<Value, String> {
-    api_put_with_secret(path, payload, secret()).await
+    api_write_with_secret(Method::PUT, path, payload, secret()).await
+}
+
+pub(crate) async fn api_patch(path: &str, payload: Value) -> Result<Value, String> {
+    api_write_with_secret(Method::PATCH, path, payload, secret()).await
 }
 
 pub(crate) async fn api_delete(path: &str) -> Result<Value, String> {
@@ -695,7 +704,7 @@ pub(crate) fn mixed_port(app: &AppHandle) -> Result<u16, String> {
     Ok(runtime.mixed_port.unwrap_or(7890))
 }
 
-fn mode(app: &AppHandle) -> Result<String, String> {
+fn configured_mode(app: &AppHandle) -> Result<String, String> {
     let (_, config) = runtime_paths(app)?;
     let Some(content) = crate::config::read_text_file_at(&config, "读取 Mihomo 配置")? else {
         return Ok("rule".to_string());
@@ -705,19 +714,36 @@ fn mode(app: &AppHandle) -> Result<String, String> {
     Ok(runtime.mode.unwrap_or_else(|| "rule".to_string()))
 }
 
-fn status_for(
+async fn authoritative_mode(app: &AppHandle) -> Result<String, String> {
+    let configured = configured_mode(app)?;
+    let Ok(value) = api_get("/configs").await else {
+        return Ok(configured);
+    };
+    Ok(value
+        .get("mode")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or(configured))
+}
+
+async fn status_for(
     app: &AppHandle,
     state: CoreUserState,
     recovery_message: Option<String>,
 ) -> Result<CoreStatus, String> {
     let (_, config) = runtime_paths(app)?;
+    let current_mode = if state == CoreUserState::Ready {
+        authoritative_mode(app).await?
+    } else {
+        configured_mode(app)?
+    };
     Ok(CoreStatus {
         state,
         running: state == CoreUserState::Ready,
         controller: CONTROLLER.to_string(),
         config_path: crate::config::mihomo_path_string(&config),
         mixed_port: mixed_port(app)?,
-        mode: mode(app)?,
+        mode: current_mode,
         recovery_message,
     })
 }
@@ -746,7 +772,7 @@ async fn gui_owned_status(app: &AppHandle, state: &CoreState) -> Result<CoreStat
         })
     };
     let user_state = classify_user_state(pid, ready, recovery_message.as_deref());
-    status_for(app, user_state, recovery_message)
+    status_for(app, user_state, recovery_message).await
 }
 
 #[tauri::command]
@@ -807,7 +833,7 @@ async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatu
         if let Ok(proxy_status) = crate::system_proxy::status(app).await {
             crate::tray::update_proxy_label(app, proxy_status.enabled, proxy_status.core_running);
         }
-        return status_for(app, CoreUserState::Ready, None);
+        return status_for(app, CoreUserState::Ready, None).await;
     }
 
     if is_running().await {
@@ -988,7 +1014,7 @@ async fn start_gui_owned(app: &AppHandle, state: &CoreState) -> Result<CoreStatu
                         proxy_status.core_running,
                     );
                 }
-                return status_for(app, CoreUserState::Ready, None);
+                return status_for(app, CoreUserState::Ready, None).await;
             }
             Ok(false) => {}
             Err(error) => readiness_error = Some(error),
@@ -1062,7 +1088,7 @@ pub async fn mihomo_stop(
     crate::diagnostics::record_event(&app, "info", "mihomo", "GUI Mihomo stop requested");
     crate::system_proxy::restore_for_lifecycle(&app).await?;
     crate::tray::update_current_node(&app).await;
-    status_for(&app, CoreUserState::Stopped, None)
+    status_for(&app, CoreUserState::Stopped, None).await
 }
 
 pub(crate) async fn stop_owned_for_update(app: &AppHandle) -> Result<(), String> {
@@ -1103,12 +1129,18 @@ pub async fn mihomo_status(app: AppHandle) -> Result<CoreStatus, String> {
         if !status.core.running && !status.owns_core {
             crate::system_proxy::restore_after_core_exit(&app).await;
         }
-        return Ok(status.core);
+        let mut core = status.core;
+        core.mode = if core.running {
+            authoritative_mode(&app).await?
+        } else {
+            configured_mode(&app)?
+        };
+        return Ok(core);
     }
     if gui_status.state != CoreUserState::Ready
         && persisted_service_core_pid_if_ready(&app).await?.is_some()
     {
-        return status_for(&app, CoreUserState::Ready, None);
+        return status_for(&app, CoreUserState::Ready, None).await;
     }
     Ok(gui_status)
 }
@@ -1132,6 +1164,13 @@ fn proxy_entries_mut(value: &mut Value) -> Option<&mut serde_json::Map<String, V
     } else {
         value.as_object_mut()
     }
+}
+
+fn proxy_entries(value: &Value) -> Option<&serde_json::Map<String, Value>> {
+    value
+        .get("proxies")
+        .and_then(Value::as_object)
+        .or_else(|| value.as_object())
 }
 
 fn provider_entries(value: &Value) -> Option<&serde_json::Map<String, Value>> {
@@ -1191,6 +1230,15 @@ fn is_proxy_group_type(entry: Option<&Value>) -> bool {
                 | "Random"
                 | "Script"
         )
+    )
+}
+
+fn is_strategy_group_type(entry: Option<&Value>) -> bool {
+    matches!(
+        entry
+            .and_then(|value| value.get("type"))
+            .and_then(Value::as_str),
+        Some("Selector" | "URLTest" | "Fallback" | "LoadBalance")
     )
 }
 
@@ -1416,6 +1464,48 @@ fn merge_runtime_proxy_group_context_from_config(
     }
 }
 
+fn strategy_group_order(proxies: &Value, config: Option<&RuntimeProxyGroupConfig>) -> Vec<String> {
+    let Some(groups) = proxy_entries(proxies) else {
+        return Vec::new();
+    };
+    let runtime_group_names = groups
+        .iter()
+        .filter(|(_, entry)| is_strategy_group_type(Some(entry)))
+        .map(|(name, _)| name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut configured_order = Vec::new();
+    let mut included = BTreeSet::new();
+
+    if let Some(config) = config {
+        for group in &config.proxy_groups {
+            if runtime_group_names.contains(&group.name) && included.insert(group.name.clone()) {
+                configured_order.push(group.name.clone());
+            }
+        }
+    }
+
+    let mut runtime_only = runtime_group_names
+        .into_iter()
+        .filter(|name| !included.contains(name))
+        .collect::<Vec<_>>();
+    runtime_only.sort();
+    configured_order.extend(runtime_only);
+    configured_order
+}
+
+fn add_strategy_group_order_metadata(
+    proxies: &mut Value,
+    config: Option<&RuntimeProxyGroupConfig>,
+) {
+    let order = strategy_group_order(proxies, config)
+        .into_iter()
+        .map(Value::String)
+        .collect();
+    if let Some(response) = proxies.as_object_mut() {
+        response.insert("groupOrder".to_string(), Value::Array(order));
+    }
+}
+
 #[cfg(test)]
 fn merge_runtime_proxy_group_context(proxies: &mut Value, yaml: &str) {
     let Ok(config) = serde_yaml::from_str::<RuntimeProxyGroupConfig>(yaml) else {
@@ -1463,6 +1553,7 @@ pub async fn mihomo_proxies(app: AppHandle) -> Result<Value, String> {
             provider_data.as_ref(),
         );
     }
+    add_strategy_group_order_metadata(&mut proxies, runtime_config.as_ref());
     Ok(proxies)
 }
 
@@ -1545,6 +1636,33 @@ pub async fn mihomo_select_proxy(
     result
 }
 
+fn normalize_mode(value: &str) -> Result<String, String> {
+    let mode = value.trim().to_ascii_lowercase();
+    match mode.as_str() {
+        "rule" | "global" | "direct" => Ok(mode),
+        _ => Err(format!(
+            "不支持的 Mihomo 模式：{value}（仅支持 rule、global、direct）"
+        )),
+    }
+}
+
+#[tauri::command]
+pub async fn mihomo_set_mode(app: AppHandle, mode: String) -> Result<CoreStatus, String> {
+    let mode = normalize_mode(&mode)?;
+    ensure_managed_core(&app).await?;
+    api_patch("/configs", serde_json::json!({ "mode": mode }))
+        .await
+        .map_err(|error| format!("切换 Mihomo 模式失败：{error}"))?;
+    let status = mihomo_status(app).await?;
+    if status.mode != mode {
+        return Err(format!(
+            "Mihomo 模式切换后权威状态仍为 {}，预期为 {}",
+            status.mode, mode
+        ));
+    }
+    Ok(status)
+}
+
 #[tauri::command]
 pub async fn mihomo_proxy_delay(request: ProxyDelayRequest) -> Result<Value, String> {
     let path = delay_request_path(&request)?;
@@ -1554,11 +1672,12 @@ pub async fn mihomo_proxy_delay(request: ProxyDelayRequest) -> Result<Value, Str
 #[cfg(test)]
 mod tests {
     use super::{
-        all_ready_signals, api_get_with_timeout_at, classify_user_state, delay_request_path,
-        effective_delay_url, encode_path_segment, expected_status_string,
-        gui_status_is_authoritative, is_actual_proxy_provider, merge_runtime_proxy_group_context,
-        merge_runtime_proxy_group_context_from_config, required_listener_ready,
-        runtime_proxy_member_context, selected_node_from_snapshot, CoreStatus, CoreUserState,
+        add_strategy_group_order_metadata, all_ready_signals, api_get_with_timeout_at,
+        classify_user_state, delay_request_path, effective_delay_url, encode_path_segment,
+        expected_status_string, gui_status_is_authoritative, is_actual_proxy_provider,
+        merge_runtime_proxy_group_context, merge_runtime_proxy_group_context_from_config,
+        normalize_mode, required_listener_ready, runtime_proxy_member_context,
+        selected_node_from_snapshot, strategy_group_order, CoreStatus, CoreUserState,
         ProxyDelayRequest, ProxyEntryKind, RuntimeProxyGroupConfig, DEFAULT_DELAY_URL,
         DELAY_OUTER_TIMEOUT_SECS, DELAY_TIMEOUT_MS,
     };
@@ -1720,6 +1839,14 @@ mod tests {
     }
 
     #[test]
+    fn mode_validation_accepts_supported_modes_and_rejects_unknown_values() {
+        assert_eq!(normalize_mode(" RULE ").unwrap(), "rule");
+        assert_eq!(normalize_mode("global").unwrap(), "global");
+        assert_eq!(normalize_mode("direct").unwrap(), "direct");
+        assert!(normalize_mode("script").is_err());
+    }
+
+    #[test]
     fn selected_node_prefers_proxy_group() {
         let snapshot = serde_json::json!({
             "proxies": {
@@ -1850,6 +1977,160 @@ proxy-groups:
             expected_status_string(&serde_yaml::Value::Number(204.into())),
             Some("204".to_string())
         );
+    }
+
+    #[test]
+    fn strategy_group_order_preserves_runtime_config_order() {
+        let proxies = serde_json::json!({
+            "proxies": {
+                "A": { "type": "Selector" },
+                "B": { "type": "Selector" }
+            }
+        });
+        let config = serde_yaml::from_str::<RuntimeProxyGroupConfig>(
+            r#"
+proxy-groups:
+  - name: B
+    type: select
+  - name: A
+    type: select
+"#,
+        )
+        .expect("strategy group config");
+
+        assert_eq!(
+            strategy_group_order(&proxies, Some(&config)),
+            vec!["B".to_string(), "A".to_string()]
+        );
+    }
+
+    #[test]
+    fn strategy_group_order_appends_runtime_only_groups_after_configured_groups() {
+        let proxies = serde_json::json!({
+            "proxies": {
+                "GLOBAL": { "type": "Selector" },
+                "PROXY": { "type": "Selector" }
+            }
+        });
+        let config = serde_yaml::from_str::<RuntimeProxyGroupConfig>(
+            r#"
+proxy-groups:
+  - name: PROXY
+    type: select
+"#,
+        )
+        .expect("strategy group config");
+
+        assert_eq!(
+            strategy_group_order(&proxies, Some(&config)),
+            vec!["PROXY".to_string(), "GLOBAL".to_string()]
+        );
+    }
+
+    #[test]
+    fn strategy_group_order_sorts_multiple_runtime_only_groups_deterministically() {
+        let proxies = serde_json::json!({
+            "proxies": {
+                "Zeta": { "type": "Fallback" },
+                "Alpha": { "type": "URLTest" },
+                "Middle": { "type": "LoadBalance" }
+            }
+        });
+
+        assert_eq!(
+            strategy_group_order(&proxies, None),
+            vec![
+                "Alpha".to_string(),
+                "Middle".to_string(),
+                "Zeta".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn strategy_group_order_excludes_builtins_and_unsupported_runtime_entries() {
+        let proxies = serde_json::json!({
+            "proxies": {
+                "DIRECT": { "type": "Direct" },
+                "REJECT": { "type": "Reject" },
+                "PASS": { "type": "Pass" },
+                "COMPATIBLE": { "type": "Compatible" },
+                "REAL": { "type": "Selector" },
+                "SCRIPT": { "type": "Script" }
+            }
+        });
+
+        assert_eq!(
+            strategy_group_order(&proxies, None),
+            vec!["REAL".to_string()]
+        );
+    }
+
+    #[test]
+    fn strategy_group_order_does_not_fabricate_missing_configured_groups() {
+        let proxies = serde_json::json!({
+            "proxies": {
+                "A": { "type": "Selector" }
+            }
+        });
+        let config = serde_yaml::from_str::<RuntimeProxyGroupConfig>(
+            r#"
+proxy-groups:
+  - name: MISSING
+    type: select
+  - name: A
+    type: select
+"#,
+        )
+        .expect("strategy group config");
+
+        assert_eq!(
+            strategy_group_order(&proxies, Some(&config)),
+            vec!["A".to_string()]
+        );
+    }
+
+    #[test]
+    fn strategy_group_order_falls_back_when_runtime_config_is_invalid() {
+        let proxies = serde_json::json!({
+            "proxies": {
+                "Zeta": { "type": "Selector" },
+                "Alpha": { "type": "Selector" }
+            }
+        });
+        let config = serde_yaml::from_str::<RuntimeProxyGroupConfig>("proxy-groups: [").ok();
+
+        assert!(config.is_none());
+        assert_eq!(
+            strategy_group_order(&proxies, config.as_ref()),
+            vec!["Alpha".to_string(), "Zeta".to_string()]
+        );
+    }
+
+    #[test]
+    fn strategy_group_order_is_exposed_as_response_metadata() {
+        let mut proxies = serde_json::json!({
+            "proxies": {
+                "GLOBAL": { "type": "Selector" },
+                "PROXY": { "type": "Selector" }
+            }
+        });
+        let config = serde_yaml::from_str::<RuntimeProxyGroupConfig>(
+            r#"
+proxy-groups:
+  - name: PROXY
+    type: select
+"#,
+        )
+        .expect("strategy group config");
+
+        add_strategy_group_order_metadata(&mut proxies, Some(&config));
+
+        assert_eq!(
+            proxies["groupOrder"],
+            serde_json::json!(["PROXY", "GLOBAL"])
+        );
+        assert!(proxies["proxies"].get("GLOBAL").is_some());
     }
 
     fn provider_group_fixture() -> (Value, RuntimeProxyGroupConfig, Value) {

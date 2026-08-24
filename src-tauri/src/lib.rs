@@ -18,8 +18,8 @@ mod window_shell;
 use mihomo::{
     mihomo_close_all_connections, mihomo_close_connection, mihomo_connections, mihomo_proxies,
     mihomo_proxy_delay, mihomo_reload, mihomo_rule_provider_update, mihomo_rule_providers,
-    mihomo_rules, mihomo_select_proxy, mihomo_start, mihomo_status, mihomo_stop, mihomo_version,
-    CoreState,
+    mihomo_rules, mihomo_select_proxy, mihomo_set_mode, mihomo_start, mihomo_status, mihomo_stop,
+    mihomo_version, CoreState,
 };
 use profiles::{profile_add, profile_apply, profile_download, profile_list, profile_remove};
 use std::sync::{
@@ -174,6 +174,7 @@ pub fn run() {
             mihomo_rule_provider_update,
             mihomo_reload,
             mihomo_select_proxy,
+            mihomo_set_mode,
             mihomo_proxy_delay,
             mihomo_connections,
             mihomo_close_connection,

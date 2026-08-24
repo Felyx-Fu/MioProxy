@@ -6,8 +6,8 @@ pub(crate) mod traffic;
 pub use connections::{mihomo_close_all_connections, mihomo_close_connection, mihomo_connections};
 pub use controller::{
     current_node, mihomo_proxies, mihomo_proxy_delay, mihomo_reload, mihomo_rule_provider_update,
-    mihomo_rule_providers, mihomo_rules, mihomo_select_proxy, mihomo_start, mihomo_status,
-    mihomo_stop, mihomo_version, CoreState, CoreStatus, CoreUserState,
+    mihomo_rule_providers, mihomo_rules, mihomo_select_proxy, mihomo_set_mode, mihomo_start,
+    mihomo_status, mihomo_stop, mihomo_version, CoreState, CoreStatus, CoreUserState,
 };
 
 pub(crate) use controller::{

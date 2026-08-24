@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type CoreState = "stopped" | "starting" | "ready" | "error";
+export type CoreMode = "rule" | "global" | "direct";
 
 export type CoreStatus = {
   state: CoreState;
@@ -8,7 +9,7 @@ export type CoreStatus = {
   controller: string;
   configPath: string;
   mixedPort: number;
-  mode: string;
+  mode: CoreMode;
   recoveryMessage?: string | null;
 };
 export type ProxyState = "disabled" | "enabling" | "enabled" | "disabling" | "error";
@@ -72,6 +73,8 @@ export type ProxyGroup = {
 
 export type ProxiesResponse = {
   proxies: Record<string, ProxyGroup>;
+  /** Explicit strategy-group order from the authoritative runtime config plus runtime-only groups. */
+  groupOrder?: string[];
 };
 
 export type MihomoRule = {
@@ -288,6 +291,7 @@ export const mihomoApi = {
   start: () => invoke<CoreStatus>("mihomo_start"),
   stop: () => invoke<CoreStatus>("mihomo_stop"),
   status: () => invoke<CoreStatus>("mihomo_status"),
+  setMode: (mode: CoreMode) => invoke<CoreStatus>("mihomo_set_mode", { mode }),
   version: () => invoke<MihomoVersion>("mihomo_version"),
   proxies: () => invoke<ProxiesResponse>("mihomo_proxies"),
   rules: () => invoke<RulesResponse>("mihomo_rules"),

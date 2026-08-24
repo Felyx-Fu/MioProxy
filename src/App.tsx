@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Update, type DownloadEvent } from "@tauri-apps/plugin-updater";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { mihomoApi, type CoreState, type CoreStatus, type CoreUpdateStatus, type MihomoVersion, type Profile, type ProxiesResponse, type ProxyDelayContext, type ProxyPathState, type ProxyState, type ServiceConnectionStatus, type StartupSettings, type SystemProxyStatus, type TunStatusSnapshot, type UpdatePreferences, type UpdateStatus } from "./api/mihomo";
+import { mihomoApi, type CoreMode, type CoreState, type CoreStatus, type CoreUpdateStatus, type MihomoVersion, type Profile, type ProxiesResponse, type ProxyDelayContext, type ProxyPathState, type ProxyState, type ServiceConnectionStatus, type StartupSettings, type SystemProxyStatus, type TunStatusSnapshot, type UpdatePreferences, type UpdateStatus } from "./api/mihomo";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { ToastHost, type ToastMessage, type ToastTone } from "./components/Feedback";
 import { PreviewTitleBar } from "./components/PreviewTitleBar";
@@ -43,6 +43,7 @@ export default function App() {
   const [profileBusyId, setProfileBusyId] = useState<string | null>(null);
   const [proxyLoading, setProxyLoading] = useState(false);
   const [proxyBusy, setProxyBusy] = useState<string | null>(null);
+  const [modeBusy, setModeBusy] = useState(false);
   const [delayByKey, setDelayByKey] = useState<Record<string, number>>({});
   const [delayStatusByKey, setDelayStatusByKey] = useState<Record<string, "available" | "unavailable">>({});
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +75,7 @@ export default function App() {
   const tunActionInFlight = useRef(false);
   const tunRefreshInFlight = useRef<Promise<void> | null>(null);
   const proxyRequestInFlight = useRef(false);
+  const modeRequestInFlight = useRef(false);
   const systemProxyRequestInFlight = useRef(false);
   const systemProxyRefreshSequence = useRef(0);
   const coreReady = coreState === "ready";
@@ -103,7 +105,7 @@ export default function App() {
     setProxyState(next.enabled ? "enabled" : "disabled");
   }, []);
 
-  const refreshStatus = useCallback(async () => {
+  const refreshStatus = useCallback(async (): Promise<CoreStatus | null> => {
     try {
       const next = await mihomoApi.status();
       setStatus(next);
@@ -114,12 +116,14 @@ export default function App() {
       } else {
         setVersion(null);
       }
+      return next;
     } catch (e) {
       const message = errorMessage(e);
-      if (isServiceIpcFailure(message)) return;
+      if (isServiceIpcFailure(message)) return null;
       setCoreState("error");
       setCoreRecoveryError(message);
       setError(message);
+      return null;
     }
   }, []);
 
@@ -668,6 +672,28 @@ export default function App() {
     }
   }
 
+  async function setCoreMode(mode: CoreMode) {
+    if (modeBusy || modeRequestInFlight.current || status?.mode === mode) return;
+    modeRequestInFlight.current = true;
+    setModeBusy(true);
+    setError(null);
+    try {
+      await mihomoApi.setMode(mode);
+      const observed = await refreshStatus();
+      if (!observed || observed.mode !== mode) {
+        throw new Error(`Mihomo 模式切换后无法确认权威状态（预期 ${mode}）`);
+      }
+      pushToast("success", `Mihomo 模式已切换为 ${mode}`);
+    } catch (e) {
+      const message = errorMessage(e);
+      setError(message);
+      pushToast("error", message);
+    } finally {
+      modeRequestInFlight.current = false;
+      setModeBusy(false);
+    }
+  }
+
   async function requestTunTransition() {
     if (tunActionInFlight.current || tunBusy) return;
     tunActionInFlight.current = true;
@@ -791,7 +817,7 @@ export default function App() {
           {page === "connections" && <ConnectionsPage state={connections} onRefresh={connections.refresh} onClose={connections.closeConnection} onCloseAll={connections.closeAllConnections} />}
           {page === "logs" && <LogsPage state={logs} />}
           {page === "profiles" && <ProfilesPage profiles={profiles} selectedId={selectedProfileId} appliedId={appliedProfileSession?.id ?? null} busyId={profileBusyId} error={error} onSelect={setSelectedProfileId} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} onNavigate={setPage} />}
-          {page === "proxies" && <ProxiesPage data={proxies} loading={proxyLoading} busyProxy={proxyBusy} delayByKey={delayByKey} delayStatusByKey={delayStatusByKey} profilesLoaded={profilesLoaded} profileCount={profiles.length} onRefresh={refreshProxies} onSelect={selectProxy} onDelay={testProxyDelay} />}
+          {page === "proxies" && <ProxiesPage data={proxies} mode={status?.mode ?? null} modeBusy={modeBusy} loading={proxyLoading} busyProxy={proxyBusy} delayByKey={delayByKey} delayStatusByKey={delayStatusByKey} profilesLoaded={profilesLoaded} profileCount={profiles.length} onRefresh={refreshProxies} onModeChange={setCoreMode} onSelect={selectProxy} onDelay={testProxyDelay} />}
           {page === "rules" && <RulesPage running={coreReady} />}
           {page === "dns" && <DnsPage profileId={selectedProfileId} />}
           {page === "overrides" && <OverridesPage profileId={selectedProfileId} />}
