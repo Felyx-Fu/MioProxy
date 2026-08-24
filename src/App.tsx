@@ -74,6 +74,8 @@ export default function App() {
   const tunActionInFlight = useRef(false);
   const tunRefreshInFlight = useRef<Promise<void> | null>(null);
   const proxyRequestInFlight = useRef(false);
+  const systemProxyRequestInFlight = useRef(false);
+  const systemProxyRefreshSequence = useRef(0);
   const coreReady = coreState === "ready";
   const traffic = useTraffic();
   const connections = useConnections(coreReady);
@@ -95,6 +97,11 @@ export default function App() {
   function isServiceIpcFailure(message: string) {
     return /MioProxy Service|IPC|Named Pipe|命名管道|pipe|服务端身份/i.test(message);
   }
+
+  const applySystemProxyStatus = useCallback((next: SystemProxyStatus) => {
+    setProxyStatus(next);
+    setProxyState(next.enabled ? "enabled" : "disabled");
+  }, []);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -127,17 +134,23 @@ export default function App() {
     }
   }, []);
 
-  const refreshSystemProxy = useCallback(async () => {
+  const refreshSystemProxy = useCallback(async (force = false) => {
+    if (systemProxyRequestInFlight.current && !force) return null;
+    const sequence = ++systemProxyRefreshSequence.current;
     try {
       const next = await mihomoApi.systemProxyStatus();
-      setProxyStatus(next);
-      setProxyState(next.enabled ? "enabled" : "disabled");
+      if (sequence === systemProxyRefreshSequence.current && (force || !systemProxyRequestInFlight.current)) {
+        applySystemProxyStatus(next);
+      }
+      return next;
     } catch (e) {
-      if (isServiceIpcFailure(errorMessage(e))) return;
+      if (systemProxyRequestInFlight.current && !force) return null;
+      if (isServiceIpcFailure(errorMessage(e))) return null;
       setProxyState("error");
       setError(errorMessage(e));
+      return null;
     }
-  }, []);
+  }, [applySystemProxyStatus]);
 
   const refreshStartup = useCallback(async () => {
     try {
@@ -571,17 +584,29 @@ export default function App() {
     setProxyState(enabled ? "enabling" : "disabling");
     setSettingsBusy(true);
     setError(null);
+    let commandSucceeded = false;
     try {
-      const next = await mihomoApi.systemProxySetEnabled(enabled);
-      setProxyStatus(next);
-      setProxyState(next.enabled ? "enabled" : "disabled");
-      pushToast("success", next.enabled ? "系统代理已开启" : "系统代理已关闭");
+      await mihomoApi.systemProxySetEnabled(enabled);
+      commandSucceeded = true;
+      const observed = await refreshSystemProxy(true);
+      if (!observed) {
+        throw new Error("系统代理切换后无法刷新权威状态，暂时无法确认结果");
+      }
+      if (observed.enabled !== enabled) {
+        const observedLabel = observed.enabled ? "已开启" : "已关闭";
+        const expectedLabel = enabled ? "已开启" : "已关闭";
+        const message = `系统代理命令已返回成功，但权威状态仍为${observedLabel}（预期${expectedLabel}）`;
+        setError(message);
+        pushToast("error", message);
+        return;
+      }
+      pushToast("success", enabled ? "系统代理已开启" : "系统代理已关闭");
     } catch (e) {
       const message = errorMessage(e);
       setProxyState("error");
       setError(message);
       pushToast("error", `系统代理切换失败：${message}`);
-      await refreshSystemProxy();
+      if (!commandSucceeded) await refreshSystemProxy(true);
     } finally {
       setSettingsBusy(false);
     }
@@ -620,10 +645,13 @@ export default function App() {
   }
 
   async function requestSystemProxyTransition() {
-    if (settingsBusy) return;
+    if (settingsBusy || systemProxyRequestInFlight.current) return;
+    systemProxyRequestInFlight.current = true;
+    systemProxyRefreshSequence.current += 1;
+    setSettingsBusy(true);
     try {
       const current = await mihomoApi.systemProxyStatus();
-      setProxyStatus(current);
+      applySystemProxyStatus(current);
       if (current.owner === "external" || current.actualState === "externalEndpoint" || current.externalDetected) {
         pushToast("info", "检测到外部系统代理；MioProxy 未接管，也不会从此控件覆盖它。");
         return;
@@ -634,6 +662,9 @@ export default function App() {
       setProxyState("error");
       setError(message);
       pushToast("error", `读取系统代理状态失败：${message}`);
+    } finally {
+      systemProxyRequestInFlight.current = false;
+      setSettingsBusy(false);
     }
   }
 
