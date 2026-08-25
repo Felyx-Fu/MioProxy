@@ -16,7 +16,7 @@ function chartPoints(snapshot: TrafficSnapshot | null, key: "up" | "down") {
 }
 
 function StateValue({ tone, children }: { tone: "success" | "warning" | "error" | "muted"; children: React.ReactNode }) {
-  return <span className={`state-value tone-${tone}`}><span className="state-dot" />{children}</span>;
+  return <span className={`state-value dashboard-state-value tone-${tone}`}><span className="state-dot" />{children}</span>;
 }
 
 function systemProxyLabel(snapshot: SystemProxyStatus | null, transitioning = false) {
@@ -80,7 +80,7 @@ function MioPathRail({ status, proxyStatus, tunStatus, currentNode, delay, proxy
   ] as const;
 
   return (
-    <section className="path-panel surface-panel" aria-labelledby="path-heading">
+    <section className="path-panel dashboard-path-panel surface-panel" aria-labelledby="path-heading">
       <div className="section-title-row"><div><h2 id="path-heading">{t("dashboard.path.title")}</h2><p>{t("dashboard.path.description")}</p></div></div>
       <ol className="mio-path-rail">
         {steps.map(({ label, detail, icon: Icon, tone }) => (
@@ -97,12 +97,12 @@ function MioPathRail({ status, proxyStatus, tunStatus, currentNode, delay, proxy
 function TrafficChart({ snapshot }: { snapshot: TrafficSnapshot | null }) {
   const { t } = useI18n();
   return (
-    <section className="traffic-panel surface-panel" aria-labelledby="traffic-heading">
+    <section className="traffic-panel dashboard-traffic-panel surface-panel" aria-labelledby="traffic-heading">
       <div className="section-title-row">
         <div><h2 id="traffic-heading">{t("dashboard.traffic.title")}</h2><p>{t("dashboard.traffic.last60Seconds")}</p></div>
         <div className="traffic-legend">
-          <span className="download"><ArrowDown size={13} />{formatRate(snapshot?.down)}</span>
-          <span className="upload"><ArrowUp size={13} />{formatRate(snapshot?.up)}</span>
+          <span className="download"><ArrowDown size={13} /><b>{formatRate(snapshot?.down)}</b></span>
+          <span className="upload"><ArrowUp size={13} /><b>{formatRate(snapshot?.up)}</b></span>
         </div>
       </div>
       <div className="traffic-plot">
@@ -170,25 +170,26 @@ export function DashboardPage({
   const tunTransitioning = tunStatus?.projection === "waitingForService" || tunStatus?.projection === "enabling" || tunStatus?.projection === "disabling" || tunStatus?.projection === "recovering";
   const tunWillDisable = !tun.external && Boolean(tun.owned || tunStatus?.desiredEnabled);
   const coreTone = checking ? "muted" : coreState === "ready" ? "success" : coreState === "error" ? "error" : "warning";
+  const profileMatch = appliedProfileName && selectedProfile?.name ? selectedProfile.name === appliedProfileName ? "same" : "different" : "unknown";
 
   return (
-    <section className="page-stack dashboard-page">
+    <section className="page-stack dashboard-page" data-profile-match={profileMatch}>
       <header className="page-header compact-header">
         <div><h1>{t("dashboard.title")}</h1><p>{t("dashboard.description")}</p></div>
       </header>
 
-      {(error || tunError) && <div className="info-bar error" role="alert"><ShieldAlert size={16} /><span>{tunError ?? error}</span></div>}
+      {(error || tunError) && <div className="info-bar error dashboard-error-bar" role="alert"><ShieldAlert size={16} /><span>{tunError ?? error}</span></div>}
 
       <div className="dashboard-upper">
-        <section className="surface-panel summary-panel" aria-labelledby="health-heading">
+        <section className="surface-panel summary-panel dashboard-health-card" aria-labelledby="health-heading">
           <div className="section-title-row"><div><h2 id="health-heading">{t("dashboard.health.title")}</h2><p>{version?.version ? `Mihomo ${version.version}` : t("dashboard.health.managedRuntime")}</p></div><StateValue tone={checking ? "muted" : healthy ? "success" : coreState === "error" ? "error" : "warning"}>{t(checking ? "dashboard.state.checking" : healthy ? "dashboard.state.healthy" : "dashboard.state.attention")}</StateValue></div>
           <dl className="summary-list">
-            <div><dt>{t("dashboard.core")}</dt><dd><StateValue tone={coreTone}>{t(checking ? "dashboard.state.checking" : coreStateKey(coreState))}</StateValue></dd></div>
-            <div><dt>{t("dashboard.systemProxy")}</dt><dd><StateValue tone={proxy.tone}>{t(proxy.key)}</StateValue></dd></div>
-            <div><dt>TUN</dt><dd><StateValue tone={tun.tone}>{t(tun.key)}</StateValue></dd></div>
-            <div><dt>{t("dashboard.selectedNode")}</dt><dd>{currentNode ? <button className="inline-link" type="button" onClick={() => onNavigate("proxies")}>{currentNode}{delay === null ? "" : ` · ${delay} ms`}</button> : "—"}</dd></div>
+            <div className="dashboard-health-row"><dt>{t("dashboard.core")}</dt><dd><StateValue tone={coreTone}>{t(checking ? "dashboard.state.checking" : coreStateKey(coreState))}</StateValue></dd></div>
+            <div className="dashboard-health-row"><dt>{t("dashboard.systemProxy")}</dt><dd><StateValue tone={proxy.tone}>{t(proxy.key)}</StateValue></dd></div>
+            <div className="dashboard-health-row"><dt>TUN</dt><dd><StateValue tone={tun.tone}>{t(tun.key)}</StateValue></dd></div>
+            <div className="dashboard-health-row dashboard-selected-node-row"><dt>{t("dashboard.selectedNode")}</dt><dd>{currentNode ? <button className="inline-link dashboard-current-node" type="button" onClick={() => onNavigate("proxies")}><span className="dashboard-current-node-name">{currentNode}</span>{delay !== null && <span className={`dashboard-current-node-latency latency-${latencyTone(delay)}`}>· {delay} ms</span>}</button> : "—"}</dd></div>
           </dl>
-          <div className="summary-actions">
+          <div className="summary-actions dashboard-health-actions">
             <button className="secondary-button" type="button" onClick={onRequestProxyTransition} disabled={coreState !== "ready" || proxyBusy || proxy.external}>{t(proxyBusy ? "dashboard.action.working" : proxy.external ? "dashboard.action.externalProxy" : proxy.owned ? "dashboard.action.disableProxy" : "dashboard.action.enableProxy")}</button>
             <button className="secondary-button" type="button" onClick={onRequestTunTransition} disabled={tunBusy || tunTransitioning || tun.external || (!tunWillDisable && coreState !== "ready")}>{t(tunBusy || tunTransitioning ? "dashboard.action.working" : tun.external ? "dashboard.action.externalTun" : tunWillDisable ? "dashboard.action.disableTun" : "dashboard.action.enableTun")}</button>
           </div>
@@ -200,15 +201,15 @@ export function DashboardPage({
       <div className="dashboard-lower">
         <TrafficChart snapshot={traffic} />
 
-        <section className="surface-panel summary-panel" aria-labelledby="profile-heading">
+        <section className="surface-panel summary-panel dashboard-profile-panel" aria-labelledby="profile-heading">
           <div className="section-title-row"><div><h2 id="profile-heading">{t("dashboard.profile.title")}</h2><p>{t("dashboard.profile.description")}</p></div><SlidersHorizontal size={17} /></div>
           <dl className="summary-list">
-            <div><dt>{t("dashboard.profile.active")}</dt><dd>{appliedProfileName ? t("dashboard.profile.sessionValue", { name: appliedProfileName }) : "—"}</dd></div>
-            <div><dt>{t("dashboard.profile.selected")}</dt><dd>{selectedProfile?.name ?? "—"}</dd></div>
-            <div><dt>{t("dashboard.profile.mode")}</dt><dd>{status?.mode?.toUpperCase() ?? "—"}</dd></div>
-            <div><dt>{t("dashboard.profile.nodeCount")}</dt><dd>{selectedProfile?.nodeCount ?? "—"}</dd></div>
-            <div><dt>{t("dashboard.profile.connections")}</dt><dd>{connectionCount ?? "—"}</dd></div>
-            <div><dt>{t("dashboard.profile.memory")}</dt><dd>{formatBytes(memory)}</dd></div>
+            <div className="dashboard-profile-row dashboard-profile-active-row"><dt>{t("dashboard.profile.active")}</dt><dd>{appliedProfileName ? t("dashboard.profile.sessionValue", { name: appliedProfileName }) : "—"}</dd></div>
+            <div className="dashboard-profile-row dashboard-profile-selected-row"><dt>{t("dashboard.profile.selected")}</dt><dd>{selectedProfile?.name ?? "—"}</dd></div>
+            <div className={`dashboard-profile-row dashboard-profile-mode-row${status?.mode ? " has-value" : ""}`}><dt>{t("dashboard.profile.mode")}</dt><dd>{status?.mode?.toUpperCase() ?? "—"}</dd></div>
+            <div className="dashboard-profile-row"><dt>{t("dashboard.profile.nodeCount")}</dt><dd>{selectedProfile?.nodeCount ?? "—"}</dd></div>
+            <div className="dashboard-profile-row"><dt>{t("dashboard.profile.connections")}</dt><dd>{connectionCount ?? "—"}</dd></div>
+            <div className="dashboard-profile-row"><dt>{t("dashboard.profile.memory")}</dt><dd>{formatBytes(memory)}</dd></div>
           </dl>
           <button className="secondary-button" type="button" onClick={() => onNavigate("profiles")}>{t("dashboard.profile.open")}</button>
         </section>
