@@ -433,7 +433,7 @@ mod tests {
         let config = root.join("config.yaml");
         fs::write(
             &config,
-            "mixed-port: 7890\nmode: rule\nlog-level: silent\nipv6: false\nrules:\n  - GEOSITE,private,DIRECT\n  - GEOIP,CN,DIRECT\n",
+            "mixed-port: 7890\nmode: rule\ngeodata-mode: true\nlog-level: silent\nipv6: false\nrules:\n  - GEOSITE,private,DIRECT\n  - GEOIP,CN,DIRECT\n",
         )
         .unwrap();
 
@@ -452,8 +452,13 @@ mod tests {
             .unwrap();
         assert!(
             output.status.success(),
-            "Mihomo rejected AppData-style geodata runtime: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "Mihomo rejected AppData-style geodata runtime: status={:?}, code={:?}, root={}, config={}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            output.status.code(),
+            root.display(),
+            config.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
         fs::remove_dir_all(root).unwrap();
     }
