@@ -59,6 +59,28 @@ const dataWithoutGlobal: ProxiesResponse = {
   proxies: Object.fromEntries(Object.entries(data.proxies).filter(([name]) => name !== "GLOBAL")),
 };
 
+const regionData: ProxiesResponse = {
+  groupOrder: ["Regions A", "Regions B"],
+  proxies: {
+    "Regions A": {
+      type: "Selector",
+      now: "HK-01 IEPL",
+      all: ["HK-01 IEPL", "HK-02 Backup", "SG-01 IEPL", "Premium 01"],
+    },
+    "Regions B": {
+      type: "Selector",
+      now: "JP-01",
+      all: ["JP-01", "HK-01 IEPL", "Other B"],
+    },
+    "HK-01 IEPL": { type: "Vmess" },
+    "HK-02 Backup": { type: "Vmess" },
+    "SG-01 IEPL": { type: "Vmess" },
+    "Premium 01": { type: "Vmess" },
+    "JP-01": { type: "Vmess" },
+    "Other B": { type: "Vmess" },
+  },
+};
+
 function renderPage({
   onDelay = vi.fn().mockResolvedValue(undefined),
   onSelect = vi.fn().mockResolvedValue(undefined),
@@ -68,6 +90,7 @@ function renderPage({
   pageData = data,
   mode = "rule",
   modeBusy = false,
+  preferenceProfileId = "test-profile",
 }: {
   onDelay?: ReturnType<typeof vi.fn>;
   onSelect?: ReturnType<typeof vi.fn>;
@@ -77,6 +100,7 @@ function renderPage({
   pageData?: ProxiesResponse;
   mode?: CoreMode | null;
   modeBusy?: boolean;
+  preferenceProfileId?: string | null;
 } = {}) {
   return render(
     <I18nProvider>
@@ -90,6 +114,7 @@ function renderPage({
         delayStatusByKey={delayStatusByKey}
         profilesLoaded
         profileCount={1}
+        preferenceProfileId={preferenceProfileId}
         onRefresh={vi.fn()}
         onModeChange={onModeChange}
         onSelect={onSelect}
@@ -242,6 +267,94 @@ describe("ProxiesPage strategy center", () => {
     expect(screen.getByRole("list", { name: /Group B/ })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/Search groups or nodes|搜索组或节点/), { target: { value: "" } });
     expect(screen.queryByRole("list", { name: /Group B/ })).not.toBeInTheDocument();
+  });
+
+  it("shows only represented regions and accurate per-group counts", () => {
+    renderPage({ pageData: regionData });
+
+    const filters = screen.getByRole("group", { name: /Regions A Node filters/ });
+    expect(within(filters).getByRole("button", { name: /All 4/ })).toBeInTheDocument();
+    expect(within(filters).getByRole("button", { name: /Hong Kong 2/ })).toBeInTheDocument();
+    expect(within(filters).getByRole("button", { name: /Singapore 1/ })).toBeInTheDocument();
+    expect(within(filters).getByRole("button", { name: /Other 1/ })).toBeInTheDocument();
+    expect(within(filters).queryByRole("button", { name: /Japan/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps region filters scoped to their own strategy group", () => {
+    renderPage({ pageData: regionData });
+
+    const groupAFilters = screen.getByRole("group", { name: /Regions A Node filters/ });
+    fireEvent.click(within(groupAFilters).getByRole("button", { name: /Hong Kong/ }));
+    expect(within(screen.getByRole("list", { name: /Regions A/ })).getAllByRole("listitem")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: /Regions B/ }));
+    const groupBFilters = screen.getByRole("group", { name: /Regions B Node filters/ });
+    fireEvent.click(within(groupBFilters).getByRole("button", { name: /Japan/ }));
+    expect(within(screen.getByRole("list", { name: /Regions B/ })).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(screen.getByRole("list", { name: /Regions A/ })).getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("composes text search with the selected region filter", () => {
+    renderPage({ pageData: regionData });
+    const groupAFilters = screen.getByRole("group", { name: /Regions A Node filters/ });
+    fireEvent.click(within(groupAFilters).getByRole("button", { name: /Hong Kong/ }));
+    fireEvent.change(screen.getByLabelText(/Search groups or nodes|搜索组或节点/), { target: { value: "IEPL" } });
+
+    const groupAList = screen.getByRole("list", { name: /Regions A/ });
+    expect(within(groupAList).getAllByRole("listitem").map((item) => item.querySelector("strong")?.textContent)).toEqual(["HK-01 IEPL"]);
+    expect(screen.queryByText("SG-01 IEPL")).not.toBeInTheDocument();
+  });
+
+  it("sorts the filtered node set by the existing group-scoped latency keys", () => {
+    const first = { group: "Regions A", proxy: "HK-01 IEPL", kind: "ordinary" as const };
+    const second = { group: "Regions A", proxy: "HK-02 Backup", kind: "ordinary" as const };
+    renderPage({
+      pageData: regionData,
+      delayByKey: { [proxyDelayKey(first)]: 220, [proxyDelayKey(second)]: 80 },
+    });
+    fireEvent.click(within(screen.getByRole("group", { name: /Regions A Node filters/ })).getByRole("button", { name: /Hong Kong/ }));
+    fireEvent.change(screen.getByRole("combobox", { name: /Sort nodes|节点排序/ }), { target: { value: "delay" } });
+
+    expect(within(screen.getByRole("list", { name: /Regions A/ })).getAllByRole("listitem").map((item) => item.querySelector("strong")?.textContent)).toEqual(["HK-02 Backup", "HK-01 IEPL"]);
+  });
+
+  it("toggles favorites without selecting the node and filters the group to favorites", () => {
+    const onSelect = vi.fn().mockResolvedValue(undefined);
+    renderPage({ pageData: regionData, onSelect });
+    const card = cardContaining("HK-01 IEPL");
+    const favorite = within(card).getByRole("button", { name: /Add HK-01 IEPL/ });
+
+    fireEvent.click(favorite);
+
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(favorite).toHaveAttribute("aria-pressed", "true");
+    const filters = screen.getByRole("group", { name: /Regions A Node filters/ });
+    fireEvent.click(within(filters).getByRole("button", { name: /Favorites 1/ }));
+    expect(within(screen.getByRole("list", { name: /Regions A/ })).getAllByRole("listitem").map((item) => item.querySelector("strong")?.textContent)).toEqual(["HK-01 IEPL"]);
+  });
+
+  it("shares one favorite across every group containing the same node", () => {
+    renderPage({ pageData: regionData });
+    fireEvent.click(within(cardContaining("HK-01 IEPL")).getByRole("button", { name: /Add HK-01 IEPL/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Regions B/ }));
+
+    const groupB = screen.getByRole("list", { name: /Regions B/ });
+    const sharedCard = within(groupB).getAllByRole("listitem").find((item) => item.textContent?.includes("HK-01 IEPL"))!;
+    expect(within(sharedCard).getByRole("button", { name: /Remove HK-01 IEPL/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("keeps Favorites active and shows an empty state after removing the final favorite", () => {
+    const onSelect = vi.fn().mockResolvedValue(undefined);
+    renderPage({ pageData: regionData, onSelect });
+    const card = cardContaining("HK-01 IEPL");
+    fireEvent.click(within(card).getByRole("button", { name: /Add HK-01 IEPL/ }));
+    const filters = screen.getByRole("group", { name: /Regions A Node filters/ });
+    fireEvent.click(within(filters).getByRole("button", { name: /Favorites 1/ }));
+    fireEvent.click(within(screen.getByRole("list", { name: /Regions A/ })).getByRole("button", { name: /Remove HK-01 IEPL/ }));
+
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByText("No favorite nodes in this group.")).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: /Regions A Node filters/ })).getByRole("button", { name: /Favorites 0/ })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("calls the mode change command with the selected mode and exposes contextual descriptions", () => {

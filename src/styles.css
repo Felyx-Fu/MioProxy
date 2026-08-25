@@ -284,6 +284,11 @@ span.statusbar-item { cursor: default; }
 .proxy-strategy-summary small { color: var(--muted); font-size: 8px; }
 .proxy-strategy-summary strong { margin-top: 3px; font-size: 10px; font-weight: 600; }
 .proxy-strategy-content { border-top: 1px solid var(--border); padding: 10px; background: var(--surface-subtle); }
+.proxy-region-filters { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 9px; }
+.proxy-filter-chip { min-height: 25px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; color: var(--muted); background: var(--surface); cursor: pointer; font-size: 9px; white-space: nowrap; }
+.proxy-filter-chip:hover { border-color: var(--border-strong); color: var(--text); background: var(--surface-hover); }
+.proxy-filter-chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.proxy-filter-chip strong { color: inherit; font-size: 8px; font-weight: 650; }
 .proxy-node-grid { min-width: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .proxy-node-card { min-width: 0; min-height: 116px; display: flex; flex-direction: column; gap: 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 9px; color: var(--text); background: var(--surface); cursor: default; }
 .proxy-node-card:hover { border-color: var(--border-strong); background: var(--surface-hover); }
@@ -292,6 +297,12 @@ span.statusbar-item { cursor: default; }
 .proxy-node-card.active.inspected { box-shadow: inset 2px 0 var(--accent), 0 0 0 2px var(--focus); }
 .proxy-node-heading { min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
 .proxy-node-heading > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; }
+.proxy-node-heading-actions { min-width: 0; display: inline-flex; align-items: center; gap: 5px; }
+.proxy-favorite-button { width: 24px; height: 24px; flex: 0 0 24px; display: grid; place-items: center; border: 1px solid transparent; border-radius: var(--radius-sm); padding: 0; color: var(--muted); background: transparent; cursor: pointer; }
+.proxy-favorite-button:hover, .proxy-favorite-button:focus-visible { border-color: var(--border); color: var(--accent); background: var(--surface-hover); }
+.proxy-favorite-button.active { color: var(--accent); }
+.proxy-node-region { min-width: 0; display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 9px; }
+.proxy-node-region > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proxy-node-meta { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .proxy-node-meta > span:first-child { min-width: 0; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .proxy-node-meta .state-text { flex: 0 0 auto; font-size: 9px; }

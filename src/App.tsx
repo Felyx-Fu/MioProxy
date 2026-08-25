@@ -817,7 +817,7 @@ export default function App() {
           {page === "connections" && <ConnectionsPage state={connections} onRefresh={connections.refresh} onClose={connections.closeConnection} onCloseAll={connections.closeAllConnections} />}
           {page === "logs" && <LogsPage state={logs} />}
           {page === "profiles" && <ProfilesPage profiles={profiles} selectedId={selectedProfileId} appliedId={appliedProfileSession?.id ?? null} busyId={profileBusyId} error={error} onSelect={setSelectedProfileId} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} onNavigate={setPage} />}
-          {page === "proxies" && <ProxiesPage data={proxies} mode={status?.mode ?? null} modeBusy={modeBusy} loading={proxyLoading} busyProxy={proxyBusy} delayByKey={delayByKey} delayStatusByKey={delayStatusByKey} profilesLoaded={profilesLoaded} profileCount={profiles.length} onRefresh={refreshProxies} onModeChange={setCoreMode} onSelect={selectProxy} onDelay={testProxyDelay} />}
+          {page === "proxies" && <ProxiesPage data={proxies} mode={status?.mode ?? null} modeBusy={modeBusy} loading={proxyLoading} busyProxy={proxyBusy} delayByKey={delayByKey} delayStatusByKey={delayStatusByKey} profilesLoaded={profilesLoaded} profileCount={profiles.length} preferenceProfileId={appliedProfileSession?.id ?? selectedProfileId} onRefresh={refreshProxies} onModeChange={setCoreMode} onSelect={selectProxy} onDelay={testProxyDelay} />}
           {page === "rules" && <RulesPage running={coreReady} />}
           {page === "dns" && <DnsPage profileId={selectedProfileId} />}
           {page === "overrides" && <OverridesPage profileId={selectedProfileId} />}

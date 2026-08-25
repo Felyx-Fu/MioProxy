@@ -1,4 +1,4 @@
-import { ArrowDownAZ, Check, ChevronDown, ChevronRight, Eye, Gauge, LocateFixed, Network, RefreshCw, Search } from "lucide-react";
+import { ArrowDownAZ, Check, ChevronDown, ChevronRight, Eye, Gauge, Globe2, LocateFixed, Network, RefreshCw, Search, Star } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import type { CoreMode, ProxiesResponse, ProxyDelayContext, ProxyGroup } from "../api/mihomo";
@@ -7,10 +7,13 @@ import { useI18n } from "../i18n/I18nProvider";
 import type { MessageKey } from "../locales/en-US";
 import { latencyTone } from "../utils/format";
 import { createProxyDelayContext, proxyDelayBusyKey, proxyDelayKey } from "../utils/latency";
+import { classifyNodeRegion, NODE_REGION_IDS, NODE_REGION_INFO, type NodeRegion, type NodeRegionInfo } from "../utils/nodeRegion";
+import { loadFavoriteNodes, saveFavoriteNodes } from "../utils/proxyPreferences";
 
 const GROUP_TYPES = new Set(["Selector", "URLTest", "Fallback", "LoadBalance"]);
 const CORE_MODES: CoreMode[] = ["rule", "global", "direct"];
 type SortMode = "name" | "delay";
+type RegionFilter = "all" | "favorites" | NodeRegion;
 
 const GROUP_TYPE_LABELS: Record<string, MessageKey> = {
   Selector: "proxies.groupType.selector",
@@ -37,6 +40,10 @@ type GroupModel = {
   allNodes: string[];
   nodes: string[];
   matchesGroup: boolean;
+  filter: RegionFilter;
+  favoriteCount: number;
+  regionCounts: Record<NodeRegion, number>;
+  regionByNode: Map<string, NodeRegionInfo>;
 };
 
 type ContextMenuState = {
@@ -46,7 +53,18 @@ type ContextMenuState = {
   node: string;
 };
 
-export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByKey, delayStatusByKey, profilesLoaded, profileCount, onRefresh, onModeChange, onSelect, onDelay }: {
+let runtimePreferenceScopeCounter = 0;
+
+function createRuntimePreferenceScope() {
+  runtimePreferenceScopeCounter += 1;
+  return `runtime:${Date.now().toString(36)}:${runtimePreferenceScopeCounter}`;
+}
+
+function emptyRegionCounts(): Record<NodeRegion, number> {
+  return Object.fromEntries(NODE_REGION_IDS.map((region) => [region, 0])) as Record<NodeRegion, number>;
+}
+
+export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByKey, delayStatusByKey, profilesLoaded, profileCount, preferenceProfileId, onRefresh, onModeChange, onSelect, onDelay }: {
   data: ProxiesResponse | null;
   mode: CoreMode | null;
   modeBusy: boolean;
@@ -56,18 +74,34 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
   delayStatusByKey: Record<string, "available" | "unavailable">;
   profilesLoaded: boolean;
   profileCount: number;
+  preferenceProfileId?: string | null;
   onRefresh: () => void;
   onModeChange: (mode: CoreMode) => Promise<void>;
   onSelect: (group: string, proxy: string) => Promise<void>;
   onDelay: (context: ProxyDelayContext) => Promise<void>;
 }) {
   const { t } = useI18n();
+  const normalizedProfileId = preferenceProfileId?.trim() || null;
+  const profilePreferenceScope = normalizedProfileId ? `profile:${normalizedProfileId}` : null;
+  const runtimePreferenceScopeRef = useRef<string | null>(null);
+  if (!runtimePreferenceScopeRef.current) runtimePreferenceScopeRef.current = createRuntimePreferenceScope();
+  const preferenceScope = profilePreferenceScope ?? runtimePreferenceScopeRef.current;
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortMode>("name");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  const [groupFilters, setGroupFilters] = useState<Record<string, RegionFilter>>({});
   const [inspectedNode, setInspectedNode] = useState<{ group: string; node: string } | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const favoriteNodesRef = useRef<Set<string>>(new Set(profilePreferenceScope ? loadFavoriteNodes(profilePreferenceScope) : []));
+  const [favoriteNodes, setFavoriteNodes] = useState<Set<string>>(() => new Set(favoriteNodesRef.current));
   const expansionInitialized = useRef(false);
+
+  useEffect(() => {
+    const next = new Set(profilePreferenceScope ? loadFavoriteNodes(profilePreferenceScope) : []);
+    favoriteNodesRef.current = next;
+    setFavoriteNodes(next);
+    setGroupFilters({});
+  }, [preferenceScope, profilePreferenceScope]);
 
   const groups = useMemo(() => {
     const runtimeGroups = Object.entries(data?.proxies ?? {}).filter(([, value]) => GROUP_TYPES.has(value.type ?? ""));
@@ -103,22 +137,57 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
     setInspectedNode((current) => current && validNames.has(current.group) ? current : null);
   }, [groups]);
 
+  useEffect(() => {
+    const validNames = new Set(groups.map(([name]) => name));
+    setGroupFilters((current) => {
+      const next = Object.fromEntries(Object.entries(current).filter(([name]) => validNames.has(name))) as Record<string, RegionFilter>;
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, [groups]);
+
+  function toggleFavorite(node: string) {
+    const next = new Set(favoriteNodesRef.current);
+    if (next.has(node)) next.delete(node);
+    else next.add(node);
+    favoriteNodesRef.current = next;
+    setFavoriteNodes(next);
+    if (profilePreferenceScope) saveFavoriteNodes(profilePreferenceScope, next);
+  }
+
+  function setGroupFilter(group: string, filter: RegionFilter) {
+    setGroupFilters((current) => ({ ...current, [group]: filter }));
+  }
+
   const term = query.trim().toLocaleLowerCase();
   const groupModels = useMemo<GroupModel[]>(() => groups
     .map(([name, group]) => {
       const allNodes = [...(group.all ?? [])];
       const matchesGroup = Boolean(term) && name.toLocaleLowerCase().includes(term);
+      const filter = groupFilters[name] ?? "all";
+      const regionCounts = emptyRegionCounts();
+      const regionByNode = new Map<string, NodeRegionInfo>();
+      for (const node of allNodes) {
+        const region = classifyNodeRegion(node);
+        regionCounts[region.id] += 1;
+        regionByNode.set(node, region);
+      }
+      const favoriteCount = allNodes.filter((node) => favoriteNodes.has(node)).length;
       const nodes = allNodes
-        .filter((node) => !term || matchesGroup || node.toLocaleLowerCase().includes(term))
+        .filter((node) => {
+          const matchesSearch = !term || matchesGroup || node.toLocaleLowerCase().includes(term);
+          const region = regionByNode.get(node)?.id ?? "unknown";
+          const matchesFilter = filter === "all" || (filter === "favorites" ? favoriteNodes.has(node) : region === filter);
+          return matchesSearch && matchesFilter;
+        })
         .sort((a, b) => sort === "delay"
           ? (delayByKey[proxyDelayKey(createProxyDelayContext(name, group, a, data?.proxies[a]))] ?? Number.POSITIVE_INFINITY)
             - (delayByKey[proxyDelayKey(createProxyDelayContext(name, group, b, data?.proxies[b]))] ?? Number.POSITIVE_INFINITY)
             || a.localeCompare(b)
           : a.localeCompare(b));
-      return { name, group, allNodes, nodes, matchesGroup };
+      return { name, group, allNodes, nodes, matchesGroup, filter, favoriteCount, regionCounts, regionByNode };
     })
     .filter((model) => !term || model.matchesGroup || model.nodes.length > 0),
-  [data, delayByKey, groups, sort, term]);
+  [data, delayByKey, favoriteNodes, groupFilters, groups, sort, term]);
 
   const totalNodes = groups.reduce((total, [, group]) => total + (group.all?.length ?? 0), 0);
   const focusedModel = groupModels.find((model) => model.name === inspectedNode?.group) ?? groupModels[0] ?? null;
@@ -254,6 +323,24 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
                   </button>
 
                   {expanded && <div id={`${groupId}-content`} className="proxy-strategy-content">
+                    <div className="proxy-region-filters" role="group" aria-label={`${model.name} ${t("proxies.filter.label")}`}>
+                      <button className={`proxy-filter-chip${model.filter === "all" ? " active" : ""}`} type="button" aria-pressed={model.filter === "all"} onClick={() => setGroupFilter(model.name, "all")}>
+                        <span>{t("proxies.filter.all")}</span><strong>{model.allNodes.length}</strong>
+                      </button>
+                      {(model.favoriteCount > 0 || model.filter === "favorites") && (
+                        <button className={`proxy-filter-chip${model.filter === "favorites" ? " active" : ""}`} type="button" aria-pressed={model.filter === "favorites"} onClick={() => setGroupFilter(model.name, "favorites")}>
+                          <Star size={12} fill="currentColor" aria-hidden="true" /><span>{t("proxies.filter.favorites")}</span><strong>{model.favoriteCount}</strong>
+                        </button>
+                      )}
+                      {NODE_REGION_IDS.filter((region) => model.regionCounts[region] > 0).map((region) => {
+                        const info = NODE_REGION_INFO[region];
+                        return (
+                          <button key={region} className={`proxy-filter-chip${model.filter === region ? " active" : ""}`} type="button" aria-pressed={model.filter === region} onClick={() => setGroupFilter(model.name, region)}>
+                            {info.flag ? <span aria-hidden="true">{info.flag}</span> : <Globe2 size={12} aria-hidden="true" />}<span>{t(info.labelKey)}</span><strong>{model.regionCounts[region]}</strong>
+                          </button>
+                        );
+                      })}
+                    </div>
                     {model.nodes.length ? (
                       <div className="proxy-node-grid" role="list" aria-label={`${model.name} ${t("proxies.table.nodesLabel")}`}>
                         {model.nodes.map((node) => {
@@ -266,6 +353,8 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
                           const testing = busyProxy === proxyDelayBusyKey(delayContext);
                           const selecting = busyProxy === `${model.name}:${node}`;
                           const type = data?.proxies[node]?.type ?? "—";
+                          const region = model.regionByNode.get(node) ?? classifyNodeRegion(node);
+                          const favorite = favoriteNodes.has(node);
                           return (
                             <article
                               key={node}
@@ -280,7 +369,8 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
                               onContextMenu={(event) => openContextMenu(event, model.name, node)}
                               onKeyDown={(event) => moveSelection(event, model, node)}
                             >
-                              <div className="proxy-node-heading"><strong title={node}>{node}</strong>{active && <span className="row-badge">{t("proxies.state.selected")}</span>}</div>
+                              <div className="proxy-node-heading"><strong title={node}>{node}</strong><span className="proxy-node-heading-actions">{active && <span className="row-badge">{t("proxies.state.selected")}</span>}<button className={`proxy-favorite-button${favorite ? " active" : ""}`} type="button" aria-pressed={favorite} aria-label={t(favorite ? "proxies.favorite.remove" : "proxies.favorite.add", { name: node })} title={t(favorite ? "proxies.favorite.remove" : "proxies.favorite.add", { name: node })} onClick={(event) => { event.stopPropagation(); toggleFavorite(node); }} onDoubleClick={(event) => event.stopPropagation()}><Star size={14} fill={favorite ? "currentColor" : "none"} aria-hidden="true" /></button></span></div>
+                              <div className="proxy-node-region">{region.flag ? <span aria-hidden="true">{region.flag}</span> : <Globe2 size={12} aria-hidden="true" />}<span>{t(region.labelKey)}</span></div>
                               <div className="proxy-node-meta"><span>{type}</span><StateText tone={selecting || testing ? "warning" : delayStatus === "unavailable" ? "error" : delay === undefined ? "muted" : "success"}>{selecting ? t("proxies.state.switching") : testing ? t("proxies.state.testing") : delayStatus === "unavailable" ? t("proxies.state.unavailable") : delay === undefined ? t("proxies.state.notTested") : t("proxies.state.available")}</StateText></div>
                               <div className="proxy-node-footer">
                                 <button className={`table-link latency-${delayStatus === "unavailable" ? "slow" : latencyTone(delay)}`} type="button" onClick={(event) => { event.stopPropagation(); void onDelay(delayContext); }} disabled={busyProxy !== null}>
@@ -292,7 +382,7 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
                           );
                         })}
                       </div>
-                    ) : <div className="table-empty"><Search size={18} /><span>{t("proxies.empty.noSearchResults")}</span></div>}
+                    ) : <div className="table-empty"><Search size={18} /><span>{t(model.filter === "favorites" ? "proxies.empty.noFavorites" : model.filter === "all" ? "proxies.empty.noSearchResults" : "proxies.empty.noFilterResults")}</span></div>}
                   </div>}
                 </section>
               );
