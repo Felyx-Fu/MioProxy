@@ -24,7 +24,14 @@ import { useLogs } from "./hooks/useLogs";
 import { isNativeRuntime } from "./appearance/AppearanceProvider";
 import { currentNodeDelayContext, proxyDelayBusyKey, proxyDelayKey } from "./utils/latency";
 
-export default function App() {
+export type AppInitialState = {
+  selectedProfileId?: string | null;
+  appliedProfileSession?: { id: string; name: string } | null;
+  diagnosticPath?: string | null;
+};
+
+export default function App({ initialState }: { initialState?: AppInitialState } = {}) {
+  const initialSelectedProfileId = initialState?.selectedProfileId ?? null;
   const [page, setPage] = useState<Page>("home");
   const [status, setStatus] = useState<CoreStatus | null>(null);
   const [coreState, setCoreState] = useState<CoreState>("starting");
@@ -32,8 +39,8 @@ export default function App() {
   const [proxies, setProxies] = useState<ProxiesResponse | null>(null);
   const [activeProxyGroup, setActiveProxyGroup] = useState("PROXY");
   const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
-  const [appliedProfileSession, setAppliedProfileSession] = useState<{ id: string; name: string } | null>(null);
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(initialSelectedProfileId);
+  const [appliedProfileSession, setAppliedProfileSession] = useState<{ id: string; name: string } | null>(initialState?.appliedProfileSession ?? null);
   const [proxyStatus, setProxyStatus] = useState<SystemProxyStatus | null>(null);
   const [proxyState, setProxyState] = useState<ProxyState>("disabled");
   const [proxyPathState, setProxyPathState] = useState<ProxyPathState>("unknown");
@@ -61,7 +68,7 @@ export default function App() {
   const [coreUpdate, setCoreUpdate] = useState<CoreUpdateStatus | null>(null);
   const [coreUpdateBusy, setCoreUpdateBusy] = useState(false);
   const [diagnosticBusy, setDiagnosticBusy] = useState(false);
-  const [diagnosticPath, setDiagnosticPath] = useState<string | null>(null);
+  const [diagnosticPath, setDiagnosticPath] = useState<string | null>(initialState?.diagnosticPath ?? null);
   const [serviceConnection, setServiceConnection] = useState<ServiceConnectionStatus | null>(null);
   const [serviceReconnectVisible, setServiceReconnectVisible] = useState(false);
   const [tunSnapshot, setTunSnapshot] = useState<TunStatusSnapshot | null>(null);
@@ -369,19 +376,21 @@ export default function App() {
   useEffect(() => {
     void mihomoApi.profileList().then((next) => {
       setProfiles(next);
-      setSelectedProfileId((current) => current ?? next[0]?.id ?? null);
+      setSelectedProfileId((current) => current ?? initialSelectedProfileId ?? next[0]?.id ?? null);
       setProfilesLoaded(true);
     }).catch((e) => {
       setProfilesLoaded(true);
       setError(errorMessage(e));
     });
-  }, []);
+  }, [initialSelectedProfileId]);
 
   useLayoutEffect(() => {
     setSelectedProfileId((current) => current && profiles.some((profile) => profile.id === current)
       ? current
-      : profiles[0]?.id ?? null);
-  }, [profiles]);
+      : initialSelectedProfileId && profiles.some((profile) => profile.id === initialSelectedProfileId)
+        ? initialSelectedProfileId
+        : profiles[0]?.id ?? null);
+  }, [initialSelectedProfileId, profiles]);
 
   useEffect(() => {
     let active = true;
