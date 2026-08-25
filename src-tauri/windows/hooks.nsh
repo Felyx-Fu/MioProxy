@@ -11,6 +11,13 @@
     MessageBox MB_ICONSTOP|MB_OK "无法查询 MioProxy Service，安装已取消。"
     Abort
   ${EndIf}
+  ; A queued SCM restart cannot be canceled by stop/delete. Disable the
+  ; service first so maintenance cannot be undone by a delayed recovery.
+  ExecWait '"$SYSDIR\sc.exe" config MioProxyService start= disabled' $0
+  ${If} $0 != 0
+    MessageBox MB_ICONSTOP|MB_OK "无法暂时禁用 MioProxy Service 自动启动，安装已取消。"
+    Abort
+  ${EndIf}
   ExecWait '"$SYSDIR\sc.exe" stop MioProxyService' $0
   StrCpy $1 0
 service_stop_wait:
@@ -61,6 +68,13 @@ service_preinstall_done:
     Goto service_preuninstall_done
   ${ElseIf} $0 != 0
     MessageBox MB_ICONSTOP|MB_OK "无法查询 MioProxy Service，卸载已取消。"
+    Abort
+  ${EndIf}
+  ; A queued SCM restart cannot be canceled by stop/delete. Disable the
+  ; service first so uninstall cannot be undone by a delayed recovery.
+  ExecWait '"$SYSDIR\sc.exe" config MioProxyService start= disabled' $0
+  ${If} $0 != 0
+    MessageBox MB_ICONSTOP|MB_OK "无法暂时禁用 MioProxy Service 自动启动，卸载已取消。"
     Abort
   ${EndIf}
   ExecWait '"$SYSDIR\sc.exe" stop MioProxyService' $0

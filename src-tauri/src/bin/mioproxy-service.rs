@@ -5,6 +5,7 @@ mod windows_service_host {
         ffi::OsString,
         fs,
         path::{Path, PathBuf},
+        process::Command,
         sync::mpsc,
         thread,
         time::Duration,
@@ -15,8 +16,9 @@ mod windows_service_host {
     use windows_service::{
         define_windows_service,
         service::{
-            ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl,
-            ServiceExitCode, ServiceInfo, ServiceStartType, ServiceState, ServiceStatus,
+            Service, ServiceAccess, ServiceAction, ServiceActionType, ServiceControl,
+            ServiceControlAccept, ServiceErrorControl, ServiceExitCode, ServiceFailureActions,
+            ServiceFailureResetPeriod, ServiceInfo, ServiceStartType, ServiceState, ServiceStatus,
             ServiceType,
         },
         service_control_handler::{self, ServiceControlHandlerResult},
@@ -25,6 +27,12 @@ mod windows_service_host {
     };
 
     const SERVICE_DISPLAY_NAME: &str = "MioProxy Service";
+    const FAILURE_RESET_PERIOD_SECS: u64 = 60 * 60;
+    const FAILURE_RESTART_DELAYS_SECS: [u64; 3] = [5, 15, 30];
+    // With this flag disabled, SCM only queues failure actions when the
+    // process exits without reporting SERVICE_STOPPED. Normal Stop/Shutdown
+    // therefore remains intentional, including installer and uninstall stops.
+    const FAILURE_ACTIONS_ON_NON_CRASH_FAILURES: bool = false;
 
     pub fn main() -> Result<(), String> {
         let args = env::args_os().skip(1).collect::<Vec<_>>();
@@ -101,8 +109,13 @@ mod windows_service_host {
 
     #[cfg(test)]
     mod tests {
-        use super::{diagnostic_port, has_flag};
-        use std::ffi::OsString;
+        use super::{
+            configured_failure_actions, diagnostic_port, has_flag,
+            FAILURE_ACTIONS_ON_NON_CRASH_FAILURES, FAILURE_RESET_PERIOD_SECS,
+            FAILURE_RESTART_DELAYS_SECS,
+        };
+        use std::{ffi::OsString, time::Duration};
+        use windows_service::service::{ServiceActionType, ServiceFailureResetPeriod};
 
         #[test]
         fn dispatcher_requires_explicit_service_mode() {
@@ -124,6 +137,44 @@ mod windows_service_host {
                 diagnostic_port(&[OsString::from("--port-diagnostics"), OsString::from("0")])
                     .is_err()
             );
+        }
+
+        #[test]
+        fn configures_bounded_failure_actions_with_terminal_noop() {
+            let configuration = configured_failure_actions();
+            assert_eq!(
+                configuration.reset_period,
+                ServiceFailureResetPeriod::After(Duration::from_secs(FAILURE_RESET_PERIOD_SECS))
+            );
+            let actions = configuration.actions.expect("failure actions configured");
+            assert_eq!(actions.len(), FAILURE_RESTART_DELAYS_SECS.len() + 1);
+            assert_eq!(
+                actions
+                    .iter()
+                    .map(|action| action.action_type)
+                    .collect::<Vec<_>>(),
+                vec![
+                    ServiceActionType::Restart,
+                    ServiceActionType::Restart,
+                    ServiceActionType::Restart,
+                    ServiceActionType::None,
+                ]
+            );
+            assert_eq!(
+                actions
+                    .iter()
+                    .map(|action| action.delay.as_secs())
+                    .collect::<Vec<_>>(),
+                vec![5, 15, 30, 0]
+            );
+            assert_eq!(actions.last().unwrap().action_type, ServiceActionType::None);
+        }
+
+        #[test]
+        fn excludes_intentional_stopped_status_from_failure_actions() {
+            let applies_to_non_crash_failures =
+                std::hint::black_box(FAILURE_ACTIONS_ON_NON_CRASH_FAILURES);
+            assert!(!applies_to_non_crash_failures);
         }
     }
 
@@ -202,6 +253,9 @@ mod windows_service_host {
             }
             Err(error) => return Err(format!("打开现有 MioProxy Service 失败：{error}")),
         };
+        if existing_service.is_some() {
+            disable_service_start_for_maintenance()?;
+        }
         if existing_service.as_ref().is_some_and(|service| {
             service
                 .query_status()
@@ -268,12 +322,68 @@ mod windows_service_host {
         service
             .set_description("Owns MioProxy Mihomo, TUN, routes and recovery lifecycle")
             .map_err(|e| format!("写入 Service 描述失败：{e}"))?;
+        configure_failure_actions(&service)?;
         match service.start::<OsString>(&[]) {
             Ok(()) => {}
             Err(windows_service::Error::Winapi(error)) if error.raw_os_error() == Some(1056) => {}
             Err(error) => return Err(format!("启动 MioProxy Service 失败：{error}")),
         }
         Ok(())
+    }
+
+    fn configured_failure_actions() -> ServiceFailureActions {
+        let mut actions = FAILURE_RESTART_DELAYS_SECS
+            .into_iter()
+            .map(|delay| ServiceAction {
+                action_type: ServiceActionType::Restart,
+                delay: Duration::from_secs(delay),
+            })
+            .collect::<Vec<_>>();
+        // Windows repeats the last action after cActions is exhausted. Keep
+        // the final action non-restarting so recovery remains bounded.
+        actions.push(ServiceAction {
+            action_type: ServiceActionType::None,
+            delay: Duration::default(),
+        });
+        ServiceFailureActions {
+            reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(
+                FAILURE_RESET_PERIOD_SECS,
+            )),
+            reboot_msg: None,
+            command: None,
+            actions: Some(actions),
+        }
+    }
+
+    fn configure_failure_actions(service: &Service) -> Result<(), String> {
+        service
+            .update_failure_actions(configured_failure_actions())
+            .map_err(|error| format!("配置 MioProxy Service 自动恢复动作失败：{error}"))?;
+        service
+            .set_failure_actions_on_non_crash_failures(FAILURE_ACTIONS_ON_NON_CRASH_FAILURES)
+            .map_err(|error| format!("配置 MioProxy Service 停止语义失败：{error}"))
+    }
+
+    fn disable_service_start_for_maintenance() -> Result<(), String> {
+        let sc_path = env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+            .join("System32")
+            .join("sc.exe");
+        let status = Command::new(sc_path)
+            .args(["config", SERVICE_NAME, "start=", "disabled"])
+            .status()
+            .map_err(|error| format!("禁用 MioProxy Service 自动启动失败：{error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "禁用 MioProxy Service 自动启动失败，sc.exe 退出码：{}",
+                status
+                    .code()
+                    .map_or_else(|| "未知".to_string(), |code| code.to_string())
+            ))
+        }
     }
 
     fn uninstall(ignore_missing: bool) -> Result<(), String> {
@@ -291,6 +401,7 @@ mod windows_service_host {
             }
             Err(error) => return Err(format!("打开 MioProxy Service 失败：{error}")),
         };
+        disable_service_start_for_maintenance()?;
         let status = service
             .query_status()
             .map_err(|e| format!("查询 MioProxy Service 状态失败：{e}"))?;
@@ -390,16 +501,20 @@ mod windows_service_host {
             mihomo_path,
             shutdown_receiver,
         ));
-        let exit_code = if result.is_ok() { 0 } else { 1 };
-        let _ = status_handle.set_service_status(ServiceStatus {
-            service_type: ServiceType::OWN_PROCESS,
-            current_state: ServiceState::Stopped,
-            controls_accepted: ServiceControlAccept::empty(),
-            exit_code: ServiceExitCode::Win32(exit_code),
-            checkpoint: 0,
-            wait_hint: Duration::default(),
-            process_id: None,
-        });
+        if result.is_ok() {
+            // Only report SERVICE_STOPPED after a controlled shutdown. If the
+            // daemon fails, let the process exit without that status so SCM
+            // classifies it as a failure and applies the bounded policy.
+            let _ = status_handle.set_service_status(ServiceStatus {
+                service_type: ServiceType::OWN_PROCESS,
+                current_state: ServiceState::Stopped,
+                controls_accepted: ServiceControlAccept::empty(),
+                exit_code: ServiceExitCode::NO_ERROR,
+                checkpoint: 0,
+                wait_hint: Duration::default(),
+                process_id: None,
+            });
+        }
         result
     }
 }
