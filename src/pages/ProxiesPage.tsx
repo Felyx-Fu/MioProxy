@@ -445,16 +445,19 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
       </section>
 
       {groups.length === 0 ? (
-        <div className="empty-card surface-panel"><Network size={24} /><strong>{t(!profilesLoaded ? "proxies.empty.loadingTitle" : profileCount === 0 ? "proxies.empty.noProfilesTitle" : "proxies.empty.noGroupsTitle")}</strong><p>{t(!profilesLoaded ? "proxies.empty.loadingDescription" : profileCount === 0 ? "proxies.empty.noProfilesDescription" : "proxies.empty.noGroupsDescription")}</p></div>
+        <div className="empty-card surface-panel proxy-empty-card"><Network size={22} /><strong>{t(!profilesLoaded ? "proxies.empty.loadingTitle" : profileCount === 0 ? "proxies.empty.noProfilesTitle" : "proxies.empty.noGroupsTitle")}</strong><p>{t(!profilesLoaded ? "proxies.empty.loadingDescription" : profileCount === 0 ? "proxies.empty.noProfilesDescription" : "proxies.empty.noGroupsDescription")}</p></div>
       ) : (
         <div className="proxy-center-stack">
           <div className="proxy-center-toolbar surface-panel">
             <label className="search-box"><Search size={15} /><input data-page-search value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("proxies.search.placeholder")} aria-label={t("proxies.search.label")} /></label>
             <label className="select-field"><ArrowDownAZ size={14} /><select value={sort} onChange={(event) => setSort(event.target.value as SortMode)} aria-label={t("proxies.sort.label")}><option value="name">{t("proxies.sort.name")}</option><option value="delay">{t("proxies.sort.latency")}</option></select></label>
             <button className="toolbar-button" type="button" onClick={() => focusedContext && void onDelay(focusedContext)} disabled={!focusedContext || busyProxy !== null}><Gauge size={15} />{t("proxies.action.testSelected")}</button>
-            <button className="icon-button" type="button" onClick={locateFocused} disabled={!focusedModel?.group.now} aria-label={t("proxies.action.locate")} title={t("proxies.action.locate")}><LocateFixed size={15} /></button>
-            <button className="icon-button" type="button" onClick={onRefresh} disabled={loading} aria-label={t("proxies.action.refresh")} title={t("proxies.action.refresh")}><RefreshCw size={15} className={loading ? "spin" : ""} /></button>
-            <button className="icon-button" type="button" onClick={resetDisplayOrder} disabled={!hasCustomDisplayOrder} aria-label={t("proxies.reorder.reset")} title={t("proxies.reorder.reset")}><RotateCcw size={15} /></button>
+            <span className="proxy-toolbar-divider" aria-hidden="true" />
+            <div className="proxy-toolbar-icon-actions">
+              <button className="icon-button" type="button" onClick={locateFocused} disabled={!focusedModel?.group.now} aria-label={t("proxies.action.locate")} title={t("proxies.action.locate")}><LocateFixed size={15} /></button>
+              <button className="icon-button" type="button" onClick={onRefresh} disabled={loading} aria-label={t("proxies.action.refresh")} title={t("proxies.action.refresh")}><RefreshCw size={15} className={loading ? "spin" : ""} /></button>
+              <button className="icon-button" type="button" onClick={resetDisplayOrder} disabled={!hasCustomDisplayOrder} aria-label={t("proxies.reorder.reset")} title={t("proxies.reorder.reset")}><RotateCcw size={15} /></button>
+            </div>
           </div>
 
           <div className="proxy-strategy-stack">
@@ -480,9 +483,9 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
                       <span>{model.group.type ?? t("proxies.groups.fallbackType")} · {t(GROUP_TYPE_LABELS[model.group.type ?? ""] ?? "proxies.groups.fallbackType")}</span>
                     </span>
                     <span className="proxy-strategy-summary">
-                      <span><small>{t("proxies.group.current")}</small><strong>{model.group.now ?? "—"}</strong></span>
-                      <span><small>{t("proxies.group.nodeCount")}</small><strong>{model.allNodes.length}</strong></span>
-                      <span><small>{t("proxies.table.latency")}</small><strong className={`latency-${activeDelayStatus === "unavailable" ? "slow" : latencyTone(activeDelay)}`}>{activeDelayStatus === "unavailable" ? t("proxies.state.unavailable") : activeDelay === undefined ? "—" : `${activeDelay} ms`}</strong></span>
+                      <span className="proxy-group-metric proxy-group-metric-current"><small>{t("proxies.group.current")}</small><strong>{model.group.now ?? "—"}</strong></span>
+                      <span className="proxy-group-metric proxy-group-metric-count"><small>{t("proxies.group.nodeCount")}</small><strong>{model.allNodes.length}</strong></span>
+                      <span className="proxy-group-metric proxy-group-metric-latency"><small>{t("proxies.table.latency")}</small><strong className={`latency-${activeDelayStatus === "unavailable" ? "slow" : latencyTone(activeDelay)}`}>{activeDelayStatus === "unavailable" ? t("proxies.state.unavailable") : activeDelay === undefined ? "—" : `${activeDelay} ms`}</strong></span>
                     </span>
                     {expanded ? <ChevronDown size={17} aria-hidden="true" /> : <ChevronRight size={17} aria-hidden="true" />}
                   </button>
@@ -490,7 +493,7 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
                   {expanded && <div id={`${groupId}-content`} className="proxy-strategy-content">
                     <div className="proxy-region-filter-toolbar">
                       <div className="proxy-region-filters" role="group" aria-label={`${model.name} ${t("proxies.filter.label")}`}>
-                        <button className={`proxy-filter-chip${model.filter === "all" ? " active" : ""}`} type="button" aria-pressed={model.filter === "all"} onClick={() => setGroupFilter(model.name, "all")}>
+                        <button className={`proxy-filter-chip proxy-filter-chip-all${model.filter === "all" ? " active" : ""}`} type="button" aria-pressed={model.filter === "all"} onClick={() => setGroupFilter(model.name, "all")}>
                           <span>{t("proxies.filter.all")}</span><strong>{model.allNodes.length}</strong>
                         </button>
                         {visibleRegionEntries.map((entry) => {
@@ -555,11 +558,11 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
                               onContextMenu={(event) => openContextMenu(event, model.name, node)}
                               onKeyDown={(event) => moveSelection(event, model, node)}
                             >
-                              <div className="proxy-node-heading"><strong title={node}>{node}</strong><span className="proxy-node-heading-actions">{active && <span className="row-badge">{t("proxies.state.selected")}</span>}<button className={`proxy-favorite-button${favorite ? " active" : ""}`} type="button" aria-pressed={favorite} aria-label={t(favorite ? "proxies.favorite.remove" : "proxies.favorite.add", { name: node })} title={t(favorite ? "proxies.favorite.remove" : "proxies.favorite.add", { name: node })} onClick={(event) => { event.stopPropagation(); toggleFavorite(node); }} onDoubleClick={(event) => event.stopPropagation()}><Star size={14} fill={favorite ? "currentColor" : "none"} aria-hidden="true" /></button></span></div>
+                              <div className="proxy-node-heading"><strong title={node}>{node}</strong><span className="proxy-node-heading-actions">{active && <span className="row-badge proxy-node-selected">{t("proxies.state.selected")}</span>}<button className={`proxy-favorite-button${favorite ? " active" : ""}`} type="button" aria-pressed={favorite} aria-label={t(favorite ? "proxies.favorite.remove" : "proxies.favorite.add", { name: node })} title={t(favorite ? "proxies.favorite.remove" : "proxies.favorite.add", { name: node })} onClick={(event) => { event.stopPropagation(); toggleFavorite(node); }} onDoubleClick={(event) => event.stopPropagation()}><Star size={14} fill={favorite ? "currentColor" : "none"} aria-hidden="true" /></button></span></div>
                               <div className="proxy-node-region">{region.flag ? <span aria-hidden="true">{region.flag}</span> : <Globe2 size={12} aria-hidden="true" />}<span>{t(region.labelKey)}</span></div>
-                              <div className="proxy-node-meta"><span>{type}</span><StateText tone={selecting || testing ? "warning" : delayStatus === "unavailable" ? "error" : delay === undefined ? "muted" : "success"}>{selecting ? t("proxies.state.switching") : testing ? t("proxies.state.testing") : delayStatus === "unavailable" ? t("proxies.state.unavailable") : delay === undefined ? t("proxies.state.notTested") : t("proxies.state.available")}</StateText></div>
+                              <div className="proxy-node-meta"><span className="proxy-node-protocol">{type}</span><StateText tone={selecting || testing ? "warning" : delayStatus === "unavailable" ? "error" : delay === undefined ? "muted" : "success"}>{selecting ? t("proxies.state.switching") : testing ? t("proxies.state.testing") : delayStatus === "unavailable" ? t("proxies.state.unavailable") : delay === undefined ? t("proxies.state.notTested") : t("proxies.state.available")}</StateText></div>
                               <div className="proxy-node-footer">
-                                <button className={`table-link latency-${delayStatus === "unavailable" ? "slow" : latencyTone(delay)}`} type="button" onClick={(event) => { event.stopPropagation(); void onDelay(delayContext); }} disabled={busyProxy !== null}>
+                                <button className={`table-link proxy-node-latency latency-${delayStatus === "unavailable" ? "slow" : latencyTone(delay)}`} type="button" onClick={(event) => { event.stopPropagation(); void onDelay(delayContext); }} disabled={busyProxy !== null}>
                                   <Gauge size={12} />{testing ? t("proxies.state.testing") : delayStatus === "unavailable" ? t("proxies.action.retry") : delay === undefined ? t("proxies.action.test") : `${delay} ms`}
                                 </button>
                                 <button className="compact-action" type="button" onClick={(event) => { event.stopPropagation(); void onSelect(model.name, node); }} disabled={active || busyProxy !== null}>{t("proxies.action.useNode")}</button>
@@ -568,12 +571,12 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
                           );
                         })}
                       </div>
-                    ) : <div className="table-empty"><Search size={18} /><span>{t(model.filter === "favorites" ? "proxies.empty.noFavorites" : model.filter === "all" ? "proxies.empty.noSearchResults" : "proxies.empty.noFilterResults")}</span></div>}
+                    ) : <div className="table-empty proxy-node-empty"><Search size={17} /><span>{t(model.filter === "favorites" ? "proxies.empty.noFavorites" : model.filter === "all" ? "proxies.empty.noSearchResults" : "proxies.empty.noFilterResults")}</span></div>}
                   </div>}
                 </section>
               );
             })}
-            {term && !groupModels.length && <div className="empty-card surface-panel"><Search size={20} /><span>{t("proxies.empty.noSearchResults")}</span></div>}
+            {term && !groupModels.length && <div className="empty-card surface-panel proxy-search-empty"><Search size={19} /><span>{t("proxies.empty.noSearchResults")}</span></div>}
           </div>
         </div>
       )}
@@ -592,5 +595,5 @@ function nodeElementId(group: string, node: string) {
 }
 
 function StateText({ tone, children }: { tone: "success" | "warning" | "error" | "muted"; children: ReactNode }) {
-  return <span className={`state-text tone-${tone}`}><span className="state-dot" />{children}</span>;
+  return <span className={`state-text proxy-node-state tone-${tone}`}><span className="state-dot" />{children}</span>;
 }
