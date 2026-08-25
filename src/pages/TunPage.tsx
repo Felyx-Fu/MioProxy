@@ -30,7 +30,7 @@ export function TunPage({ profileId, coreRunning, systemProxyEnabled, snapshot, 
         <button className={willDisable ? "danger-button" : "primary-button"} type="button" onClick={onRequestTransition} disabled={loading || !snapshot || transitioning || (!willDisable && blockedForEnable)} aria-pressed={Boolean(snapshot?.desiredEnabled)}><CirclePower size={15} />{loading || transitioning ? t("tun.working") : external ? t("tun.externalTun") : willDisable ? t("tun.turnOff") : projectionError ? t("tun.retry") : t("tun.turnOn")}</button>
       </header>
       {error && <div className="info-bar error" role="alert"><AlertTriangle size={16} /><span>{error}</span></div>}
-      {snapshot?.message && <div className={projectionError ? "info-bar error" : transitioning || external ? "info-bar warning" : "info-bar success"}><ShieldCheck size={16} /><span>{snapshot.message}</span></div>}
+      {snapshot?.message && <div className={projectionError ? "info-bar error" : transitioning || external ? "info-bar warning" : "info-bar success"} role={projectionError ? "alert" : "status"}><ShieldCheck size={16} /><span>{snapshot.message}</span></div>}
 
       <section className="surface-panel tun-runtime-panel">
         <div className="section-title-row"><div><h2>{t("tun.runtimeProjection")}</h2><p>{external ? t("tun.externalOwnershipDescription") : t("tun.runtimeDescription")}</p></div><span className={`state-value tone-${projectionError ? "error" : external || transitioning ? "warning" : owned ? "success" : "muted"}`}><span className="state-dot" />{external ? t("tun.stateExternal") : transitioning ? t("tun.stateTransitioning") : owned ? t("tun.stateOn") : projectionError ? t("tun.stateError") : snapshot ? t("tun.stateOff") : t("tun.stateChecking")}</span></div>
