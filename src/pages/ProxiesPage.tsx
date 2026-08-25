@@ -1,6 +1,6 @@
-import { ArrowDownAZ, Check, ChevronDown, ChevronRight, Eye, Gauge, Globe2, LocateFixed, Network, RefreshCw, Search, Star } from "lucide-react";
+import { ArrowDownAZ, Check, ChevronDown, ChevronRight, Eye, Gauge, Globe2, GripVertical, ListOrdered, LocateFixed, Network, RefreshCw, RotateCcw, Search, Star } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import type { CoreMode, ProxiesResponse, ProxyDelayContext, ProxyGroup } from "../api/mihomo";
 import { ContextMenu } from "../components/ContextMenu";
 import { useI18n } from "../i18n/I18nProvider";
@@ -8,7 +8,7 @@ import type { MessageKey } from "../locales/en-US";
 import { latencyTone } from "../utils/format";
 import { createProxyDelayContext, proxyDelayBusyKey, proxyDelayKey } from "../utils/latency";
 import { classifyNodeRegion, NODE_REGION_IDS, NODE_REGION_INFO, type NodeRegion, type NodeRegionInfo } from "../utils/nodeRegion";
-import { loadFavoriteNodes, saveFavoriteNodes } from "../utils/proxyPreferences";
+import { loadFavoriteNodes, loadGroupOrder, loadRegionOrder, mergeGroupDisplayOrder, mergeRegionDisplayOrder, saveFavoriteNodes, saveGroupOrder, saveRegionOrder, type ProxyRegionOrderEntry } from "../utils/proxyPreferences";
 
 const GROUP_TYPES = new Set(["Selector", "URLTest", "Fallback", "LoadBalance"]);
 const CORE_MODES: CoreMode[] = ["rule", "global", "direct"];
@@ -64,6 +64,33 @@ function emptyRegionCounts(): Record<NodeRegion, number> {
   return Object.fromEntries(NODE_REGION_IDS.map((region) => [region, 0])) as Record<NodeRegion, number>;
 }
 
+function moveBefore<T>(items: readonly T[], source: T, target: T): T[] {
+  const sourceIndex = items.indexOf(source);
+  const targetIndex = items.indexOf(target);
+  if (sourceIndex < 0 || targetIndex < 0 || source === target) return [...items];
+  const next = [...items];
+  next.splice(sourceIndex, 1);
+  next.splice(next.indexOf(target), 0, source);
+  return next;
+}
+
+function moveAfter<T>(items: readonly T[], source: T, target: T): T[] {
+  const sourceIndex = items.indexOf(source);
+  const targetIndex = items.indexOf(target);
+  if (sourceIndex < 0 || targetIndex < 0 || source === target) return [...items];
+  const next = [...items];
+  next.splice(sourceIndex, 1);
+  next.splice(next.indexOf(target) + 1, 0, source);
+  return next;
+}
+
+function moveRelative<T>(items: readonly T[], source: T, target: T): T[] {
+  const sourceIndex = items.indexOf(source);
+  const targetIndex = items.indexOf(target);
+  if (sourceIndex < 0 || targetIndex < 0 || source === target) return [...items];
+  return sourceIndex < targetIndex ? moveAfter(items, source, target) : moveBefore(items, source, target);
+}
+
 export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByKey, delayStatusByKey, profilesLoaded, profileCount, preferenceProfileId, onRefresh, onModeChange, onSelect, onDelay }: {
   data: ProxiesResponse | null;
   mode: CoreMode | null;
@@ -90,24 +117,38 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
   const [sort, setSort] = useState<SortMode>("name");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const [groupFilters, setGroupFilters] = useState<Record<string, RegionFilter>>({});
+  const [customGroupOrder, setCustomGroupOrder] = useState<string[] | undefined>(() => profilePreferenceScope ? loadGroupOrder(profilePreferenceScope) : undefined);
+  const [customRegionOrder, setCustomRegionOrder] = useState<ProxyRegionOrderEntry[] | undefined>(() => profilePreferenceScope ? loadRegionOrder(profilePreferenceScope) : undefined);
+  const [regionReorderMode, setRegionReorderMode] = useState(false);
   const [inspectedNode, setInspectedNode] = useState<{ group: string; node: string } | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const favoriteNodesRef = useRef<Set<string>>(new Set(profilePreferenceScope ? loadFavoriteNodes(profilePreferenceScope) : []));
   const [favoriteNodes, setFavoriteNodes] = useState<Set<string>>(() => new Set(favoriteNodesRef.current));
   const expansionInitialized = useRef(false);
+  const [draggedGroup, setDraggedGroup] = useState<string | null>(null);
+  const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
+  const [draggedRegion, setDraggedRegion] = useState<ProxyRegionOrderEntry | null>(null);
+  const [dragOverRegion, setDragOverRegion] = useState<ProxyRegionOrderEntry | null>(null);
 
   useEffect(() => {
     const next = new Set(profilePreferenceScope ? loadFavoriteNodes(profilePreferenceScope) : []);
     favoriteNodesRef.current = next;
     setFavoriteNodes(next);
+    setCustomGroupOrder(profilePreferenceScope ? loadGroupOrder(profilePreferenceScope) : undefined);
+    setCustomRegionOrder(profilePreferenceScope ? loadRegionOrder(profilePreferenceScope) : undefined);
     setGroupFilters({});
+    setRegionReorderMode(false);
+    setDraggedGroup(null);
+    setDragOverGroup(null);
+    setDraggedRegion(null);
+    setDragOverRegion(null);
   }, [preferenceScope, profilePreferenceScope]);
 
   const groups = useMemo(() => {
     const runtimeGroups = Object.entries(data?.proxies ?? {}).filter(([, value]) => GROUP_TYPES.has(value.type ?? ""));
     const groupsByName = new Map(runtimeGroups);
     const fallbackOrder = [...groupsByName.keys()].sort((a, b) => a.localeCompare(b));
-    const orderedNames = [...(data?.groupOrder ?? []), ...fallbackOrder];
+    const orderedNames = mergeGroupDisplayOrder(customGroupOrder, data?.groupOrder ?? [], fallbackOrder);
     const seen = new Set<string>();
     return orderedNames.flatMap((name) => {
       const group = groupsByName.get(name);
@@ -115,7 +156,7 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
       seen.add(name);
       return [[name, group] as const];
     });
-  }, [data]);
+  }, [customGroupOrder, data]);
 
   useEffect(() => {
     if (!groups.length) {
@@ -144,6 +185,126 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
   }, [groups]);
+
+  const regionOrder = useMemo(() => mergeRegionDisplayOrder(customRegionOrder), [customRegionOrder]);
+  const hasCustomDisplayOrder = customGroupOrder !== undefined || customRegionOrder !== undefined;
+
+  function commitGroupOrder(next: string[]) {
+    setCustomGroupOrder(next);
+    if (profilePreferenceScope) saveGroupOrder(profilePreferenceScope, next);
+  }
+
+  function moveGroupByOffset(name: string, offset: -1 | 1) {
+    const names = groups.map(([groupName]) => groupName);
+    const index = names.indexOf(name);
+    const targetIndex = index + offset;
+    if (index < 0 || targetIndex < 0 || targetIndex >= names.length) return;
+    const next = [...names];
+    [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+    commitGroupOrder(next);
+  }
+
+  function startGroupDrag(event: ReactDragEvent<HTMLElement>, name: string) {
+    event.stopPropagation();
+    setDraggedGroup(name);
+    setDragOverGroup(null);
+    event.dataTransfer?.setData("text/plain", name);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  }
+
+  function overGroup(event: ReactDragEvent<HTMLElement>, name: string) {
+    if (!draggedGroup || draggedGroup === name) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDragOverGroup(name);
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  }
+
+  function dropGroup(event: ReactDragEvent<HTMLElement>, name: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (draggedGroup && draggedGroup !== name) {
+      commitGroupOrder(moveRelative(groups.map(([groupName]) => groupName), draggedGroup, name));
+    }
+    setDraggedGroup(null);
+    setDragOverGroup(null);
+  }
+
+  function finishGroupDrag() {
+    setDraggedGroup(null);
+    setDragOverGroup(null);
+  }
+
+  function handleGroupHandleKeyDown(event: ReactKeyboardEvent<HTMLElement>, name: string) {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    event.stopPropagation();
+    moveGroupByOffset(name, event.key === "ArrowUp" ? -1 : 1);
+  }
+
+  function commitRegionOrder(next: ProxyRegionOrderEntry[]) {
+    setCustomRegionOrder(next);
+    if (profilePreferenceScope) saveRegionOrder(profilePreferenceScope, next);
+  }
+
+  function moveRegionByOffset(entry: ProxyRegionOrderEntry, offset: -1 | 1, visibleEntries: readonly ProxyRegionOrderEntry[]) {
+    const index = visibleEntries.indexOf(entry);
+    const targetIndex = index + offset;
+    if (index < 0 || targetIndex < 0 || targetIndex >= visibleEntries.length) return;
+    commitRegionOrder(moveRelative(regionOrder, entry, visibleEntries[targetIndex]));
+  }
+
+  function startRegionDrag(event: ReactDragEvent<HTMLElement>, entry: ProxyRegionOrderEntry) {
+    if (!regionReorderMode) return;
+    event.stopPropagation();
+    setDraggedRegion(entry);
+    setDragOverRegion(null);
+    event.dataTransfer?.setData("text/plain", entry);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  }
+
+  function overRegion(event: ReactDragEvent<HTMLElement>, entry: ProxyRegionOrderEntry) {
+    if (!regionReorderMode || !draggedRegion || draggedRegion === entry) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDragOverRegion(entry);
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  }
+
+  function dropRegion(event: ReactDragEvent<HTMLElement>, entry: ProxyRegionOrderEntry) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (regionReorderMode && draggedRegion && draggedRegion !== entry) {
+      commitRegionOrder(moveRelative(regionOrder, draggedRegion, entry));
+    }
+    setDraggedRegion(null);
+    setDragOverRegion(null);
+  }
+
+  function finishRegionDrag() {
+    setDraggedRegion(null);
+    setDragOverRegion(null);
+  }
+
+  function handleRegionKeyDown(event: ReactKeyboardEvent<HTMLElement>, entry: ProxyRegionOrderEntry, visibleEntries: readonly ProxyRegionOrderEntry[]) {
+    if (!regionReorderMode) return;
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown" && event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    event.stopPropagation();
+    moveRegionByOffset(entry, event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 1, visibleEntries);
+  }
+
+  function resetDisplayOrder() {
+    setCustomGroupOrder(undefined);
+    setCustomRegionOrder(undefined);
+    setRegionReorderMode(false);
+    finishGroupDrag();
+    finishRegionDrag();
+    if (profilePreferenceScope) {
+      saveGroupOrder(profilePreferenceScope, undefined);
+      saveRegionOrder(profilePreferenceScope, undefined);
+    }
+  }
 
   function toggleFavorite(node: string) {
     const next = new Set(favoriteNodesRef.current);
@@ -293,6 +454,7 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
             <button className="toolbar-button" type="button" onClick={() => focusedContext && void onDelay(focusedContext)} disabled={!focusedContext || busyProxy !== null}><Gauge size={15} />{t("proxies.action.testSelected")}</button>
             <button className="icon-button" type="button" onClick={locateFocused} disabled={!focusedModel?.group.now} aria-label={t("proxies.action.locate")} title={t("proxies.action.locate")}><LocateFixed size={15} /></button>
             <button className="icon-button" type="button" onClick={onRefresh} disabled={loading} aria-label={t("proxies.action.refresh")} title={t("proxies.action.refresh")}><RefreshCw size={15} className={loading ? "spin" : ""} /></button>
+            <button className="icon-button" type="button" onClick={resetDisplayOrder} disabled={!hasCustomDisplayOrder} aria-label={t("proxies.reorder.reset")} title={t("proxies.reorder.reset")}><RotateCcw size={15} /></button>
           </div>
 
           <div className="proxy-strategy-stack">
@@ -307,9 +469,12 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
               const activeDelay = activeKey ? delayByKey[activeKey] : undefined;
               const activeDelayStatus = activeKey ? delayStatusByKey[activeKey] : undefined;
               const globalEmphasis = mode === "global" && model.name === "GLOBAL";
+              const visibleRegionEntries = regionOrder.filter((entry) => entry === "favorites" ? model.favoriteCount > 0 || model.filter === "favorites" : model.regionCounts[entry] > 0);
+              const groupHandleLabel = `${t("proxies.reorder.handle", { name: model.name })}: ${t("proxies.reorder.moveUp")} / ${t("proxies.reorder.moveDown")}`;
               return (
-                <section key={model.name} className={`proxy-strategy-card surface-panel${globalEmphasis ? " global-emphasis" : ""}`} data-global-active={globalEmphasis ? "true" : "false"} aria-labelledby={labelId}>
+                <section key={model.name} className={`proxy-strategy-card surface-panel${globalEmphasis ? " global-emphasis" : ""}${draggedGroup === model.name ? " dragging" : ""}${dragOverGroup === model.name ? " drop-target" : ""}`} data-global-active={globalEmphasis ? "true" : "false"} aria-labelledby={labelId} onDragOver={(event) => overGroup(event, model.name)} onDrop={(event) => dropGroup(event, model.name)}>
                   <button className="proxy-strategy-header" type="button" aria-expanded={expanded} aria-controls={`${groupId}-content`} onClick={() => toggleGroup(model.name)}>
+                    <span className="proxy-group-drag-handle" draggable tabIndex={0} aria-label={groupHandleLabel} title={groupHandleLabel} aria-keyshortcuts="ArrowUp ArrowDown" onClick={(event) => event.stopPropagation()} onDragStart={(event) => startGroupDrag(event, model.name)} onDragEnd={finishGroupDrag} onKeyDown={(event) => handleGroupHandleKeyDown(event, model.name)}><GripVertical size={14} aria-hidden="true" /></span>
                     <span className="proxy-strategy-heading">
                       <strong id={labelId}>{model.name}</strong>
                       <span>{model.group.type ?? t("proxies.groups.fallbackType")} · {t(GROUP_TYPE_LABELS[model.group.type ?? ""] ?? "proxies.groups.fallbackType")}</span>
@@ -323,23 +488,44 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
                   </button>
 
                   {expanded && <div id={`${groupId}-content`} className="proxy-strategy-content">
-                    <div className="proxy-region-filters" role="group" aria-label={`${model.name} ${t("proxies.filter.label")}`}>
-                      <button className={`proxy-filter-chip${model.filter === "all" ? " active" : ""}`} type="button" aria-pressed={model.filter === "all"} onClick={() => setGroupFilter(model.name, "all")}>
-                        <span>{t("proxies.filter.all")}</span><strong>{model.allNodes.length}</strong>
-                      </button>
-                      {(model.favoriteCount > 0 || model.filter === "favorites") && (
-                        <button className={`proxy-filter-chip${model.filter === "favorites" ? " active" : ""}`} type="button" aria-pressed={model.filter === "favorites"} onClick={() => setGroupFilter(model.name, "favorites")}>
-                          <Star size={12} fill="currentColor" aria-hidden="true" /><span>{t("proxies.filter.favorites")}</span><strong>{model.favoriteCount}</strong>
+                    <div className="proxy-region-filter-toolbar">
+                      <div className="proxy-region-filters" role="group" aria-label={`${model.name} ${t("proxies.filter.label")}`}>
+                        <button className={`proxy-filter-chip${model.filter === "all" ? " active" : ""}`} type="button" aria-pressed={model.filter === "all"} onClick={() => setGroupFilter(model.name, "all")}>
+                          <span>{t("proxies.filter.all")}</span><strong>{model.allNodes.length}</strong>
                         </button>
-                      )}
-                      {NODE_REGION_IDS.filter((region) => model.regionCounts[region] > 0).map((region) => {
-                        const info = NODE_REGION_INFO[region];
-                        return (
-                          <button key={region} className={`proxy-filter-chip${model.filter === region ? " active" : ""}`} type="button" aria-pressed={model.filter === region} onClick={() => setGroupFilter(model.name, region)}>
-                            {info.flag ? <span aria-hidden="true">{info.flag}</span> : <Globe2 size={12} aria-hidden="true" />}<span>{t(info.labelKey)}</span><strong>{model.regionCounts[region]}</strong>
-                          </button>
-                        );
-                      })}
+                        {visibleRegionEntries.map((entry) => {
+                            const favorites = entry === "favorites";
+                            const info = favorites ? undefined : NODE_REGION_INFO[entry];
+                            const label = info ? t(info.labelKey) : t("proxies.filter.favorites");
+                            const count = favorites ? model.favoriteCount : model.regionCounts[entry];
+                            const active = model.filter === entry;
+                            return (
+                              <button
+                                key={entry}
+                                className={`proxy-filter-chip${active ? " active" : ""}${regionReorderMode ? " reorderable" : ""}${draggedRegion === entry ? " dragging" : ""}${dragOverRegion === entry ? " drop-target" : ""}`}
+                                type="button"
+                                aria-pressed={active}
+                                aria-label={regionReorderMode ? t("proxies.reorder.regionHandle", { name: label }) : undefined}
+                                title={regionReorderMode ? t("proxies.reorder.regionHandle", { name: label }) : undefined}
+                                aria-keyshortcuts={regionReorderMode ? "ArrowUp ArrowDown ArrowLeft ArrowRight" : undefined}
+                                draggable={regionReorderMode}
+                                onClick={() => { if (!regionReorderMode) setGroupFilter(model.name, entry); }}
+                                onDragStart={regionReorderMode ? (event) => startRegionDrag(event, entry) : undefined}
+                                onDragOver={regionReorderMode ? (event) => overRegion(event, entry) : undefined}
+                                onDrop={regionReorderMode ? (event) => dropRegion(event, entry) : undefined}
+                                onDragEnd={regionReorderMode ? finishRegionDrag : undefined}
+                                onKeyDown={(event) => handleRegionKeyDown(event, entry, visibleRegionEntries)}
+                              >
+                                {regionReorderMode && <GripVertical size={11} aria-hidden="true" />}
+                                {favorites ? <Star size={12} fill="currentColor" aria-hidden="true" /> : info?.flag ? <span aria-hidden="true">{info.flag}</span> : <Globe2 size={12} aria-hidden="true" />}<span>{label}</span><strong>{count}</strong>
+                              </button>
+                            );
+                          })}
+                      </div>
+                      <button className="quiet-button proxy-region-reorder-toggle" type="button" aria-pressed={regionReorderMode} onClick={() => { setRegionReorderMode((current) => !current); finishRegionDrag(); }} aria-label={t(regionReorderMode ? "proxies.reorder.done" : "proxies.reorder.customize")} title={t(regionReorderMode ? "proxies.reorder.done" : "proxies.reorder.customize")}>
+                        {regionReorderMode ? <Check size={12} aria-hidden="true" /> : <ListOrdered size={12} aria-hidden="true" />}
+                        <span>{t(regionReorderMode ? "proxies.reorder.done" : "proxies.reorder.customize")}</span>
+                      </button>
                     </div>
                     {model.nodes.length ? (
                       <div className="proxy-node-grid" role="list" aria-label={`${model.name} ${t("proxies.table.nodesLabel")}`}>

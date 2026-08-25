@@ -246,6 +246,13 @@ export const zhCN: Record<MessageKey, string> = {
   "proxies.favorite.remove": "取消收藏 {name}",
   "proxies.empty.noFavorites": "该策略组中暂无收藏节点。",
   "proxies.empty.noFilterResults": "没有符合当前筛选条件的节点。",
+  "proxies.reorder.customize": "调整顺序",
+  "proxies.reorder.done": "完成",
+  "proxies.reorder.reset": "重置顺序",
+  "proxies.reorder.handle": "调整 {name} 的顺序",
+  "proxies.reorder.regionHandle": "调整 {name} 的顺序",
+  "proxies.reorder.moveUp": "上移",
+  "proxies.reorder.moveDown": "下移",
 
   "profiles.title": "配置档案",
   "profiles.description": "管理订阅来源，并明确应用已缓存的运行配置。",

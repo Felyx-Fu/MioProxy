@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadFavoriteNodes, loadProxyPreferences, PROXY_PREFERENCES_STORAGE_KEY, saveFavoriteNodes, type ProxyPreferenceStorage } from "./proxyPreferences";
+import { loadFavoriteNodes, loadGroupOrder, loadProxyPreferences, loadRegionOrder, mergeGroupDisplayOrder, mergeRegionDisplayOrder, PROXY_PREFERENCES_STORAGE_KEY, saveFavoriteNodes, saveGroupOrder, saveRegionOrder, type ProxyPreferenceStorage } from "./proxyPreferences";
 
 function createStorage(): ProxyPreferenceStorage & { clear: () => void } {
   const values = new Map<string, string>();
@@ -58,5 +58,60 @@ describe("proxy preference storage", () => {
 
     expect(loadFavoriteNodes("valid", storage)).toEqual(["HK-1"]);
     expect(loadFavoriteNodes("malformed", storage)).toEqual([]);
+  });
+
+  it("extends a favorites-only profile without destroying existing metadata", () => {
+    saveFavoriteNodes("profile-a", ["HK-1"], storage);
+    saveGroupOrder("profile-a", ["GLOBAL", "PROXY", "PROXY"], storage);
+    saveRegionOrder("profile-a", ["favorites", "sg", "hk"], storage);
+
+    expect(loadFavoriteNodes("profile-a", storage)).toEqual(["HK-1"]);
+    expect(loadGroupOrder("profile-a", storage)).toEqual(["GLOBAL", "PROXY"]);
+    expect(loadRegionOrder("profile-a", storage)).toEqual(["favorites", "sg", "hk"]);
+  });
+
+  it("keeps favorites and display orders isolated between profiles", () => {
+    saveFavoriteNodes("profile-a", ["A"], storage);
+    saveGroupOrder("profile-a", ["Group A"], storage);
+    saveRegionOrder("profile-a", ["favorites", "hk"], storage);
+    saveFavoriteNodes("profile-b", ["B"], storage);
+    saveGroupOrder("profile-b", ["Group B"], storage);
+    saveRegionOrder("profile-b", ["favorites", "sg"], storage);
+
+    expect(loadFavoriteNodes("profile-a", storage)).toEqual(["A"]);
+    expect(loadGroupOrder("profile-a", storage)).toEqual(["Group A"]);
+    expect(loadRegionOrder("profile-a", storage)).toEqual(["favorites", "hk"]);
+    expect(loadFavoriteNodes("profile-b", storage)).toEqual(["B"]);
+    expect(loadGroupOrder("profile-b", storage)).toEqual(["Group B"]);
+    expect(loadRegionOrder("profile-b", storage)).toEqual(["favorites", "sg"]);
+  });
+
+  it("reconciles stale and duplicate group order entries with live backend order", () => {
+    expect(mergeGroupDisplayOrder(["PROXY", "GLOBAL", "PROXY", "stale"], ["PROXY", "JP Auto", "GLOBAL"], ["PROXY", "JP Auto", "GLOBAL"])).toEqual(["PROXY", "GLOBAL", "JP Auto"]);
+    expect(mergeGroupDisplayOrder(undefined, ["PROXY", "GLOBAL"], ["PROXY", "GLOBAL", "Auto"])).toEqual(["PROXY", "GLOBAL", "Auto"]);
+  });
+
+  it("reconciles region order by identity and appends newly supported regions canonically", () => {
+    const merged = mergeRegionDisplayOrder(["sg", "sg", "invalid", "unknown", "all"]);
+    expect(merged.slice(0, 4)).toEqual(["sg", "unknown", "favorites", "hk"]);
+    expect(merged).toContain("id");
+    expect(merged).toContain("favorites");
+  });
+
+  it("normalizes malformed persisted ordering without dropping valid favorites", () => {
+    storage.setItem(PROXY_PREFERENCES_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      profiles: {
+        "profile-a": {
+          favorites: ["HK-1"],
+          groupOrder: ["PROXY", "PROXY", 12, ""],
+          regionOrder: ["sg", "invalid", "sg", "all"],
+        },
+      },
+    }));
+
+    expect(loadFavoriteNodes("profile-a", storage)).toEqual(["HK-1"]);
+    expect(loadGroupOrder("profile-a", storage)).toEqual(["PROXY"]);
+    expect(loadRegionOrder("profile-a", storage)).toEqual(["sg"]);
   });
 });

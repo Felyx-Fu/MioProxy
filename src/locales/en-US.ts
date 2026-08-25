@@ -244,6 +244,13 @@ export const enUS = {
   "proxies.favorite.remove": "Remove {name} from favorites",
   "proxies.empty.noFavorites": "No favorite nodes in this group.",
   "proxies.empty.noFilterResults": "No nodes match this filter.",
+  "proxies.reorder.customize": "Customize order",
+  "proxies.reorder.done": "Done",
+  "proxies.reorder.reset": "Reset order",
+  "proxies.reorder.handle": "Reorder {name}",
+  "proxies.reorder.regionHandle": "Reorder {name}",
+  "proxies.reorder.moveUp": "Move up",
+  "proxies.reorder.moveDown": "Move down",
 
   "profiles.title": "Profiles",
   "profiles.description": "Manage subscription sources and explicitly apply a cached runtime configuration.",

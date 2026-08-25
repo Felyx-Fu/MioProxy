@@ -271,9 +271,14 @@ span.statusbar-item { cursor: default; }
 .proxy-center-toolbar .search-box { flex: 1; }
 .proxy-strategy-stack { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .proxy-strategy-card { min-width: 0; overflow: hidden; }
+.proxy-strategy-card.dragging { opacity: .68; }
+.proxy-strategy-card.drop-target { border-color: var(--accent); box-shadow: inset 0 2px var(--accent); }
 .proxy-strategy-card.global-emphasis { border-color: color-mix(in srgb, var(--accent) 62%, var(--border)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent); }
-.proxy-strategy-header { width: 100%; min-width: 0; min-height: 72px; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(340px, 1.7fr) auto; align-items: center; gap: 14px; border: 0; padding: 10px 12px; color: var(--text); background: transparent; cursor: pointer; text-align: left; }
+.proxy-strategy-header { width: 100%; min-width: 0; min-height: 72px; display: grid; grid-template-columns: auto minmax(180px, 1fr) minmax(340px, 1.7fr) auto; align-items: center; gap: 14px; border: 0; padding: 10px 12px; color: var(--text); background: transparent; cursor: pointer; text-align: left; }
 .proxy-strategy-header:hover { background: var(--surface-hover); }
+.proxy-group-drag-handle { width: 24px; height: 24px; flex: 0 0 24px; display: grid; place-items: center; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--muted); cursor: grab; }
+.proxy-group-drag-handle:hover, .proxy-group-drag-handle:focus-visible { border-color: var(--border); color: var(--text); background: var(--surface-hover); outline: 0; }
+.proxy-group-drag-handle:active { cursor: grabbing; }
 .proxy-strategy-heading { min-width: 0; }
 .proxy-strategy-heading > strong, .proxy-strategy-heading > span { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proxy-strategy-heading > strong { font-size: 12px; font-weight: 650; }
@@ -284,10 +289,16 @@ span.statusbar-item { cursor: default; }
 .proxy-strategy-summary small { color: var(--muted); font-size: 8px; }
 .proxy-strategy-summary strong { margin-top: 3px; font-size: 10px; font-weight: 600; }
 .proxy-strategy-content { border-top: 1px solid var(--border); padding: 10px; background: var(--surface-subtle); }
-.proxy-region-filters { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 9px; }
+.proxy-region-filter-toolbar { min-width: 0; display: flex; align-items: flex-start; gap: 6px; margin-bottom: 9px; }
+.proxy-region-filters { min-width: 0; flex: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.proxy-region-reorder-toggle { min-height: 25px; flex: 0 0 auto; gap: 4px; padding: 0 7px; font-size: 9px; }
 .proxy-filter-chip { min-height: 25px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; color: var(--muted); background: var(--surface); cursor: pointer; font-size: 9px; white-space: nowrap; }
 .proxy-filter-chip:hover { border-color: var(--border-strong); color: var(--text); background: var(--surface-hover); }
 .proxy-filter-chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.proxy-filter-chip.reorderable { cursor: grab; }
+.proxy-filter-chip.reorderable:active { cursor: grabbing; }
+.proxy-filter-chip.reorderable.dragging { opacity: .65; }
+.proxy-filter-chip.reorderable.drop-target { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .proxy-filter-chip strong { color: inherit; font-size: 8px; font-weight: 650; }
 .proxy-node-grid { min-width: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .proxy-node-card { min-width: 0; min-height: 116px; display: flex; flex-direction: column; gap: 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 9px; color: var(--text); background: var(--surface); cursor: default; }
@@ -499,8 +510,8 @@ span.statusbar-item { cursor: default; }
   .proxy-mode-panel { grid-template-columns: minmax(0, 1fr); }
   .proxy-mode-copy > p { max-width: none; }
   .proxy-mode-pending { grid-column: auto; }
-  .proxy-strategy-header { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; }
-  .proxy-strategy-summary { grid-column: 1 / -1; grid-row: 2; }
+  .proxy-strategy-header { grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px 12px; }
+  .proxy-strategy-summary { grid-column: 2 / -1; grid-row: 2; }
 }
 
 @media (min-width: 1400px) {

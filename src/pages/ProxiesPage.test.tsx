@@ -128,6 +128,16 @@ function cardContaining(node: string) {
   return screen.getAllByRole("listitem").find((item) => item.textContent?.includes(node))!;
 }
 
+function strategyHeaderNames() {
+  return screen.getAllByRole("button")
+    .filter((button) => button.getAttribute("aria-controls")?.includes("proxy-group-"))
+    .map((button) => button.querySelector("strong")?.textContent ?? "");
+}
+
+function filterChipLabels(filters: HTMLElement) {
+  return within(filters).getAllByRole("button").map((button) => Array.from(button.querySelectorAll("span")).find((span) => span.getAttribute("aria-hidden") !== "true")?.textContent ?? "");
+}
+
 describe("ProxiesPage strategy center", () => {
   afterEach(() => cleanup());
 
@@ -162,6 +172,42 @@ describe("ProxiesPage strategy center", () => {
 
     const headers = screen.getAllByRole("button").filter((button) => button.getAttribute("aria-controls")?.includes("proxy-group-"));
     expect(headers.map((button) => button.textContent?.match(/Alpha|Zeta/)?.[0])).toEqual(["Alpha", "Zeta"]);
+  });
+
+  it("reorders groups from the keyboard handle without invoking runtime actions", () => {
+    const onSelect = vi.fn().mockResolvedValue(undefined);
+    const onModeChange = vi.fn().mockResolvedValue(undefined);
+    const onDelay = vi.fn().mockResolvedValue(undefined);
+    renderPage({ onSelect, onModeChange, onDelay });
+
+    fireEvent.keyDown(screen.getByLabelText(/Reorder Group B/), { key: "ArrowUp" });
+
+    expect(strategyHeaderNames()).toEqual(["Group B", "Group A", "Group C", "Group D", "GLOBAL"]);
+    expect(data.groupOrder).toEqual(["Group A", "Group B", "Group C", "Group D", "GLOBAL"]);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onModeChange).not.toHaveBeenCalled();
+    expect(onDelay).not.toHaveBeenCalled();
+  });
+
+  it("starts group dragging only from the handle and gives a drop target without changing runtime state", () => {
+    const onSelect = vi.fn().mockResolvedValue(undefined);
+    const onModeChange = vi.fn().mockResolvedValue(undefined);
+    const onDelay = vi.fn().mockResolvedValue(undefined);
+    renderPage({ onSelect, onModeChange, onDelay });
+
+    const groupBHandle = screen.getByLabelText(/Reorder Group B/);
+    const groupA = screen.getByRole("region", { name: "Group A" });
+    fireEvent.dragStart(groupBHandle);
+    fireEvent.dragOver(groupA);
+    expect(groupA).toHaveClass("drop-target");
+    fireEvent.drop(groupA);
+
+    expect(strategyHeaderNames()).toEqual(["Group B", "Group A", "Group C", "Group D", "GLOBAL"]);
+    expect(groupA.querySelector(".proxy-node-card")).not.toHaveAttribute("draggable");
+    expect(screen.getByRole("button", { name: /Group A/ })).not.toHaveAttribute("draggable");
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onModeChange).not.toHaveBeenCalled();
+    expect(onDelay).not.toHaveBeenCalled();
   });
 
   it("shows group type, current node, and node count in each collapsed header", () => {
@@ -280,6 +326,53 @@ describe("ProxiesPage strategy center", () => {
     expect(within(filters).queryByRole("button", { name: /Japan/ })).not.toBeInTheDocument();
   });
 
+  it("keeps All fixed while keyboard-reordering shared region chips without changing the selected filter", () => {
+    renderPage({ pageData: regionData });
+
+    const filters = screen.getByRole("group", { name: /Regions A Node filters/ });
+    const hongKong = within(filters).getByRole("button", { name: /Hong Kong 2/ });
+    fireEvent.click(hongKong);
+    expect(hongKong).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: /Customize order/ }));
+    expect(within(filters).getByRole("button", { name: "All 4" })).not.toHaveAttribute("draggable", "true");
+    expect(within(filters).getByRole("button", { name: /Reorder Hong Kong/ })).toHaveAttribute("draggable", "true");
+    fireEvent.keyDown(hongKong, { key: "ArrowDown" });
+
+    expect(filterChipLabels(filters)).toEqual(["All", "Singapore", "Hong Kong", "Other"]);
+    expect(within(filters).getByRole("button", { name: /Reorder Hong Kong/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(screen.getByRole("list", { name: /Regions A/ })).getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("reorders region chips by drag-and-drop only after entering customize mode", () => {
+    renderPage({ pageData: regionData });
+
+    const filters = screen.getByRole("group", { name: /Regions A Node filters/ });
+    fireEvent.click(screen.getByRole("button", { name: /Customize order/ }));
+    const hongKong = within(filters).getByRole("button", { name: /Reorder Hong Kong/ });
+    const singapore = within(filters).getByRole("button", { name: /Reorder Singapore/ });
+    fireEvent.dragStart(hongKong);
+    fireEvent.dragOver(singapore);
+    expect(singapore).toHaveClass("drop-target");
+    fireEvent.drop(singapore);
+
+    expect(filterChipLabels(filters)).toEqual(["All", "Singapore", "Hong Kong", "Other"]);
+  });
+
+  it("shares the customized region order with another expanded strategy group", () => {
+    renderPage({ pageData: regionData });
+
+    const groupAFilters = screen.getByRole("group", { name: /Regions A Node filters/ });
+    fireEvent.click(screen.getByRole("button", { name: /Customize order/ }));
+    const hongKong = within(groupAFilters).getByRole("button", { name: /Reorder Hong Kong/ });
+    fireEvent.keyDown(hongKong, { key: "ArrowDown" });
+    fireEvent.keyDown(hongKong, { key: "ArrowDown" });
+
+    fireEvent.click(screen.getByRole("button", { name: /Regions B/ }));
+    const groupBFilters = screen.getByRole("group", { name: /Regions B Node filters/ });
+    expect(filterChipLabels(groupBFilters)).toEqual(["All", "Japan", "Other", "Hong Kong"]);
+  });
+
   it("keeps region filters scoped to their own strategy group", () => {
     renderPage({ pageData: regionData });
 
@@ -355,6 +448,27 @@ describe("ProxiesPage strategy center", () => {
     expect(onSelect).not.toHaveBeenCalled();
     expect(screen.getByText("No favorite nodes in this group.")).toBeInTheDocument();
     expect(within(screen.getByRole("group", { name: /Regions A Node filters/ })).getByRole("button", { name: /Favorites 0/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("resets group and region display order while preserving favorites, filters, and expansion", () => {
+    renderPage({ pageData: regionData });
+
+    fireEvent.click(within(cardContaining("HK-01 IEPL")).getByRole("button", { name: /Add HK-01 IEPL/ }));
+    const filters = screen.getByRole("group", { name: /Regions A Node filters/ });
+    fireEvent.click(within(filters).getByRole("button", { name: /Hong Kong 2/ }));
+    fireEvent.keyDown(screen.getByLabelText(/Reorder Regions B/), { key: "ArrowUp" });
+    fireEvent.click(screen.getByRole("button", { name: /Customize order/ }));
+    fireEvent.keyDown(within(filters).getByRole("button", { name: /Singapore/ }), { key: "ArrowUp" });
+
+    expect(screen.getByRole("button", { name: /Reset order/ })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /Reset order/ }));
+
+    expect(strategyHeaderNames()).toEqual(["Regions A", "Regions B"]);
+    expect(filterChipLabels(filters)).toEqual(["All", "Favorites", "Hong Kong", "Singapore", "Other"]);
+    expect(within(filters).getByRole("button", { name: /Hong Kong 2/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(filters).getByRole("button", { name: /Favorites 1/ })).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: /Regions A/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Reset order/ })).toBeDisabled();
   });
 
   it("calls the mode change command with the selected mode and exposes contextual descriptions", () => {
