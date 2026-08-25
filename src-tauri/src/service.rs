@@ -13,6 +13,14 @@ const USER_SID_FILE: &str = "service-user-sid";
 const CORE_STATE_FILE: &str = "service-core-state.json";
 const SERVICE_CORE_OWNER_FILE: &str = "service-core-owner.json";
 const CORE_STATE_FORMAT_VERSION: u8 = 2;
+const CORE_RECOVERY_STATE_FILE: &str = "service-core-recovery.json";
+const CORE_RECOVERY_STATE_FORMAT_VERSION: u8 = 1;
+const CORE_RECOVERY_FAILURE_WINDOW_SECS: u64 = 10 * 60;
+const CORE_RECOVERY_HEALTHY_RESET_SECS: u64 = 60;
+const CORE_RECOVERY_RETRY_DELAYS_SECS: [u64; 3] = [15, 30, 60];
+const CORE_RECOVERY_MAX_FAILURES: u32 = 4;
+const CORE_START_MAX_CANDIDATES: u32 = 4;
+const CORE_RECOVERY_ERROR_MAX_CHARS: usize = 512;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "camelCase")]
@@ -184,7 +192,7 @@ mod windows_impl {
             atomic::{AtomicU64, Ordering},
             Arc, Mutex,
         },
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
     #[cfg(not(test))]
@@ -1708,6 +1716,249 @@ mod windows_impl {
         desired_running: bool,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum CoreRecoveryMode {
+        Active,
+        BackingOff,
+        Suspended,
+    }
+
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    struct CoreRecoveryState {
+        failure_count: u32,
+        last_failure_at: Option<u64>,
+        next_retry_at: Option<u64>,
+        healthy_since: Option<u64>,
+        suspended: bool,
+        last_error: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PersistedCoreRecoveryState {
+        #[serde(default)]
+        format_version: u8,
+        #[serde(default)]
+        failure_count: u32,
+        #[serde(default)]
+        last_failure_at: Option<u64>,
+        #[serde(default)]
+        next_retry_at: Option<u64>,
+        #[serde(default)]
+        healthy_since: Option<u64>,
+        #[serde(default)]
+        suspended: bool,
+        #[serde(default)]
+        last_error: Option<String>,
+    }
+
+    impl CoreRecoveryState {
+        fn from_persisted(persisted: PersistedCoreRecoveryState, now: u64) -> (Self, bool) {
+            if persisted.format_version != CORE_RECOVERY_STATE_FORMAT_VERSION
+                || (persisted.failure_count == 0 && persisted.suspended)
+                || persisted.failure_count > CORE_RECOVERY_MAX_FAILURES
+                || (persisted.failure_count > 0 && persisted.last_failure_at.is_none())
+                || persisted
+                    .last_failure_at
+                    .is_some_and(|last_failure_at| last_failure_at > now)
+                || persisted
+                    .healthy_since
+                    .is_some_and(|healthy_since| healthy_since > now)
+            {
+                return (Self::default(), true);
+            }
+
+            let mut state = Self {
+                failure_count: persisted.failure_count,
+                last_failure_at: persisted.last_failure_at,
+                next_retry_at: persisted.next_retry_at,
+                healthy_since: persisted.healthy_since,
+                suspended: persisted.suspended,
+                last_error: persisted
+                    .last_error
+                    .as_deref()
+                    .map(bounded_core_recovery_error),
+            };
+            let original = state.clone();
+
+            if state.failure_count == 0
+                || state.last_failure_at.is_some_and(|last| {
+                    now.saturating_sub(last) >= CORE_RECOVERY_FAILURE_WINDOW_SECS
+                })
+                || state.healthy_since.is_some_and(|healthy_since| {
+                    now.saturating_sub(healthy_since) >= CORE_RECOVERY_HEALTHY_RESET_SECS
+                })
+            {
+                state = Self::default();
+            } else if state.failure_count == CORE_RECOVERY_MAX_FAILURES {
+                state.suspended = true;
+                state.next_retry_at = None;
+            }
+
+            (state.clone(), state != original)
+        }
+
+        fn expired(&self, now: u64) -> bool {
+            self.last_failure_at
+                .is_some_and(|last| now.saturating_sub(last) >= CORE_RECOVERY_FAILURE_WINDOW_SECS)
+        }
+
+        fn reset_if_expired(&mut self, now: u64) -> bool {
+            if !self.expired(now) {
+                return false;
+            }
+            *self = Self::default();
+            true
+        }
+
+        fn reset(&mut self) {
+            *self = Self::default();
+        }
+
+        fn to_persisted(&self) -> PersistedCoreRecoveryState {
+            PersistedCoreRecoveryState {
+                format_version: CORE_RECOVERY_STATE_FORMAT_VERSION,
+                failure_count: self.failure_count,
+                last_failure_at: self.last_failure_at,
+                next_retry_at: self.next_retry_at,
+                healthy_since: self.healthy_since,
+                suspended: self.suspended,
+                last_error: self.last_error.clone(),
+            }
+        }
+
+        fn mode(&self, now: u64) -> CoreRecoveryMode {
+            if self.suspended {
+                CoreRecoveryMode::Suspended
+            } else if self.next_retry_at.is_some_and(|retry_at| retry_at > now) {
+                CoreRecoveryMode::BackingOff
+            } else {
+                CoreRecoveryMode::Active
+            }
+        }
+
+        fn can_attempt(&self, now: u64) -> bool {
+            matches!(self.mode(now), CoreRecoveryMode::Active)
+        }
+
+        fn record_failure(&mut self, now: u64, error: &str) {
+            self.reset_if_expired(now);
+            self.failure_count = self
+                .failure_count
+                .saturating_add(1)
+                .min(CORE_RECOVERY_MAX_FAILURES);
+            self.last_failure_at = Some(now);
+            self.healthy_since = None;
+            self.last_error = Some(bounded_core_recovery_error(error));
+            if self.failure_count >= CORE_RECOVERY_MAX_FAILURES {
+                self.suspended = true;
+                self.next_retry_at = None;
+            } else {
+                let delay_index = (self.failure_count - 1) as usize;
+                self.suspended = false;
+                let delay = CORE_RECOVERY_RETRY_DELAYS_SECS
+                    .get(delay_index)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        *CORE_RECOVERY_RETRY_DELAYS_SECS
+                            .last()
+                            .expect("core recovery retry policy is non-empty")
+                    });
+                self.next_retry_at = Some(now.saturating_add(delay));
+            }
+        }
+
+        fn mark_ready(&mut self, now: u64) -> bool {
+            if self.reset_if_expired(now) {
+                return true;
+            }
+            if self.failure_count == 0 {
+                return false;
+            }
+            self.next_retry_at = None;
+            if self.healthy_since.is_none() {
+                self.healthy_since = Some(now);
+                return true;
+            }
+            if now.saturating_sub(self.healthy_since.unwrap_or(now))
+                >= CORE_RECOVERY_HEALTHY_RESET_SECS
+            {
+                *self = Self::default();
+                return true;
+            }
+            false
+        }
+
+        fn retry_remaining_secs(&self, now: u64) -> Option<u64> {
+            self.next_retry_at
+                .filter(|retry_at| *retry_at > now)
+                .map(|retry_at| retry_at - now)
+        }
+    }
+
+    fn bounded_core_recovery_error(error: &str) -> String {
+        error.chars().take(CORE_RECOVERY_ERROR_MAX_CHARS).collect()
+    }
+
+    fn recovery_now() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default()
+    }
+
+    fn core_recovery_message(state: &CoreRecoveryState, now: u64) -> Option<String> {
+        if state.failure_count == 0 || state.expired(now) || state.healthy_since.is_some() {
+            return None;
+        }
+        let detail = state
+            .last_error
+            .as_deref()
+            .map(|error| format!("：{error}"))
+            .unwrap_or_default();
+        match state.mode(now) {
+            CoreRecoveryMode::Suspended => Some(format!(
+                "Mihomo 反复启动失败，自动恢复已暂停，请手动重试{detail}"
+            )),
+            CoreRecoveryMode::BackingOff => Some(format!(
+                "Mihomo 自动恢复退避中，约 {} 秒后重试{detail}",
+                state.retry_remaining_secs(now).unwrap_or_default()
+            )),
+            CoreRecoveryMode::Active if state.failure_count > 0 => Some(format!(
+                "Mihomo 正在自动恢复（第 {} / {} 次失败）{detail}",
+                state.failure_count, CORE_RECOVERY_MAX_FAILURES
+            )),
+            CoreRecoveryMode::Active => None,
+        }
+    }
+
+    fn read_core_recovery_state(
+        data_dir: &Path,
+        now: u64,
+    ) -> Result<(CoreRecoveryState, bool), String> {
+        let path = data_dir.join(CORE_RECOVERY_STATE_FILE);
+        let Some(content) = config::read_text_file_at(&path, "读取 Service Core 恢复状态")?
+        else {
+            return Ok((CoreRecoveryState::default(), false));
+        };
+        let persisted = serde_json::from_str::<PersistedCoreRecoveryState>(&content)
+            .map_err(|error| format!("Service Core 恢复状态损坏：{error}"))?;
+        Ok(CoreRecoveryState::from_persisted(persisted, now))
+    }
+
+    fn persist_core_recovery_state(
+        data_dir: &Path,
+        state: &CoreRecoveryState,
+    ) -> Result<(), String> {
+        let path = data_dir.join(CORE_RECOVERY_STATE_FILE);
+        if state.failure_count == 0 {
+            return config::remove_file(&path, "清理 Service Core 恢复状态");
+        }
+        let bytes =
+            serde_json::to_vec_pretty(&state.to_persisted()).map_err(|error| error.to_string())?;
+        write_atomic(&path, &bytes)
+    }
+
     #[derive(Deserialize, Serialize)]
     #[serde(rename_all = "camelCase")]
     struct PersistedServiceCoreOwner {
@@ -1772,8 +2023,12 @@ mod windows_impl {
         job: JobGuard,
         tun: Mutex<ServiceTunState>,
         desired_core_running: Mutex<bool>,
+        core_recovery: Mutex<CoreRecoveryState>,
         core_recovery_message: Mutex<Option<String>>,
+        core_exit_pending: Mutex<bool>,
+        pending_tun_profile: Mutex<Option<String>>,
         outbound_compatibility: Mutex<outbound::OutboundCompatibility>,
+        core_transition: AsyncMutex<()>,
         tun_transition: AsyncMutex<()>,
         core_update: Mutex<crate::core_update::CoreUpdateStatus>,
         core_update_transition: AsyncMutex<()>,
@@ -1788,6 +2043,29 @@ mod windows_impl {
                 eprintln!("读取 Service Mihomo 期望状态失败：{error}");
                 false
             });
+            let now = recovery_now();
+            let core_recovery = match read_core_recovery_state(&data_dir, now) {
+                Ok((state, should_clear)) => {
+                    if should_clear {
+                        if let Err(error) =
+                            persist_core_recovery_state(&data_dir, &CoreRecoveryState::default())
+                        {
+                            eprintln!("清理过期 Service Core 恢复状态失败：{error}");
+                        }
+                    }
+                    state
+                }
+                Err(error) => {
+                    eprintln!("读取 Service Core 恢复状态失败，已重置：{error}");
+                    if let Err(reset_error) =
+                        persist_core_recovery_state(&data_dir, &CoreRecoveryState::default())
+                    {
+                        eprintln!("重置 Service Core 恢复状态失败：{reset_error}");
+                    }
+                    CoreRecoveryState::default()
+                }
+            };
+            let initial_recovery_message = core_recovery_message(&core_recovery, now);
             Ok(Self {
                 data_dir,
                 mihomo_path,
@@ -1795,8 +2073,12 @@ mod windows_impl {
                 job: JobGuard::new()?,
                 tun: Mutex::new(ServiceTunState::default()),
                 desired_core_running: Mutex::new(desired_core_running),
-                core_recovery_message: Mutex::new(None),
+                core_recovery: Mutex::new(core_recovery),
+                core_recovery_message: Mutex::new(initial_recovery_message),
+                core_exit_pending: Mutex::new(false),
+                pending_tun_profile: Mutex::new(None),
                 outbound_compatibility: Mutex::new(outbound::resolve().unwrap_or_default()),
+                core_transition: AsyncMutex::const_new(()),
                 tun_transition: AsyncMutex::const_new(()),
                 core_update: Mutex::new(crate::core_update::CoreUpdateStatus::default()),
                 core_update_transition: AsyncMutex::const_new(()),
@@ -1848,6 +2130,92 @@ mod windows_impl {
                 .core_recovery_message
                 .lock()
                 .map_err(|_| "Service Mihomo 恢复状态锁异常")? = message;
+            Ok(())
+        }
+
+        fn persist_core_recovery(&self, state: &CoreRecoveryState) -> Result<(), String> {
+            persist_core_recovery_state(&self.data_dir, state)
+        }
+
+        fn reset_core_recovery(&self) -> Result<(), String> {
+            let state = {
+                let mut current = self
+                    .core_recovery
+                    .lock()
+                    .map_err(|_| "Service Mihomo 恢复策略锁异常")?;
+                current.reset();
+                current.clone()
+            };
+            self.persist_core_recovery(&state)?;
+            self.set_core_recovery_message(None)
+        }
+
+        fn recovery_can_attempt(&self, now: u64) -> Result<bool, String> {
+            let (state, expired) = {
+                let mut current = self
+                    .core_recovery
+                    .lock()
+                    .map_err(|_| "Service Mihomo 恢复策略锁异常")?;
+                let expired = current.reset_if_expired(now);
+                (current.clone(), expired)
+            };
+            if expired {
+                self.persist_core_recovery(&state)?;
+                self.set_core_recovery_message(None)?;
+                return Ok(true);
+            }
+            let can_attempt = state.can_attempt(now);
+            if !can_attempt {
+                self.set_core_recovery_message(core_recovery_message(&state, now))?;
+            }
+            Ok(can_attempt)
+        }
+
+        fn record_core_recovery_failure(&self, error: &str) -> Result<(), String> {
+            let now = recovery_now();
+            let state = {
+                let mut current = self
+                    .core_recovery
+                    .lock()
+                    .map_err(|_| "Service Mihomo 恢复策略锁异常")?;
+                current.record_failure(now, error);
+                current.clone()
+            };
+            self.persist_core_recovery(&state)?;
+            self.set_core_recovery_message(core_recovery_message(&state, now))
+        }
+
+        fn observe_core_ready(&self) -> Result<(), String> {
+            let now = recovery_now();
+            let (state, changed) = {
+                let mut current = self
+                    .core_recovery
+                    .lock()
+                    .map_err(|_| "Service Mihomo 恢复策略锁异常")?;
+                let changed = current.mark_ready(now);
+                (current.clone(), changed)
+            };
+            if changed {
+                self.persist_core_recovery(&state)?;
+            }
+            self.set_core_recovery_message(None)
+        }
+
+        fn take_core_exit_pending(&self) -> Result<bool, String> {
+            let mut pending = self
+                .core_exit_pending
+                .lock()
+                .map_err(|_| "Service Mihomo 退出状态锁异常")?;
+            let exited = *pending;
+            *pending = false;
+            Ok(exited)
+        }
+
+        fn clear_core_exit_pending(&self) -> Result<(), String> {
+            *self
+                .core_exit_pending
+                .lock()
+                .map_err(|_| "Service Mihomo 退出状态锁异常")? = false;
             Ok(())
         }
 
@@ -1958,18 +2326,28 @@ mod windows_impl {
 
         fn refresh_child(&self) -> Result<(), String> {
             let mut child = self.child.lock().map_err(|_| "Service Mihomo 状态锁异常")?;
+            let mut exited = false;
             if let Some(process) = child.as_mut() {
                 if process.try_wait().map_err(|e| e.to_string())?.is_some() {
                     let managed_pid = process.id();
                     *child = None;
                     clear_service_core_owner_if_matches(&self.data_dir, managed_pid)?;
+                    exited = true;
                 }
+            }
+            drop(child);
+            if exited {
+                *self
+                    .core_exit_pending
+                    .lock()
+                    .map_err(|_| "Service Mihomo 退出状态锁异常")? = true;
             }
             Ok(())
         }
 
         #[cfg(feature = "validation-fault-injection")]
         async fn validation_crash_managed_core(&self) -> Result<Value, String> {
+            let _core_transition = self.core_transition.lock().await;
             let _transition = self.tun_transition.lock().await;
             self.refresh_child()?;
             let mut child = self.child.lock().map_err(|_| "Service Mihomo 状态锁异常")?;
@@ -2421,6 +2799,47 @@ rules:
         }
 
         async fn start(&self) -> Result<crate::mihomo::CoreStatus, String> {
+            let _transition = self.core_transition.lock().await;
+            self.reset_core_recovery()?;
+            self.clear_core_exit_pending()?;
+            match self.start_inner().await {
+                Ok(status) => {
+                    self.observe_core_ready()?;
+                    self.restore_pending_tun_locked().await?;
+                    Ok(status)
+                }
+                Err(error) => {
+                    self.record_core_recovery_failure(&error)?;
+                    Err(error)
+                }
+            }
+        }
+
+        async fn automatic_start_locked(
+            &self,
+        ) -> Result<Option<crate::mihomo::CoreStatus>, String> {
+            if !self.recovery_can_attempt(recovery_now())? {
+                return Ok(None);
+            }
+            match self.start_inner().await {
+                Ok(status) => {
+                    self.observe_core_ready()?;
+                    if let Err(error) = self.restore_pending_tun_locked().await {
+                        let _ = self.set_core_recovery_message(Some(format!(
+                            "Mihomo 已恢复，但 TUN 自动恢复失败：{error}"
+                        )));
+                        return Err(error);
+                    }
+                    Ok(Some(status))
+                }
+                Err(error) => {
+                    self.record_core_recovery_failure(&error)?;
+                    Err(error)
+                }
+            }
+        }
+
+        async fn start_inner(&self) -> Result<crate::mihomo::CoreStatus, String> {
             self.set_desired_core_running(true)?;
             if let Some(managed_pid) = self.managed_core_pid()? {
                 let (mixed_port, _) = self.runtime_config()?;
@@ -2510,7 +2929,7 @@ rules:
             }
             let mut minimum_mixed_port = None;
             let mut last_error = "Mihomo 未通过启动健康检查".to_string();
-            for _ in 0..4 {
+            for _ in 0..CORE_START_MAX_CANDIDATES {
                 config::clear_actual_runtime_mixed_port_at(&self.data_dir)?;
                 let mixed_port = config::prepare_runtime_resources_from_at(
                     &self.config_path(),
@@ -2580,24 +2999,33 @@ rules:
         }
 
         async fn ensure_desired_core_ready(&self) {
+            let _transition = self.core_transition.lock().await;
             if !self.desired_core_running().unwrap_or(false) {
                 return;
             }
             if self.owned_core_ready().await.unwrap_or(false) {
-                let _ = self.set_core_recovery_message(None);
+                let _ = self.observe_core_ready();
                 return;
             }
             if self.managed_core_pid().ok().flatten().is_none() && mihomo::is_running().await {
                 let _ = self.set_desired_core_running(false);
-                let _ = self.set_core_recovery_message(None);
+                let _ = self.reset_core_recovery();
                 return;
             }
-            if let Err(error) = self.start().await {
-                let _ = self.set_core_recovery_message(Some(error));
+            if let Err(error) = self.automatic_start_locked().await {
+                eprintln!("Service Mihomo 自动恢复失败：{error}");
             }
         }
 
         async fn stop(&self) -> Result<crate::mihomo::CoreStatus, String> {
+            let _transition = self.core_transition.lock().await;
+            self.reset_core_recovery()?;
+            self.clear_core_exit_pending()?;
+            self.clear_pending_tun_restore()?;
+            self.stop_inner().await
+        }
+
+        async fn stop_inner(&self) -> Result<crate::mihomo::CoreStatus, String> {
             self.set_desired_core_running(false)?;
             self.set_core_recovery_message(None)?;
             let owns_core = self.owns_core()?;
@@ -3233,6 +3661,7 @@ rules:
         }
 
         async fn shutdown(&self) -> Result<(), String> {
+            let _core_transition = self.core_transition.lock().await;
             let mut errors = Vec::new();
             // SCM shutdown/restart (including an application upgrade) must not
             // turn a Ready Core into a persisted user stop request.
@@ -3267,25 +3696,140 @@ rules:
             }
         }
 
-        async fn recover_after_managed_core_exit(
-            &self,
-            tun_was_running: bool,
-            tun_profile_id: Option<String>,
-        ) -> Result<(), String> {
-            self.start().await?;
-            if tun_was_running {
-                let profile_id = tun_profile_id.ok_or_else(|| {
-                    "受管 Mihomo 崩溃后缺少 TUN Profile，拒绝自动恢复".to_string()
-                })?;
-                let tun = self.tun_set(true, Some(profile_id), false).await?;
-                if tun.status != "running" {
-                    return Err(format!(
-                        "受管 Mihomo 已恢复，但 TUN 未恢复 Running（当前 {}）",
-                        tun.status
-                    ));
-                }
+        fn remember_tun_restore(&self, profile_id: Option<String>) -> Result<(), String> {
+            if let Some(profile_id) = profile_id {
+                *self
+                    .pending_tun_profile
+                    .lock()
+                    .map_err(|_| "Service TUN 恢复 Profile 锁异常")? = Some(profile_id);
             }
             Ok(())
+        }
+
+        fn pending_tun_restore(&self) -> Result<Option<String>, String> {
+            self.pending_tun_profile
+                .lock()
+                .map(|profile_id| profile_id.clone())
+                .map_err(|_| "Service TUN 恢复 Profile 锁异常".to_string())
+        }
+
+        fn clear_pending_tun_restore(&self) -> Result<(), String> {
+            *self
+                .pending_tun_profile
+                .lock()
+                .map_err(|_| "Service TUN 恢复 Profile 锁异常")? = None;
+            Ok(())
+        }
+
+        async fn restore_pending_tun_locked(&self) -> Result<(), String> {
+            let Some(profile_id) = self.pending_tun_restore()? else {
+                return Ok(());
+            };
+            let tun = self.tun_set(true, Some(profile_id), false).await?;
+            if tun.status != "running" {
+                return Err(format!(
+                    "受管 Mihomo 已恢复，但 TUN 未恢复 Running（当前 {}）",
+                    tun.status
+                ));
+            }
+            self.clear_pending_tun_restore()
+        }
+
+        async fn disable_tun_for_core_recovery_locked(
+            &self,
+            profile_id: Option<String>,
+        ) -> Result<(), String> {
+            self.remember_tun_restore(profile_id)?;
+            if self.has_tun_recovery() {
+                let _transition = self.tun_transition.lock().await;
+                self.disable_tun_inner().await?;
+            }
+            Ok(())
+        }
+
+        async fn monitor_core_once_locked(&self) {
+            if !self.desired_core_running().unwrap_or(false) {
+                return;
+            }
+
+            let had_child = self
+                .child
+                .lock()
+                .map(|child| child.is_some())
+                .unwrap_or(false);
+            if let Err(error) = self.refresh_child() {
+                let _ = self.set_core_recovery_message(Some(error));
+                return;
+            }
+            let ready_probe = self.owned_core_ready().await;
+            let child_exited = self.take_core_exit_pending().unwrap_or(false);
+            if matches!(ready_probe, Ok(true)) {
+                if let Err(error) = self.observe_core_ready() {
+                    let _ = self.set_core_recovery_message(Some(error));
+                    return;
+                }
+                if self.pending_tun_restore().ok().flatten().is_some() {
+                    if let Err(error) = self.restore_pending_tun_locked().await {
+                        let _ = self.set_core_recovery_message(Some(format!(
+                            "Mihomo 已恢复，但 TUN 自动恢复失败：{error}"
+                        )));
+                    }
+                }
+                return;
+            }
+
+            let tun = self.tun_data().ok();
+            let tun_profile_id = tun.as_ref().and_then(|tun| tun.profile_id.clone());
+            let tun_needs_cleanup = tun
+                .as_ref()
+                .is_some_and(|tun| tun.status != "disabled" && self.has_tun_recovery());
+            let failure_reason = match &ready_probe {
+                Err(error) if had_child || child_exited => Some(error.clone()),
+                Ok(false) if had_child || child_exited => Some(if child_exited {
+                    "受管 Mihomo 进程异常退出，未能保持 Ready".to_string()
+                } else {
+                    "受管 Mihomo 未保持 Ready，自动恢复将退避".to_string()
+                }),
+                _ => None,
+            };
+
+            if let Some(error) = failure_reason {
+                if self.owns_core().unwrap_or(false) {
+                    if let Err(cleanup_error) = self.stop_owned_child_for_retry() {
+                        let _ = self.set_core_recovery_message(Some(cleanup_error));
+                        return;
+                    }
+                }
+                if let Err(cleanup_error) = self
+                    .disable_tun_for_core_recovery_locked(tun_profile_id)
+                    .await
+                {
+                    let _ = self.set_core_recovery_message(Some(cleanup_error));
+                    return;
+                }
+                let _ = self.record_core_recovery_failure(&error);
+                return;
+            }
+
+            if let Err(error) = ready_probe {
+                let _ = self.set_core_recovery_message(Some(error));
+                return;
+            }
+
+            if tun_needs_cleanup {
+                if let Err(error) = self
+                    .disable_tun_for_core_recovery_locked(tun_profile_id)
+                    .await
+                {
+                    let _ = self.set_core_recovery_message(Some(error));
+                    return;
+                }
+            }
+
+            match self.automatic_start_locked().await {
+                Ok(Some(_)) | Ok(None) => {}
+                Err(error) => eprintln!("Service Mihomo 自动恢复失败：{error}"),
+            }
         }
 
         async fn monitor(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
@@ -3299,62 +3843,8 @@ rules:
                 if *shutdown.borrow() {
                     return;
                 }
-                let transition = self.tun_transition.lock().await;
-                let tun = match self.tun_data() {
-                    Ok(tun) if tun.status != "disabled" && self.has_tun_recovery() => tun,
-                    _ => {
-                        drop(transition);
-                        if self.desired_core_running().unwrap_or(false) {
-                            match self.owned_core_ready().await {
-                                Ok(true) => {
-                                    let _ = self.set_core_recovery_message(None);
-                                }
-                                Ok(false) => {
-                                    if self.owns_core().unwrap_or(false) {
-                                        let _ = self.stop_owned_child_for_retry();
-                                    }
-                                    if let Err(error) = self.start().await {
-                                        let _ = self.set_core_recovery_message(Some(error));
-                                    }
-                                }
-                                Err(error) => {
-                                    let _ = self.set_core_recovery_message(Some(error));
-                                }
-                            }
-                        }
-                        continue;
-                    }
-                };
-                let core_ready = self.owned_core_ready().await.unwrap_or(false);
-                if !core_ready {
-                    let desired = self.desired_core_running().unwrap_or(false);
-                    let tun_was_running = tun.status == "running";
-                    let tun_profile_id = tun.profile_id.clone();
-                    if self.owns_core().unwrap_or(false) {
-                        let _ = self.stop_owned_child_for_retry();
-                    }
-                    let cleanup = self.disable_tun_inner().await;
-                    drop(transition);
-                    if let Err(error) = cleanup {
-                        let _ = self.set_core_recovery_message(Some(error));
-                        continue;
-                    }
-                    if desired {
-                        match self
-                            .recover_after_managed_core_exit(tun_was_running, tun_profile_id)
-                            .await
-                        {
-                            Ok(()) => {
-                                let _ = self.set_core_recovery_message(None);
-                            }
-                            Err(error) => {
-                                let _ = self.set_core_recovery_message(Some(error));
-                            }
-                        }
-                    }
-                    continue;
-                }
-                drop(transition);
+                let _transition = self.core_transition.lock().await;
+                self.monitor_core_once_locked().await;
             }
         }
     }
@@ -3699,6 +4189,193 @@ rules:
             fs,
             time::{SystemTime, UNIX_EPOCH},
         };
+
+        fn recovery_test_dir(label: &str) -> std::path::PathBuf {
+            std::env::temp_dir().join(format!(
+                "mioproxy-service-core-recovery-{label}-{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ))
+        }
+
+        #[test]
+        fn core_recovery_uses_bounded_backoff_then_suspends() {
+            let mut state = CoreRecoveryState::default();
+
+            state.record_failure(100, "first failure");
+            assert_eq!(state.failure_count, 1);
+            assert_eq!(state.next_retry_at, Some(115));
+            assert_eq!(state.mode(114), CoreRecoveryMode::BackingOff);
+            assert_eq!(state.retry_remaining_secs(114), Some(1));
+            assert!(core_recovery_message(&state, 114)
+                .unwrap()
+                .contains("约 1 秒后重试"));
+            assert_eq!(state.mode(115), CoreRecoveryMode::Active);
+
+            state.record_failure(115, "second failure");
+            assert_eq!(state.failure_count, 2);
+            assert_eq!(state.next_retry_at, Some(145));
+
+            state.record_failure(145, "third failure");
+            assert_eq!(state.failure_count, 3);
+            assert_eq!(state.next_retry_at, Some(205));
+
+            state.record_failure(205, "fourth failure");
+            assert_eq!(state.failure_count, CORE_RECOVERY_MAX_FAILURES);
+            assert_eq!(state.mode(205), CoreRecoveryMode::Suspended);
+            assert!(!state.can_attempt(205));
+            assert_eq!(state.next_retry_at, None);
+            assert!(core_recovery_message(&state, 205)
+                .unwrap()
+                .contains("自动恢复已暂停，请手动重试"));
+        }
+
+        #[test]
+        fn core_recovery_budget_accounts_for_internal_start_candidates() {
+            assert_eq!(CORE_RECOVERY_MAX_FAILURES * CORE_START_MAX_CANDIDATES, 16);
+        }
+
+        #[test]
+        fn core_recovery_explicit_retry_or_stop_resets_a_suspended_policy() {
+            let mut state = CoreRecoveryState::default();
+            for (now, error) in [(100, "one"), (115, "two"), (145, "three"), (205, "four")] {
+                state.record_failure(now, error);
+            }
+            assert_eq!(state.mode(205), CoreRecoveryMode::Suspended);
+
+            state.reset();
+            assert_eq!(state, CoreRecoveryState::default());
+            assert_eq!(state.mode(205), CoreRecoveryMode::Active);
+            assert!(state.can_attempt(205));
+            assert_eq!(core_recovery_message(&state, 205), None);
+        }
+
+        #[test]
+        fn core_recovery_resets_only_after_sustained_ready() {
+            let mut state = CoreRecoveryState::default();
+            state.record_failure(100, "startup failure");
+
+            assert!(state.mark_ready(110));
+            assert_eq!(state.failure_count, 1);
+            assert_eq!(state.healthy_since, Some(110));
+            assert_eq!(state.next_retry_at, None);
+            assert_eq!(core_recovery_message(&state, 120), None);
+            assert!(!state.mark_ready(169));
+            assert_eq!(state.failure_count, 1);
+            assert!(state.mark_ready(170));
+            assert_eq!(state, CoreRecoveryState::default());
+        }
+
+        #[test]
+        fn core_recovery_failure_window_expires_during_runtime() {
+            let mut state = CoreRecoveryState::default();
+            state.record_failure(100, "old failure");
+            assert!(state.expired(100 + CORE_RECOVERY_FAILURE_WINDOW_SECS));
+
+            state.record_failure(
+                100 + CORE_RECOVERY_FAILURE_WINDOW_SECS,
+                "new failure after window",
+            );
+            assert_eq!(state.failure_count, 1);
+            assert_eq!(
+                state.next_retry_at,
+                Some(115 + CORE_RECOVERY_FAILURE_WINDOW_SECS)
+            );
+            assert_eq!(
+                state.last_error.as_deref(),
+                Some("new failure after window")
+            );
+        }
+
+        #[test]
+        fn core_recovery_persistence_is_versioned_and_resets_invalid_state() {
+            let data_dir = recovery_test_dir("persistence");
+            fs::create_dir_all(&data_dir).unwrap();
+
+            let mut state = CoreRecoveryState::default();
+            state.record_failure(100, "persisted failure");
+            persist_core_recovery_state(&data_dir, &state).unwrap();
+            let persisted = serde_json::from_slice::<PersistedCoreRecoveryState>(
+                &fs::read(data_dir.join(CORE_RECOVERY_STATE_FILE)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(persisted.format_version, CORE_RECOVERY_STATE_FORMAT_VERSION);
+
+            let (loaded, should_clear) = read_core_recovery_state(&data_dir, 100).unwrap();
+            assert!(!should_clear);
+            assert_eq!(loaded, state);
+
+            let (expired, should_clear) =
+                read_core_recovery_state(&data_dir, 100 + CORE_RECOVERY_FAILURE_WINDOW_SECS)
+                    .unwrap();
+            assert!(should_clear);
+            assert_eq!(expired, CoreRecoveryState::default());
+
+            persist_core_recovery_state(&data_dir, &CoreRecoveryState::default()).unwrap();
+            assert!(!data_dir.join(CORE_RECOVERY_STATE_FILE).exists());
+
+            fs::write(data_dir.join(CORE_RECOVERY_STATE_FILE), b"not json").unwrap();
+            assert!(read_core_recovery_state(&data_dir, 100).is_err());
+            let _ = fs::remove_dir_all(data_dir);
+        }
+
+        #[test]
+        fn core_recovery_persistence_normalizes_future_and_oversized_fields() {
+            let persisted = PersistedCoreRecoveryState {
+                format_version: CORE_RECOVERY_STATE_FORMAT_VERSION,
+                failure_count: 1,
+                last_failure_at: Some(200),
+                next_retry_at: Some(215),
+                healthy_since: None,
+                suspended: false,
+                last_error: Some("x".repeat(CORE_RECOVERY_ERROR_MAX_CHARS + 1)),
+            };
+            let (state, should_clear) = CoreRecoveryState::from_persisted(persisted, 100);
+            assert!(should_clear);
+            assert_eq!(state, CoreRecoveryState::default());
+
+            let persisted = PersistedCoreRecoveryState {
+                format_version: CORE_RECOVERY_STATE_FORMAT_VERSION,
+                failure_count: 1,
+                last_failure_at: Some(100),
+                next_retry_at: Some(115),
+                healthy_since: None,
+                suspended: false,
+                last_error: Some("x".repeat(CORE_RECOVERY_ERROR_MAX_CHARS + 1)),
+            };
+            let (state, should_clear) = CoreRecoveryState::from_persisted(persisted, 100);
+            assert!(!should_clear);
+            assert_eq!(
+                state.last_error.as_deref().unwrap().chars().count(),
+                CORE_RECOVERY_ERROR_MAX_CHARS
+            );
+        }
+
+        #[tokio::test]
+        async fn core_transition_serializes_recovery_attempts() {
+            let data_dir = recovery_test_dir("transition");
+            let runtime = std::sync::Arc::new(
+                ServiceRuntime::new(data_dir.clone(), PathBuf::from("missing-mihomo.exe")).unwrap(),
+            );
+            let first = runtime.core_transition.lock().await;
+            let waiting_runtime = std::sync::Arc::clone(&runtime);
+            let mut waiter = tokio::spawn(async move {
+                let _second = waiting_runtime.core_transition.lock().await;
+            });
+
+            assert!(tokio::time::timeout(Duration::from_millis(20), &mut waiter)
+                .await
+                .is_err());
+            drop(first);
+            tokio::time::timeout(Duration::from_secs(1), waiter)
+                .await
+                .unwrap()
+                .unwrap();
+            drop(runtime);
+            let _ = fs::remove_dir_all(data_dir);
+        }
 
         #[test]
         fn missing_core_state_defaults_to_ready() {
