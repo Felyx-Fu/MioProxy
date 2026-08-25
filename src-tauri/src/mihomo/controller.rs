@@ -13,7 +13,7 @@ use std::{
 #[cfg(windows)]
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 
-use reqwest::{Client, Method};
+use reqwest::{Client, Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
@@ -28,6 +28,7 @@ use super::{logs, traffic};
 // Keep the controller in MioProxy's own localhost namespace. 7890/9090 are
 // common defaults used by other Mihomo clients and are not identity markers.
 pub(crate) const CONTROLLER: &str = "127.0.0.1:19090";
+const CONTROLLER_PORT: u16 = 19090;
 const CONTROLLER_SECRET_FILE: &str = "controller-secret";
 const DEFAULT_DELAY_URL: &str = "https://www.gstatic.com/generate_204";
 const DELAY_TIMEOUT_MS: u64 = 5_000;
@@ -36,6 +37,46 @@ static CONTROLLER_SECRET: OnceLock<String> = OnceLock::new();
 // Keep fallback-core startup and termination recovery in one lifecycle critical
 // section. In particular, `child` must not be cleared until TUN rollback is done.
 static CORE_LIFECYCLE_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CoreReadiness {
+    Ready,
+    ControllerUnavailable,
+    ControllerRejected,
+    ControllerInvalid,
+    ListenerMissing,
+    ListenerExternal,
+    ListenerUnknown,
+    ControllerExternal,
+    ControllerUnknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ControllerFailureKind {
+    Unavailable,
+    Rejected,
+    Invalid,
+}
+
+#[derive(Debug)]
+struct ControllerRequestFailure {
+    kind: ControllerFailureKind,
+    message: String,
+}
+
+fn controller_failure_kind_for_status(status: StatusCode) -> ControllerFailureKind {
+    match status {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ControllerFailureKind::Rejected,
+        status
+            if status == StatusCode::REQUEST_TIMEOUT
+                || status == StatusCode::TOO_MANY_REQUESTS
+                || status.is_server_error() =>
+        {
+            ControllerFailureKind::Unavailable
+        }
+        _ => ControllerFailureKind::Invalid,
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -355,21 +396,55 @@ async fn api_get_with_timeout_at(
     timeout: Duration,
     bearer: &str,
 ) -> Result<Value, String> {
+    api_get_with_timeout_classified_at(base_url, path, timeout, bearer)
+        .await
+        .map_err(|error| error.message)
+}
+
+async fn api_get_with_timeout_classified_at(
+    base_url: &str,
+    path: &str,
+    timeout: Duration,
+    bearer: &str,
+) -> Result<Value, ControllerRequestFailure> {
     let url = format!("{base_url}{path}");
-    Client::builder()
+    let response = Client::builder()
         .timeout(timeout)
         .build()
-        .map_err(|e| e.to_string())?
+        .map_err(|error| ControllerRequestFailure {
+            kind: ControllerFailureKind::Invalid,
+            message: error.to_string(),
+        })?
         .get(url)
         .bearer_auth(bearer)
         .send()
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|error| ControllerRequestFailure {
+            kind: if error.is_connect() || error.is_timeout() {
+                ControllerFailureKind::Unavailable
+            } else {
+                ControllerFailureKind::Invalid
+            },
+            message: error.to_string(),
+        })?;
+    let status = response.status();
+    let response = response
         .error_for_status()
-        .map_err(|e| e.to_string())?
+        .map_err(|error| ControllerRequestFailure {
+            kind: controller_failure_kind_for_status(status),
+            message: error.to_string(),
+        })?;
+    response
         .json::<Value>()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|error| ControllerRequestFailure {
+            kind: if error.is_timeout() || error.is_connect() {
+                ControllerFailureKind::Unavailable
+            } else {
+                ControllerFailureKind::Invalid
+            },
+            message: error.to_string(),
+        })
 }
 
 async fn api_write_with_secret(
@@ -532,19 +607,93 @@ pub(crate) fn encode_path_segment(value: &str) -> String {
     encoded
 }
 
+fn listener_readiness(
+    listeners: &[crate::config::TcpListenerDiagnostic],
+    mixed_port: u16,
+    managed_pid: u32,
+) -> CoreReadiness {
+    if listeners.iter().any(|listener| {
+        listener.local_port == mixed_port
+            && listener.state == "listen"
+            && listener.owner == crate::config::ListenerOwner::External
+    }) {
+        return CoreReadiness::ListenerExternal;
+    }
+    if listeners.iter().any(|listener| {
+        listener.local_port == mixed_port
+            && listener.state == "listen"
+            && listener.owner == crate::config::ListenerOwner::Unknown
+    }) {
+        return CoreReadiness::ListenerUnknown;
+    }
+    if listeners.iter().any(|listener| {
+        listener.local_port == mixed_port
+            && listener.state == "listen"
+            && listener.owner == crate::config::ListenerOwner::MioProxyManaged
+            && listener.owning_pid == Some(managed_pid)
+            && listener.address_family == "ipv4"
+            && matches!(listener.local_address.as_str(), "127.0.0.1" | "0.0.0.0")
+    }) {
+        return CoreReadiness::Ready;
+    }
+    CoreReadiness::ListenerMissing
+}
+
 fn required_listener_ready(
     listeners: &[crate::config::TcpListenerDiagnostic],
     mixed_port: u16,
     managed_pid: u32,
 ) -> bool {
-    listeners.iter().any(|listener| {
-        listener.owner == crate::config::ListenerOwner::MioProxyManaged
-            && listener.owning_pid == Some(managed_pid)
-            && listener.address_family == "ipv4"
-            && matches!(listener.local_address.as_str(), "127.0.0.1" | "0.0.0.0")
-            && listener.local_port == mixed_port
-            && listener.state == "listen"
-    })
+    matches!(
+        listener_readiness(listeners, mixed_port, managed_pid),
+        CoreReadiness::Ready
+    )
+}
+
+fn controller_listener_conflict(
+    listeners: &[crate::config::TcpListenerDiagnostic],
+) -> Option<CoreReadiness> {
+    if listeners
+        .iter()
+        .any(|listener| listener.owner == crate::config::ListenerOwner::External)
+    {
+        return Some(CoreReadiness::ControllerExternal);
+    }
+    if listeners
+        .iter()
+        .any(|listener| listener.owner == crate::config::ListenerOwner::Unknown)
+    {
+        return Some(CoreReadiness::ControllerUnknown);
+    }
+    None
+}
+
+fn controller_failure_readiness(failures: &[ControllerFailureKind]) -> CoreReadiness {
+    if failures.contains(&ControllerFailureKind::Rejected) {
+        CoreReadiness::ControllerRejected
+    } else if failures.contains(&ControllerFailureKind::Invalid) {
+        CoreReadiness::ControllerInvalid
+    } else {
+        CoreReadiness::ControllerUnavailable
+    }
+}
+
+fn listener_ownership_readiness(
+    mixed_port: u16,
+    managed_pid: u32,
+) -> Result<CoreReadiness, String> {
+    let listeners = crate::config::windows_tcp_listener_diagnostics(mixed_port, Some(managed_pid))?;
+    let readiness = listener_readiness(&listeners, mixed_port, managed_pid);
+    if !matches!(readiness, CoreReadiness::Ready) {
+        return Ok(readiness);
+    }
+
+    let controller_listeners =
+        crate::config::windows_tcp_listener_diagnostics(CONTROLLER_PORT, Some(managed_pid))?;
+    if let Some(conflict) = controller_listener_conflict(&controller_listeners) {
+        return Ok(conflict);
+    }
+    Ok(CoreReadiness::Ready)
 }
 
 fn all_ready_signals(
@@ -575,6 +724,35 @@ pub(crate) async fn core_ready_for_pid(mixed_port: u16, managed_pid: u32) -> Res
         proxies_authenticated,
         required_listener_ready(&listeners, mixed_port, managed_pid),
     ))
+}
+
+pub(crate) async fn core_readiness_for_pid(
+    mixed_port: u16,
+    managed_pid: u32,
+) -> Result<CoreReadiness, String> {
+    let initial_ownership = listener_ownership_readiness(mixed_port, managed_pid)?;
+    if !matches!(initial_ownership, CoreReadiness::Ready) {
+        return Ok(initial_ownership);
+    }
+
+    let base_url = format!("http://{CONTROLLER}");
+    let (version, proxies) = tokio::join!(
+        api_get_with_timeout_classified_at(&base_url, "/version", Duration::from_secs(2), secret(),),
+        api_get_with_timeout_classified_at(&base_url, "/proxies", Duration::from_secs(2), secret(),)
+    );
+    let failures = [version.as_ref().err(), proxies.as_ref().err()]
+        .into_iter()
+        .flatten()
+        .map(|failure| failure.kind)
+        .collect::<Vec<_>>();
+    let final_ownership = listener_ownership_readiness(mixed_port, managed_pid)?;
+    if !matches!(final_ownership, CoreReadiness::Ready) {
+        return Ok(final_ownership);
+    }
+    if !failures.is_empty() {
+        return Ok(controller_failure_readiness(&failures));
+    }
+    Ok(CoreReadiness::Ready)
 }
 
 pub(crate) async fn is_running() -> bool {
@@ -1673,15 +1851,19 @@ pub async fn mihomo_proxy_delay(request: ProxyDelayRequest) -> Result<Value, Str
 mod tests {
     use super::{
         add_strategy_group_order_metadata, all_ready_signals, api_get_with_timeout_at,
-        classify_user_state, delay_request_path, effective_delay_url, encode_path_segment,
+        api_get_with_timeout_classified_at, classify_user_state,
+        controller_failure_kind_for_status, controller_failure_readiness,
+        controller_listener_conflict, delay_request_path, effective_delay_url, encode_path_segment,
         expected_status_string, gui_status_is_authoritative, is_actual_proxy_provider,
-        merge_runtime_proxy_group_context, merge_runtime_proxy_group_context_from_config,
-        normalize_mode, required_listener_ready, runtime_proxy_member_context,
-        selected_node_from_snapshot, strategy_group_order, CoreStatus, CoreUserState,
-        ProxyDelayRequest, ProxyEntryKind, RuntimeProxyGroupConfig, DEFAULT_DELAY_URL,
-        DELAY_OUTER_TIMEOUT_SECS, DELAY_TIMEOUT_MS,
+        listener_readiness, merge_runtime_proxy_group_context,
+        merge_runtime_proxy_group_context_from_config, normalize_mode, required_listener_ready,
+        runtime_proxy_member_context, selected_node_from_snapshot, strategy_group_order,
+        ControllerFailureKind, CoreReadiness, CoreStatus, CoreUserState, ProxyDelayRequest,
+        ProxyEntryKind, RuntimeProxyGroupConfig, DEFAULT_DELAY_URL, DELAY_OUTER_TIMEOUT_SECS,
+        DELAY_TIMEOUT_MS,
     };
     use crate::config::{ListenerOwner, TcpListenerDiagnostic};
+    use reqwest::StatusCode;
     use serde_json::Value;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1813,6 +1995,172 @@ mod tests {
             ),
         ];
         assert!(!required_listener_ready(&listeners, 7890, 42));
+    }
+
+    #[test]
+    fn readiness_classifies_listener_ownership_before_controller_grace() {
+        let managed = listener(
+            "ipv4",
+            "127.0.0.1",
+            7890,
+            Some(42),
+            ListenerOwner::MioProxyManaged,
+        );
+        let external = listener("ipv4", "127.0.0.1", 7890, Some(43), ListenerOwner::External);
+        let unknown = listener("ipv4", "127.0.0.1", 7890, None, ListenerOwner::Unknown);
+
+        assert_eq!(
+            listener_readiness(&[managed], 7890, 42),
+            CoreReadiness::Ready
+        );
+        assert_eq!(
+            listener_readiness(std::slice::from_ref(&external), 7890, 42),
+            CoreReadiness::ListenerExternal
+        );
+        assert_eq!(
+            listener_readiness(
+                &[
+                    listener(
+                        "ipv4",
+                        "127.0.0.1",
+                        7890,
+                        Some(42),
+                        ListenerOwner::MioProxyManaged,
+                    ),
+                    external.clone(),
+                ],
+                7890,
+                42,
+            ),
+            CoreReadiness::ListenerExternal
+        );
+        assert_eq!(
+            listener_readiness(std::slice::from_ref(&unknown), 7890, 42),
+            CoreReadiness::ListenerUnknown
+        );
+        assert_eq!(
+            listener_readiness(&[], 7890, 42),
+            CoreReadiness::ListenerMissing
+        );
+        assert_eq!(
+            controller_listener_conflict(std::slice::from_ref(&external)),
+            Some(CoreReadiness::ControllerExternal)
+        );
+        assert_eq!(
+            controller_listener_conflict(std::slice::from_ref(&unknown)),
+            Some(CoreReadiness::ControllerUnknown)
+        );
+        assert_eq!(
+            controller_listener_conflict(&[
+                listener(
+                    "ipv4",
+                    "127.0.0.1",
+                    19090,
+                    Some(42),
+                    ListenerOwner::MioProxyManaged,
+                ),
+                listener(
+                    "ipv4",
+                    "127.0.0.1",
+                    19090,
+                    Some(43),
+                    ListenerOwner::External,
+                ),
+            ]),
+            Some(CoreReadiness::ControllerExternal)
+        );
+    }
+
+    #[test]
+    fn only_controller_communication_failures_are_graceable() {
+        assert_eq!(
+            controller_failure_readiness(&[ControllerFailureKind::Unavailable]),
+            CoreReadiness::ControllerUnavailable
+        );
+        assert_eq!(
+            controller_failure_readiness(&[
+                ControllerFailureKind::Unavailable,
+                ControllerFailureKind::Invalid,
+            ]),
+            CoreReadiness::ControllerInvalid
+        );
+        assert_eq!(
+            controller_failure_readiness(&[
+                ControllerFailureKind::Unavailable,
+                ControllerFailureKind::Rejected,
+            ]),
+            CoreReadiness::ControllerRejected
+        );
+    }
+
+    #[test]
+    fn controller_http_statuses_separate_auth_from_transient_failures() {
+        for status in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN] {
+            assert_eq!(
+                controller_failure_kind_for_status(status),
+                ControllerFailureKind::Rejected,
+                "authentication status {status} must fail closed"
+            );
+        }
+
+        for status in [
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::GATEWAY_TIMEOUT,
+        ] {
+            assert_eq!(
+                controller_failure_kind_for_status(status),
+                ControllerFailureKind::Unavailable,
+                "transient Controller status {status} must be graceable"
+            );
+        }
+
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::NOT_FOUND,
+            StatusCode::METHOD_NOT_ALLOWED,
+        ] {
+            assert_eq!(
+                controller_failure_kind_for_status(status),
+                ControllerFailureKind::Invalid,
+                "unexpected client status {status} must be invalid"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn controller_authentication_rejection_is_not_unavailable() {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind mock controller");
+        let address = listener.local_addr().expect("mock controller address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept mock request");
+            let mut buffer = [0_u8; 1024];
+            let _ = stream.read(&mut buffer).await.expect("read mock request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("write mock rejection");
+        });
+
+        let result = api_get_with_timeout_classified_at(
+            &format!("http://{address}"),
+            "/version",
+            Duration::from_secs(1),
+            "wrong-token",
+        )
+        .await;
+        assert_eq!(
+            result.expect_err("authentication must be rejected").kind,
+            ControllerFailureKind::Rejected
+        );
+        server.await.expect("mock controller task");
     }
 
     #[test]
@@ -2681,14 +3029,17 @@ proxy-groups:
             tokio::time::sleep(Duration::from_millis(100)).await;
         });
 
-        let result = api_get_with_timeout_at(
+        let result = api_get_with_timeout_classified_at(
             &format!("http://{address}"),
             "/proxies/node/delay?url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204&timeout=5000",
             Duration::from_millis(20),
             "test-token",
         )
         .await;
-        assert!(result.is_err());
+        assert_eq!(
+            result.expect_err("controller request must time out").kind,
+            ControllerFailureKind::Unavailable
+        );
         server.await.expect("mock controller task");
     }
 }

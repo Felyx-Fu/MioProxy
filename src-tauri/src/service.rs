@@ -21,6 +21,7 @@ const CORE_RECOVERY_RETRY_DELAYS_SECS: [u64; 3] = [15, 30, 60];
 const CORE_RECOVERY_MAX_FAILURES: u32 = 4;
 const CORE_START_MAX_CANDIDATES: u32 = 4;
 const CORE_RECOVERY_ERROR_MAX_CHARS: usize = 512;
+const CORE_CONTROLLER_GRACE_SECS: u64 = 36;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "camelCase")]
@@ -1752,6 +1753,88 @@ mod windows_impl {
         last_error: Option<String>,
     }
 
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    struct ControllerGraceState {
+        managed_pid: Option<u32>,
+        started_at: Option<u64>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ControllerGraceDecision {
+        Started,
+        Waiting { remaining_secs: u64 },
+        Expired,
+    }
+
+    impl ControllerGraceState {
+        fn observe_unavailable(&mut self, now: u64, managed_pid: u32) -> ControllerGraceDecision {
+            if self.managed_pid != Some(managed_pid) {
+                *self = Self {
+                    managed_pid: Some(managed_pid),
+                    started_at: Some(now),
+                };
+                return ControllerGraceDecision::Started;
+            }
+
+            let Some(started_at) = self.started_at.as_ref() else {
+                self.started_at = Some(now);
+                return ControllerGraceDecision::Started;
+            };
+            let elapsed = now.saturating_sub(*started_at);
+            if elapsed >= CORE_CONTROLLER_GRACE_SECS {
+                ControllerGraceDecision::Expired
+            } else {
+                ControllerGraceDecision::Waiting {
+                    remaining_secs: CORE_CONTROLLER_GRACE_SECS - elapsed,
+                }
+            }
+        }
+
+        fn reset(&mut self) {
+            *self = Self::default();
+        }
+    }
+
+    fn controller_grace_eligible(
+        process_alive: bool,
+        ownership_valid: bool,
+        readiness: mihomo::CoreReadiness,
+    ) -> bool {
+        process_alive
+            && ownership_valid
+            && matches!(readiness, mihomo::CoreReadiness::ControllerUnavailable)
+    }
+
+    fn core_readiness_failure_message(readiness: mihomo::CoreReadiness) -> String {
+        match readiness {
+            mihomo::CoreReadiness::Ready => "受管 Mihomo 已达到 Ready".to_string(),
+            mihomo::CoreReadiness::ControllerUnavailable => {
+                "受管 Mihomo Controller 暂时不可用".to_string()
+            }
+            mihomo::CoreReadiness::ControllerRejected => {
+                "受管 Mihomo Controller 拒绝请求或认证失败".to_string()
+            }
+            mihomo::CoreReadiness::ControllerInvalid => {
+                "受管 Mihomo Controller 返回无效响应".to_string()
+            }
+            mihomo::CoreReadiness::ListenerMissing => {
+                "受管 Mihomo mixed-port 监听器缺失".to_string()
+            }
+            mihomo::CoreReadiness::ListenerExternal => {
+                "Mihomo mixed-port 由外部进程占用，拒绝进入 Controller grace".to_string()
+            }
+            mihomo::CoreReadiness::ListenerUnknown => {
+                "无法确认 Mihomo mixed-port 所有权，拒绝进入 Controller grace".to_string()
+            }
+            mihomo::CoreReadiness::ControllerExternal => {
+                "Mihomo Controller 由外部进程占用，拒绝进入 Controller grace".to_string()
+            }
+            mihomo::CoreReadiness::ControllerUnknown => {
+                "无法确认 Mihomo Controller 所有权，拒绝进入 Controller grace".to_string()
+            }
+        }
+    }
+
     impl CoreRecoveryState {
         fn from_persisted(persisted: PersistedCoreRecoveryState, now: u64) -> (Self, bool) {
             if persisted.format_version != CORE_RECOVERY_STATE_FORMAT_VERSION
@@ -2025,6 +2108,8 @@ mod windows_impl {
         desired_core_running: Mutex<bool>,
         core_recovery: Mutex<CoreRecoveryState>,
         core_recovery_message: Mutex<Option<String>>,
+        controller_grace: Mutex<ControllerGraceState>,
+        controller_grace_message: Mutex<Option<String>>,
         core_exit_pending: Mutex<bool>,
         pending_tun_profile: Mutex<Option<String>>,
         outbound_compatibility: Mutex<outbound::OutboundCompatibility>,
@@ -2075,6 +2160,8 @@ mod windows_impl {
                 desired_core_running: Mutex::new(desired_core_running),
                 core_recovery: Mutex::new(core_recovery),
                 core_recovery_message: Mutex::new(initial_recovery_message),
+                controller_grace: Mutex::new(ControllerGraceState::default()),
+                controller_grace_message: Mutex::new(None),
                 core_exit_pending: Mutex::new(false),
                 pending_tun_profile: Mutex::new(None),
                 outbound_compatibility: Mutex::new(outbound::resolve().unwrap_or_default()),
@@ -2131,6 +2218,62 @@ mod windows_impl {
                 .lock()
                 .map_err(|_| "Service Mihomo 恢复状态锁异常")? = message;
             Ok(())
+        }
+
+        fn set_controller_grace_message(&self, message: Option<String>) -> Result<(), String> {
+            *self
+                .controller_grace_message
+                .lock()
+                .map_err(|_| "Service Mihomo Controller grace 状态锁异常")? = message;
+            Ok(())
+        }
+
+        fn clear_controller_grace(&self) -> Result<(), String> {
+            self.controller_grace
+                .lock()
+                .map_err(|_| "Service Mihomo Controller grace 锁异常")?
+                .reset();
+            self.set_controller_grace_message(None)
+        }
+
+        fn observe_controller_unavailable(
+            &self,
+            now: u64,
+            managed_pid: u32,
+        ) -> Result<ControllerGraceDecision, String> {
+            let decision = self
+                .controller_grace
+                .lock()
+                .map_err(|_| "Service Mihomo Controller grace 锁异常")?
+                .observe_unavailable(now, managed_pid);
+            let message = match decision {
+                ControllerGraceDecision::Started
+                | ControllerGraceDecision::Waiting { remaining_secs: _ } => {
+                    let remaining_secs = match decision {
+                        ControllerGraceDecision::Started => CORE_CONTROLLER_GRACE_SECS,
+                        ControllerGraceDecision::Waiting { remaining_secs } => remaining_secs,
+                        ControllerGraceDecision::Expired => 0,
+                    };
+                    Some(format!(
+                        "受管 Mihomo 仍在运行，但 Controller 暂时不可用，正在重试（约 {remaining_secs} 秒）"
+                    ))
+                }
+                ControllerGraceDecision::Expired => None,
+            };
+            self.set_controller_grace_message(message)?;
+            Ok(decision)
+        }
+
+        fn recovery_projection_message(&self) -> Result<Option<String>, String> {
+            if let Some(message) = self
+                .controller_grace_message
+                .lock()
+                .map_err(|_| "Service Mihomo Controller grace 状态锁异常")?
+                .clone()
+            {
+                return Ok(Some(message));
+            }
+            self.core_recovery_message()
         }
 
         fn persist_core_recovery(&self, state: &CoreRecoveryState) -> Result<(), String> {
@@ -2385,6 +2528,17 @@ mod windows_impl {
                 .map(Child::id))
         }
 
+        fn managed_core_identity_valid(&self, managed_pid: u32) -> Result<bool, String> {
+            let child_pid = self
+                .child
+                .lock()
+                .map_err(|_| "Service Mihomo 状态锁异常")?
+                .as_ref()
+                .map(Child::id);
+            Ok(child_pid == Some(managed_pid)
+                && read_persisted_service_core_pid_at(&self.data_dir) == Some(managed_pid))
+        }
+
         async fn owned_core_ready(&self) -> Result<bool, String> {
             let Some(managed_pid) = self.managed_core_pid()? else {
                 return Ok(false);
@@ -2484,7 +2638,7 @@ rules:
             } else {
                 configured_mixed_port
             };
-            let recovery_message = self.core_recovery_message()?;
+            let recovery_message = self.recovery_projection_message()?;
             let ready = match managed_pid {
                 Some(managed_pid) => mihomo::core_ready_for_pid(mixed_port, managed_pid).await?,
                 None => false,
@@ -2800,6 +2954,7 @@ rules:
 
         async fn start(&self) -> Result<crate::mihomo::CoreStatus, String> {
             let _transition = self.core_transition.lock().await;
+            self.clear_controller_grace()?;
             self.reset_core_recovery()?;
             self.clear_core_exit_pending()?;
             match self.start_inner().await {
@@ -2821,6 +2976,7 @@ rules:
             if !self.recovery_can_attempt(recovery_now())? {
                 return Ok(None);
             }
+            self.clear_controller_grace()?;
             match self.start_inner().await {
                 Ok(status) => {
                     self.observe_core_ready()?;
@@ -3003,22 +3159,18 @@ rules:
             if !self.desired_core_running().unwrap_or(false) {
                 return;
             }
-            if self.owned_core_ready().await.unwrap_or(false) {
-                let _ = self.observe_core_ready();
-                return;
-            }
             if self.managed_core_pid().ok().flatten().is_none() && mihomo::is_running().await {
                 let _ = self.set_desired_core_running(false);
                 let _ = self.reset_core_recovery();
+                let _ = self.clear_controller_grace();
                 return;
             }
-            if let Err(error) = self.automatic_start_locked().await {
-                eprintln!("Service Mihomo 自动恢复失败：{error}");
-            }
+            self.monitor_core_once_locked().await;
         }
 
         async fn stop(&self) -> Result<crate::mihomo::CoreStatus, String> {
             let _transition = self.core_transition.lock().await;
+            self.clear_controller_grace()?;
             self.reset_core_recovery()?;
             self.clear_core_exit_pending()?;
             self.clear_pending_tun_restore()?;
@@ -3606,7 +3758,7 @@ rules:
                 tun_profile_id: tun.profile_id,
                 tun_snapshot: tun.snapshot,
                 desired_core_running: self.desired_core_running()?,
-                core_recovery_message: self.core_recovery_message()?,
+                core_recovery_message: self.recovery_projection_message()?,
             })
         }
 
@@ -3665,6 +3817,7 @@ rules:
             let mut errors = Vec::new();
             // SCM shutdown/restart (including an application upgrade) must not
             // turn a Ready Core into a persisted user stop request.
+            let _ = self.clear_controller_grace();
             let _ = self.set_core_recovery_message(None);
             if self.has_tun_recovery() {
                 if let Err(error) = self.disable_tun().await {
@@ -3761,39 +3914,127 @@ rules:
                 let _ = self.set_core_recovery_message(Some(error));
                 return;
             }
-            let ready_probe = self.owned_core_ready().await;
-            let child_exited = self.take_core_exit_pending().unwrap_or(false);
-            if matches!(ready_probe, Ok(true)) {
-                if let Err(error) = self.observe_core_ready() {
+            let mut child_exited = match self.take_core_exit_pending() {
+                Ok(exited) => exited,
+                Err(error) => {
                     let _ = self.set_core_recovery_message(Some(error));
                     return;
                 }
-                if self.pending_tun_restore().ok().flatten().is_some() {
-                    if let Err(error) = self.restore_pending_tun_locked().await {
-                        let _ = self.set_core_recovery_message(Some(format!(
-                            "Mihomo 已恢复，但 TUN 自动恢复失败：{error}"
-                        )));
-                    }
+            };
+            let managed_pid = match self.managed_core_pid() {
+                Ok(pid) => pid,
+                Err(error) => {
+                    let _ = self.set_core_recovery_message(Some(error));
+                    return;
                 }
-                return;
-            }
-
-            let tun = self.tun_data().ok();
-            let tun_profile_id = tun.as_ref().and_then(|tun| tun.profile_id.clone());
-            let tun_needs_cleanup = tun
-                .as_ref()
-                .is_some_and(|tun| tun.status != "disabled" && self.has_tun_recovery());
-            let failure_reason = match &ready_probe {
-                Err(error) if had_child || child_exited => Some(error.clone()),
-                Ok(false) if had_child || child_exited => Some(if child_exited {
-                    "受管 Mihomo 进程异常退出，未能保持 Ready".to_string()
-                } else {
-                    "受管 Mihomo 未保持 Ready，自动恢复将退避".to_string()
-                }),
-                _ => None,
+            };
+            child_exited |= self.take_core_exit_pending().unwrap_or(false);
+            let mut failure_reason = if child_exited || (had_child && managed_pid.is_none()) {
+                Some("受管 Mihomo 进程异常退出，未能保持 Ready".to_string())
+            } else {
+                None
             };
 
+            if failure_reason.is_none() {
+                if let Some(managed_pid) = managed_pid {
+                    let ownership_valid = self
+                        .managed_core_identity_valid(managed_pid)
+                        .unwrap_or(false);
+                    if !ownership_valid {
+                        failure_reason = Some(
+                            "受管 Mihomo owner 或 PID 身份不匹配，拒绝进入 Controller grace"
+                                .to_string(),
+                        );
+                    } else {
+                        let readiness = match self.runtime_config() {
+                            Ok((configured_mixed_port, _)) => {
+                                let mixed_port =
+                                    config::actual_runtime_mixed_port_at(&self.data_dir)
+                                        .unwrap_or(configured_mixed_port);
+                                mihomo::core_readiness_for_pid(mixed_port, managed_pid).await
+                            }
+                            Err(error) => Err(error),
+                        };
+                        let liveness_error = self.refresh_child().err();
+                        child_exited |= self.take_core_exit_pending().unwrap_or(false);
+                        let ownership_still_valid = self
+                            .managed_core_identity_valid(managed_pid)
+                            .unwrap_or(false);
+                        let still_owned_pid = self
+                            .child
+                            .lock()
+                            .ok()
+                            .and_then(|child| child.as_ref().map(Child::id));
+                        if let Some(error) = liveness_error {
+                            failure_reason = Some(error);
+                        } else if child_exited || still_owned_pid != Some(managed_pid) {
+                            failure_reason = Some(
+                                "受管 Mihomo 进程在 Controller 检查期间退出，未能保持 Ready"
+                                    .to_string(),
+                            );
+                        } else if !ownership_still_valid {
+                            failure_reason = Some(
+                                "受管 Mihomo owner 或 PID 身份在 Controller 检查期间变化，拒绝进入 Controller grace"
+                                    .to_string(),
+                            );
+                        } else {
+                            let process_alive =
+                                !child_exited && still_owned_pid == Some(managed_pid);
+                            match readiness {
+                                Ok(mihomo::CoreReadiness::Ready) => {
+                                    let _ = self.clear_controller_grace();
+                                    if let Err(error) = self.observe_core_ready() {
+                                        let _ = self.set_core_recovery_message(Some(error));
+                                        return;
+                                    }
+                                    if self.pending_tun_restore().ok().flatten().is_some() {
+                                        if let Err(error) = self.restore_pending_tun_locked().await
+                                        {
+                                            let _ = self.set_core_recovery_message(Some(format!(
+                                                "Mihomo 已恢复，但 TUN 自动恢复失败：{error}"
+                                            )));
+                                        }
+                                    }
+                                    return;
+                                }
+                                Ok(readiness)
+                                    if controller_grace_eligible(
+                                        process_alive,
+                                        ownership_still_valid,
+                                        readiness,
+                                    ) =>
+                                {
+                                    match self
+                                        .observe_controller_unavailable(recovery_now(), managed_pid)
+                                    {
+                                        Ok(ControllerGraceDecision::Started)
+                                        | Ok(ControllerGraceDecision::Waiting {
+                                            remaining_secs: _,
+                                        }) => return,
+                                        Ok(ControllerGraceDecision::Expired) => {
+                                            failure_reason = Some(format!(
+                                                "受管 Mihomo Controller 在 {} 秒 grace 内未恢复，自动恢复将替换 Core",
+                                                CORE_CONTROLLER_GRACE_SECS
+                                            ));
+                                        }
+                                        Err(error) => failure_reason = Some(error),
+                                    }
+                                }
+                                Ok(readiness) => {
+                                    failure_reason =
+                                        Some(core_readiness_failure_message(readiness));
+                                }
+                                Err(error) => failure_reason = Some(error),
+                            }
+                        }
+                    }
+                }
+            }
+
             if let Some(error) = failure_reason {
+                let _ = self.clear_controller_grace();
+                let tun = self.tun_data().ok();
+                let tun_profile_id = tun.as_ref().and_then(|tun| tun.profile_id.clone());
                 if self.owns_core().unwrap_or(false) {
                     if let Err(cleanup_error) = self.stop_owned_child_for_retry() {
                         let _ = self.set_core_recovery_message(Some(cleanup_error));
@@ -3811,10 +4052,12 @@ rules:
                 return;
             }
 
-            if let Err(error) = ready_probe {
-                let _ = self.set_core_recovery_message(Some(error));
-                return;
-            }
+            let _ = self.clear_controller_grace();
+            let tun = self.tun_data().ok();
+            let tun_profile_id = tun.as_ref().and_then(|tun| tun.profile_id.clone());
+            let tun_needs_cleanup = tun
+                .as_ref()
+                .is_some_and(|tun| tun.status != "disabled" && self.has_tun_recovery());
 
             if tun_needs_cleanup {
                 if let Err(error) = self
@@ -4250,6 +4493,93 @@ rules:
             assert_eq!(state.mode(205), CoreRecoveryMode::Active);
             assert!(state.can_attempt(205));
             assert_eq!(core_recovery_message(&state, 205), None);
+        }
+
+        #[test]
+        fn controller_grace_is_bounded_without_touching_recovery_policy() {
+            let mut grace = ControllerGraceState::default();
+            let recovery = CoreRecoveryState::default();
+
+            assert_eq!(
+                grace.observe_unavailable(100, 42),
+                ControllerGraceDecision::Started
+            );
+            assert_eq!(recovery, CoreRecoveryState::default());
+            assert_eq!(
+                grace.observe_unavailable(120, 42),
+                ControllerGraceDecision::Waiting { remaining_secs: 16 }
+            );
+            assert_eq!(
+                grace.observe_unavailable(136, 42),
+                ControllerGraceDecision::Expired
+            );
+            assert_eq!(recovery.failure_count, 0);
+        }
+
+        #[test]
+        fn controller_grace_requires_live_owned_process_and_transient_failure() {
+            assert!(controller_grace_eligible(
+                true,
+                true,
+                mihomo::CoreReadiness::ControllerUnavailable
+            ));
+            assert!(!controller_grace_eligible(
+                false,
+                true,
+                mihomo::CoreReadiness::ControllerUnavailable
+            ));
+            assert!(!controller_grace_eligible(
+                true,
+                false,
+                mihomo::CoreReadiness::ControllerUnavailable
+            ));
+            assert!(!controller_grace_eligible(
+                true,
+                true,
+                mihomo::CoreReadiness::ListenerExternal
+            ));
+            assert!(!controller_grace_eligible(
+                true,
+                true,
+                mihomo::CoreReadiness::ControllerRejected
+            ));
+            assert!(!controller_grace_eligible(
+                true,
+                true,
+                mihomo::CoreReadiness::ControllerInvalid
+            ));
+            assert!(!controller_grace_eligible(
+                true,
+                true,
+                mihomo::CoreReadiness::ListenerMissing
+            ));
+            assert!(!controller_grace_eligible(
+                true,
+                true,
+                mihomo::CoreReadiness::ControllerExternal
+            ));
+        }
+
+        #[test]
+        fn controller_grace_reset_supports_explicit_stop_and_retry() {
+            let mut grace = ControllerGraceState::default();
+            assert_eq!(
+                grace.observe_unavailable(100, 42),
+                ControllerGraceDecision::Started
+            );
+            grace.reset();
+            assert_eq!(
+                grace.observe_unavailable(101, 42),
+                ControllerGraceDecision::Started
+            );
+            assert_eq!(grace.managed_pid, Some(42));
+            assert_eq!(grace.started_at, Some(101));
+            assert_eq!(
+                grace.observe_unavailable(102, 43),
+                ControllerGraceDecision::Started
+            );
+            assert_eq!(grace.managed_pid, Some(43));
+            assert_eq!(grace.started_at, Some(102));
         }
 
         #[test]
