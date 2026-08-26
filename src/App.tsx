@@ -85,6 +85,13 @@ export default function App({ initialState }: { initialState?: AppInitialState }
   const modeRequestInFlight = useRef(false);
   const systemProxyRequestInFlight = useRef(false);
   const systemProxyRefreshSequence = useRef(0);
+  const appMounted = useRef(true);
+  const coreStatusRefreshSequence = useRef(0);
+  const serviceRefreshSequence = useRef(0);
+  const proxyRefreshSequence = useRef(0);
+  const proxyDataAvailable = useRef(false);
+  const coreLifecycleGeneration = useRef(0);
+  const coreLifecycleState = useRef<CoreState>("starting");
   const coreReady = coreState === "ready";
   const traffic = useTraffic();
   const connections = useConnections(coreReady);
@@ -112,36 +119,86 @@ export default function App({ initialState }: { initialState?: AppInitialState }
     setProxyState(next.enabled ? "enabled" : "disabled");
   }, []);
 
+  const invalidateProxyRefreshes = useCallback(() => {
+    proxyRefreshSequence.current += 1;
+    proxyDataAvailable.current = false;
+    setProxies(null);
+    setProxyLoading(false);
+    setProxyPathState("unknown");
+  }, []);
+
+  const applyCoreLifecycleState = useCallback((next: CoreState) => {
+    if (coreLifecycleState.current === next) return;
+    coreLifecycleState.current = next;
+    coreLifecycleGeneration.current += 1;
+    if (next !== "ready") invalidateProxyRefreshes();
+  }, [invalidateProxyRefreshes]);
+
+  const invalidateCoreStatusRefreshes = useCallback(() => {
+    coreStatusRefreshSequence.current += 1;
+  }, []);
+
   const refreshStatus = useCallback(async (): Promise<CoreStatus | null> => {
+    const sequence = ++coreStatusRefreshSequence.current;
+    const isCurrent = () => appMounted.current && sequence === coreStatusRefreshSequence.current;
     try {
       const next = await mihomoApi.status();
+      if (!isCurrent()) return next;
       setStatus(next);
+      applyCoreLifecycleState(next.state);
       setCoreState(next.state);
       setCoreRecoveryError(next.recoveryMessage ?? null);
-      if (next.state === "ready") {
-        setVersion(await mihomoApi.version());
-      } else {
+      if (next.state !== "ready") {
         setVersion(null);
+        return next;
+      }
+
+      try {
+        const nextVersion = await mihomoApi.version();
+        if (isCurrent()) setVersion(nextVersion);
+      } catch (e) {
+        if (!isCurrent()) return next;
+        const message = errorMessage(e);
+        if (isServiceIpcFailure(message)) return null;
+        applyCoreLifecycleState("error");
+        setCoreState("error");
+        setCoreRecoveryError(message);
+        setError(message);
+        return null;
       }
       return next;
     } catch (e) {
+      if (!isCurrent()) return null;
       const message = errorMessage(e);
       if (isServiceIpcFailure(message)) return null;
+      applyCoreLifecycleState("error");
       setCoreState("error");
       setCoreRecoveryError(message);
       setError(message);
       return null;
     }
-  }, []);
+  }, [applyCoreLifecycleState]);
 
-  const refreshProxies = useCallback(async () => {
-    setProxyLoading(true);
+  const refreshProxies = useCallback(async (options: { showLoading?: boolean } = {}): Promise<ProxiesResponse | null> => {
+    const sequence = ++proxyRefreshSequence.current;
+    const lifecycle = coreLifecycleGeneration.current;
+    const showLoading = options.showLoading ?? !proxyDataAvailable.current;
+    const isCurrent = () => appMounted.current
+      && sequence === proxyRefreshSequence.current
+      && lifecycle === coreLifecycleGeneration.current
+      && coreLifecycleState.current === "ready";
+    if (showLoading) setProxyLoading(true);
     try {
-      setProxies(await mihomoApi.proxies());
+      const next = await mihomoApi.proxies();
+      if (!isCurrent()) return next;
+      proxyDataAvailable.current = true;
+      setProxies(next);
+      return next;
     } catch (e) {
-      setError(errorMessage(e));
+      if (isCurrent()) setError(errorMessage(e));
+      return null;
     } finally {
-      setProxyLoading(false);
+      if (appMounted.current && sequence === proxyRefreshSequence.current) setProxyLoading(false);
     }
   }, []);
 
@@ -189,9 +246,12 @@ export default function App({ initialState }: { initialState?: AppInitialState }
     return request;
   }, []);
 
-  const refreshServiceConnection = useCallback(async () => {
+  const refreshServiceConnection = useCallback(async (): Promise<ServiceConnectionStatus | null> => {
+    const sequence = ++serviceRefreshSequence.current;
+    const isCurrent = () => appMounted.current && sequence === serviceRefreshSequence.current;
     try {
       const next = await mihomoApi.serviceStatus();
+      if (!isCurrent()) return null;
       const recovered = serviceWasUnavailable.current && next.reachable;
       serviceWasUnavailable.current = !next.reachable && Boolean(next.error);
       setServiceConnection(next);
@@ -205,7 +265,7 @@ export default function App({ initialState }: { initialState?: AppInitialState }
       } else if (serviceOutageStartedAt.current === null) {
         serviceOutageStartedAt.current = Date.now();
         serviceNoticeTimer.current = window.setTimeout(() => {
-          if (serviceWasUnavailable.current) setServiceReconnectVisible(true);
+          if (appMounted.current && serviceWasUnavailable.current) setServiceReconnectVisible(true);
         }, 5000);
       }
       if (recovered) {
@@ -214,10 +274,26 @@ export default function App({ initialState }: { initialState?: AppInitialState }
         void refreshProxies();
         void refreshTun();
       }
+      return next;
     } catch {
-      serviceWasUnavailable.current = true;
+      if (isCurrent()) serviceWasUnavailable.current = true;
+      return null;
     }
   }, [refreshProxies, refreshStatus, refreshSystemProxy, refreshTun]);
+
+  useEffect(() => {
+    appMounted.current = true;
+    return () => {
+      appMounted.current = false;
+      coreStatusRefreshSequence.current += 1;
+      serviceRefreshSequence.current += 1;
+      proxyRefreshSequence.current += 1;
+      if (serviceNoticeTimer.current !== null) {
+        window.clearTimeout(serviceNoticeTimer.current);
+        serviceNoticeTimer.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     void refreshStatus();
@@ -402,6 +478,8 @@ export default function App({ initialState }: { initialState?: AppInitialState }
         coreCrashPending.current = false;
         return;
       }
+      invalidateCoreStatusRefreshes();
+      applyCoreLifecycleState("stopped");
       setStatus((current) => current ? { ...current, state: "stopped", running: false } : current);
       setCoreState("stopped");
       setCoreRecoveryError(null);
@@ -414,6 +492,8 @@ export default function App({ initialState }: { initialState?: AppInitialState }
       if (!active) return;
       const message = "Mihomo 已异常退出，请检查日志或运行配置。";
       coreCrashPending.current = true;
+      invalidateCoreStatusRefreshes();
+      applyCoreLifecycleState("error");
       setStatus((current) => current ? { ...current, state: "error", running: false } : current);
       setCoreState("error");
       setCoreRecoveryError(message);
@@ -429,7 +509,7 @@ export default function App({ initialState }: { initialState?: AppInitialState }
       unlistenStopped?.();
       unlistenCrashed?.();
     };
-  }, [pushToast]);
+  }, [applyCoreLifecycleState, invalidateCoreStatusRefreshes, pushToast]);
 
   useEffect(() => {
     if (coreReady) void refreshProxies();
@@ -826,7 +906,7 @@ export default function App({ initialState }: { initialState?: AppInitialState }
           {page === "connections" && <ConnectionsPage state={connections} onRefresh={connections.refresh} onClose={connections.closeConnection} onCloseAll={connections.closeAllConnections} />}
           {page === "logs" && <LogsPage state={logs} />}
           {page === "profiles" && <ProfilesPage profiles={profiles} selectedId={selectedProfileId} appliedId={appliedProfileSession?.id ?? null} busyId={profileBusyId} error={error} onSelect={setSelectedProfileId} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} onNavigate={setPage} />}
-          {page === "proxies" && <ProxiesPage data={proxies} mode={status?.mode ?? null} modeBusy={modeBusy} loading={proxyLoading} busyProxy={proxyBusy} delayByKey={delayByKey} delayStatusByKey={delayStatusByKey} profilesLoaded={profilesLoaded} profileCount={profiles.length} preferenceProfileId={appliedProfileSession?.id ?? selectedProfileId} onRefresh={refreshProxies} onModeChange={setCoreMode} onSelect={selectProxy} onDelay={testProxyDelay} />}
+          {page === "proxies" && <ProxiesPage data={proxies} mode={status?.mode ?? null} modeBusy={modeBusy} loading={proxyLoading} busyProxy={proxyBusy} delayByKey={delayByKey} delayStatusByKey={delayStatusByKey} profilesLoaded={profilesLoaded} profileCount={profiles.length} preferenceProfileId={appliedProfileSession?.id ?? selectedProfileId} onRefresh={() => void refreshProxies({ showLoading: true })} onModeChange={setCoreMode} onSelect={selectProxy} onDelay={testProxyDelay} />}
           {page === "rules" && <RulesPage running={coreReady} />}
           {page === "dns" && <DnsPage profileId={selectedProfileId} />}
           {page === "overrides" && <OverridesPage profileId={selectedProfileId} />}
