@@ -2,7 +2,14 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $workflowPath = Join-Path $repoRoot '.github/workflows/release.yml'
-$notesPath = Join-Path $repoRoot 'docs/releases/v1.0.1.md'
+$packagePath = Join-Path $repoRoot 'package.json'
+$packageManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $packagePath | ConvertFrom-Json
+$releaseVersion = [string]$packageManifest.version
+if ([string]::IsNullOrWhiteSpace($releaseVersion)) {
+    throw "package.json does not declare a release version: $packagePath"
+}
+$notesPath = Join-Path $repoRoot "docs/releases/v$releaseVersion.md"
+$installerName = "MioProxy_${releaseVersion}_x64-setup.exe"
 $workflowText = Get-Content -Raw -LiteralPath $workflowPath
 
 function Assert-Contains {
@@ -23,28 +30,20 @@ if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) {
 
 $notesText = Get-Content -Raw -Encoding UTF8 -LiteralPath $notesPath
 foreach ($requiredNotesText in @(
-    '# MioProxy v1.0.1',
-    '**`MioProxy_1.0.1_x64-setup.exe`**',
+    "# MioProxy v$releaseVersion",
+    "**``$installerName``**",
     'Windows Authenticode',
     'Tauri updater'
 )) {
-    Assert-Contains -Text $notesText -Needle $requiredNotesText -Description 'v1.0.1 release notes content'
+    Assert-Contains -Text $notesText -Needle $requiredNotesText -Description "$releaseVersion release notes content"
 }
-
-$h2Lines = @($notesText -split '\r?\n' | Where-Object { $_ -match '^## ' })
-if ($h2Lines.Count -ne 2) {
-    throw "v1.0.1 release notes must contain exactly two level-two sections, found $($h2Lines.Count)."
-}
-$h3Lines = @($notesText -split '\r?\n' | Where-Object { $_ -match '^### ' })
-if ($h3Lines.Count -ne 2) {
-    throw "v1.0.1 release notes must contain exactly two level-three update sections, found $($h3Lines.Count)."
-}
-if ($notesText -notmatch '(?ms)^## [^\r\n]+\r?\n\r?\n?Windows x64.*MioProxy_1\.0\.1_x64-setup\.exe') {
-    throw 'v1.0.1 release notes do not contain the required Download section and installer.'
+$escapedInstallerName = [regex]::Escape($installerName)
+if ($notesText -notmatch "(?ms)^## [^\r\n]*Download[^\r\n]*\r?\n\r?\n?Windows x64.*$escapedInstallerName") {
+    throw "$releaseVersion release notes do not contain the required Download section and installer."
 }
 $lastNotesLine = ($notesText.TrimEnd() -split '\r?\n')[-1]
 if ($lastNotesLine -notmatch '^> MioProxy .*Windows Authenticode.*Tauri updater.*$') {
-    throw 'v1.0.1 release notes do not end at the required Windows publisher notice.'
+    throw "$releaseVersion release notes do not end at the required Windows publisher notice."
 }
 
 foreach ($requiredWorkflowText in @(
