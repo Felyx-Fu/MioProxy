@@ -876,7 +876,7 @@ mod tests {
         );
 
         let mut mismatch = base;
-        mismatch.target_version = "1.0.3".to_string();
+        mismatch.target_version = "1.0.4".to_string();
         assert_eq!(
             checkpoint_recovery(&mismatch),
             CheckpointRecovery::VersionMismatch
