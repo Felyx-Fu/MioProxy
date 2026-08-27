@@ -4,6 +4,7 @@ mod windows_service_host {
         env,
         ffi::OsString,
         fs,
+        os::windows::process::CommandExt,
         path::{Path, PathBuf},
         process::Command,
         sync::mpsc,
@@ -26,11 +27,13 @@ mod windows_service_host {
         service_dispatcher,
         service_manager::{ServiceManager, ServiceManagerAccess},
     };
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
     const SERVICE_DISPLAY_NAME: &str = "MioProxy Service";
     const FAILURE_RESET_PERIOD_SECS: u64 = 60 * 60;
     const FAILURE_RESTART_DELAYS_SECS: [u64; 3] = [5, 15, 30];
     const UPDATER_INSTALLER_FLAG: &str = "/MIOPROXY_UPDATER";
+    const PRESERVE_STOPPED_INSTALLER_FLAG: &str = "/MIOPROXY_PRESERVE_STOPPED";
     const UPDATE_CHECKPOINT_FILE: &str = "update-checkpoint.json";
     // With this flag disabled, SCM only queues failure actions when the
     // process exits without reporting SERVICE_STOPPED. Normal Stop/Shutdown
@@ -65,11 +68,26 @@ mod windows_service_host {
         PreserveStoppedState,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ServiceRegistrationPlan {
+        Create,
+        ReuseExisting,
+    }
+
+    fn service_registration_plan(existing_service: bool) -> ServiceRegistrationPlan {
+        if existing_service {
+            ServiceRegistrationPlan::ReuseExisting
+        } else {
+            ServiceRegistrationPlan::Create
+        }
+    }
+
     fn install_start_policy(
         updater_invocation: bool,
+        preserve_stopped: bool,
         checkpoint: Option<&UpdaterInstallCheckpoint>,
     ) -> InstallStartPolicy {
-        let preserve_stopped = updater_invocation
+        let preserve_stopped_from_checkpoint = updater_invocation
             && checkpoint.is_some_and(|checkpoint| {
                 matches!(
                     checkpoint.phase,
@@ -80,7 +98,7 @@ mod windows_service_host {
                     && !checkpoint.service_was_running
                     && !checkpoint.core_was_running
             });
-        if preserve_stopped {
+        if preserve_stopped || preserve_stopped_from_checkpoint {
             InstallStartPolicy::PreserveStoppedState
         } else {
             InstallStartPolicy::StartService
@@ -177,9 +195,10 @@ mod windows_service_host {
     mod tests {
         use super::{
             configured_failure_actions, diagnostic_port, has_flag, install_start_policy,
-            InstallStartPolicy, UpdateInstallPhase, UpdaterInstallCheckpoint,
-            FAILURE_ACTIONS_ON_NON_CRASH_FAILURES, FAILURE_RESET_PERIOD_SECS,
-            FAILURE_RESTART_DELAYS_SECS, UPDATER_INSTALLER_FLAG,
+            service_registration_plan, InstallStartPolicy, ServiceRegistrationPlan,
+            UpdateInstallPhase, UpdaterInstallCheckpoint, FAILURE_ACTIONS_ON_NON_CRASH_FAILURES,
+            FAILURE_RESET_PERIOD_SECS, FAILURE_RESTART_DELAYS_SECS,
+            PRESERVE_STOPPED_INSTALLER_FLAG, UPDATER_INSTALLER_FLAG,
         };
         use std::{ffi::OsString, time::Duration};
         use windows_service::service::{ServiceActionType, ServiceFailureResetPeriod};
@@ -224,11 +243,11 @@ mod windows_service_host {
         fn updater_install_preserves_stopped_service_without_changing_fresh_install() {
             let stopped = checkpoint(UpdateInstallPhase::Restarting, false, false);
             assert_eq!(
-                install_start_policy(true, Some(&stopped)),
+                install_start_policy(true, false, Some(&stopped)),
                 InstallStartPolicy::PreserveStoppedState
             );
             assert_eq!(
-                install_start_policy(false, Some(&stopped)),
+                install_start_policy(false, false, Some(&stopped)),
                 InstallStartPolicy::StartService
             );
             assert!(has_flag(
@@ -241,17 +260,18 @@ mod windows_service_host {
         fn updater_install_keeps_running_service_recovery_possible() {
             let running = checkpoint(UpdateInstallPhase::Restarting, true, false);
             assert_eq!(
-                install_start_policy(true, Some(&running)),
+                install_start_policy(true, false, Some(&running)),
                 InstallStartPolicy::StartService
             );
             let running_core = checkpoint(UpdateInstallPhase::Restarting, false, true);
             assert_eq!(
-                install_start_policy(true, Some(&running_core)),
+                install_start_policy(true, false, Some(&running_core)),
                 InstallStartPolicy::StartService
             );
             assert_eq!(
                 install_start_policy(
                     true,
+                    false,
                     Some(&checkpoint(UpdateInstallPhase::Preparing, false, false))
                 ),
                 InstallStartPolicy::PreserveStoppedState
@@ -259,14 +279,39 @@ mod windows_service_host {
             assert_eq!(
                 install_start_policy(
                     true,
+                    false,
                     Some(&checkpoint(UpdateInstallPhase::Completed, false, false))
                 ),
                 InstallStartPolicy::StartService
             );
             assert_eq!(
-                install_start_policy(true, None),
+                install_start_policy(true, false, None),
                 InstallStartPolicy::StartService
             );
+        }
+
+        #[test]
+        fn manual_overlay_preserves_stopped_service_and_reuses_identity() {
+            assert_eq!(
+                install_start_policy(false, true, None),
+                InstallStartPolicy::PreserveStoppedState
+            );
+            assert_eq!(
+                install_start_policy(false, false, None),
+                InstallStartPolicy::StartService
+            );
+            assert_eq!(
+                service_registration_plan(false),
+                ServiceRegistrationPlan::Create
+            );
+            assert_eq!(
+                service_registration_plan(true),
+                ServiceRegistrationPlan::ReuseExisting
+            );
+            assert!(has_flag(
+                &[OsString::from(PRESERVE_STOPPED_INSTALLER_FLAG)],
+                PRESERVE_STOPPED_INSTALLER_FLAG
+            ));
         }
 
         #[test]
@@ -364,11 +409,12 @@ mod windows_service_host {
         fs::create_dir_all(&data_dir).map_err(|e| format!("创建 Service 数据目录失败：{e}"))?;
         let data_dir =
             fs::canonicalize(&data_dir).map_err(|e| format!("解析 Service 数据目录失败：{e}"))?;
+        let preserve_stopped = has_flag(args, PRESERVE_STOPPED_INSTALLER_FLAG);
         let start_policy = if has_flag(args, UPDATER_INSTALLER_FLAG) {
             let checkpoint = read_updater_checkpoint(&data_dir)?;
-            install_start_policy(true, checkpoint.as_ref())
+            install_start_policy(true, preserve_stopped, checkpoint.as_ref())
         } else {
-            install_start_policy(false, None)
+            install_start_policy(false, preserve_stopped, None)
         };
         let user_sid = option(args, "--user-sid").map(|value| value.to_string_lossy().into_owned());
         service::ensure_install_user_sid(&data_dir, user_sid.as_deref())?;
@@ -443,14 +489,25 @@ mod windows_service_host {
             account_name: None,
             account_password: None,
         };
-        let service = match manager.create_service(&info, service_access) {
-            Ok(service) => service,
-            Err(windows_service::Error::Winapi(error)) if error.raw_os_error() == Some(1073) => {
-                existing_service
-                    .take()
-                    .ok_or_else(|| "MioProxy Service 已存在，但无法重新打开它".to_string())?
+        let service = match service_registration_plan(existing_service.is_some()) {
+            ServiceRegistrationPlan::ReuseExisting => existing_service
+                .take()
+                .ok_or_else(|| "MioProxy Service 已存在，但无法重新打开它".to_string())?,
+            ServiceRegistrationPlan::Create => {
+                match manager.create_service(&info, service_access) {
+                    Ok(service) => service,
+                    Err(windows_service::Error::Winapi(error))
+                        if error.raw_os_error() == Some(1073) =>
+                    {
+                        manager
+                            .open_service(SERVICE_NAME, service_access)
+                            .map_err(|error| {
+                                format!("MioProxy Service 已存在，但无法重新打开它：{error}")
+                            })?
+                    }
+                    Err(error) => return Err(format!("创建 MioProxy Service 失败：{error}")),
+                }
             }
-            Err(error) => return Err(format!("创建 MioProxy Service 失败：{error}")),
         };
         service
             .change_config(&info)
@@ -510,6 +567,7 @@ mod windows_service_host {
             .join("System32")
             .join("sc.exe");
         let status = Command::new(sc_path)
+            .creation_flags(CREATE_NO_WINDOW)
             .args(["config", SERVICE_NAME, "start=", "disabled"])
             .status()
             .map_err(|error| format!("禁用 MioProxy Service 自动启动失败：{error}"))?;
