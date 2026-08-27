@@ -265,7 +265,9 @@ fn startup_runtime_disposition(
 ) -> StartupRuntimeDisposition {
     let stopped_checkpoint_recovery = matches!(
         recovery,
-        CheckpointRecovery::CompleteUpgrade | CheckpointRecovery::MarkInterrupted
+        CheckpointRecovery::VersionMismatch
+            | CheckpointRecovery::CompleteUpgrade
+            | CheckpointRecovery::MarkInterrupted
     ) || (recovery == CheckpointRecovery::NoAction
         && checkpoint.phase == UpdatePhase::Failed);
     if stopped_checkpoint_recovery
@@ -891,6 +893,11 @@ mod tests {
         failed.phase = UpdatePhase::Failed;
         assert_eq!(
             startup_runtime_disposition(CheckpointRecovery::NoAction, &failed),
+            StartupRuntimeDisposition::SuppressAutomaticRuntimeStart
+        );
+
+        assert_eq!(
+            startup_runtime_disposition(CheckpointRecovery::VersionMismatch, &stopped),
             StartupRuntimeDisposition::SuppressAutomaticRuntimeStart
         );
 
