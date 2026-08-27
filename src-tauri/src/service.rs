@@ -507,9 +507,8 @@ mod windows_impl {
 
     fn project_scm_state(state: Option<ServiceState>) -> ServiceProjectionState {
         match state {
-            None | Some(ServiceState::Stopped | ServiceState::StopPending) => {
-                ServiceProjectionState::Stopped
-            }
+            None | Some(ServiceState::Stopped) => ServiceProjectionState::Stopped,
+            Some(ServiceState::StopPending) => ServiceProjectionState::Reconnecting,
             Some(ServiceState::StartPending | ServiceState::ContinuePending) => {
                 ServiceProjectionState::Starting
             }
@@ -572,9 +571,8 @@ mod windows_impl {
     fn scm_connectivity(state: Option<ServiceState>) -> ServiceConnectivity {
         match state {
             None => ServiceConnectivity::NotInstalled,
-            Some(ServiceState::Stopped | ServiceState::StopPending) => {
-                ServiceConnectivity::ServiceStopped
-            }
+            Some(ServiceState::Stopped) => ServiceConnectivity::ServiceStopped,
+            Some(ServiceState::StopPending) => ServiceConnectivity::Transient,
             Some(ServiceState::StartPending | ServiceState::ContinuePending) => {
                 ServiceConnectivity::ScmStarting
             }
@@ -635,6 +633,27 @@ mod windows_impl {
             ServiceConnectivity::NotInstalled => Ok(UpdateServiceStatus::NotInstalled),
             ServiceConnectivity::ServiceStopped => Ok(UpdateServiceStatus::Stopped),
             _ => Err(error),
+        }
+    }
+
+    fn ensure_update_ownership(ownership_conflict: bool) -> Result<(), String> {
+        if ownership_conflict {
+            Err("MioProxy Service 检测到外部 Controller/Core 所有权冲突，拒绝更新".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn update_scm_snapshot_status(
+        state: Option<ServiceState>,
+    ) -> Result<Option<UpdateServiceStatus>, String> {
+        match state {
+            None => Ok(Some(UpdateServiceStatus::NotInstalled)),
+            Some(ServiceState::Stopped) => Ok(Some(UpdateServiceStatus::Stopped)),
+            Some(ServiceState::Running) => Ok(None),
+            Some(state) => Err(format!(
+                "MioProxy Service 处于 {state:?}，拒绝生成更新运行时快照"
+            )),
         }
     }
 
@@ -1042,6 +1061,9 @@ mod windows_impl {
     pub(crate) async fn request_service_status_for_update(
         app: &AppHandle,
     ) -> Result<UpdateServiceStatus, String> {
+        if let Some(status) = update_scm_snapshot_status(installed_service_state()?)? {
+            return Ok(status);
+        }
         match try_request_classified(
             app,
             ServiceCommand::Status,
@@ -1050,7 +1072,9 @@ mod windows_impl {
         .await
         {
             Ok(Some(response)) => {
-                data(response).map(|status| UpdateServiceStatus::Running(Box::new(status)))
+                let status: ServiceStatusData = data(response)?;
+                ensure_update_ownership(status.ownership_conflict)?;
+                Ok(UpdateServiceStatus::Running(Box::new(status)))
             }
             Ok(None) => Ok(UpdateServiceStatus::NotInstalled),
             Err(error) => classify_update_service_error(error).map_err(|error| error.to_string()),
@@ -4860,7 +4884,7 @@ rules:
             );
             assert_eq!(
                 project_scm_state(Some(ServiceState::StopPending)),
-                ServiceProjectionState::Stopped
+                ServiceProjectionState::Reconnecting
             );
             assert_eq!(
                 project_scm_state(Some(ServiceState::StartPending)),
@@ -4889,6 +4913,10 @@ rules:
             assert_eq!(
                 scm_connectivity(Some(ServiceState::StartPending)),
                 ServiceConnectivity::ScmStarting
+            );
+            assert_eq!(
+                scm_connectivity(Some(ServiceState::StopPending)),
+                ServiceConnectivity::Transient
             );
             assert_eq!(
                 scm_connectivity(Some(ServiceState::Running)),
@@ -4938,6 +4966,45 @@ rules:
             .expect_err("a running SCM pipe failure must remain an error");
 
             assert_eq!(error.connectivity, ServiceConnectivity::PipeNotReady);
+        }
+
+        #[test]
+        fn update_rejects_stop_pending_as_a_stable_stopped_snapshot() {
+            assert_eq!(
+                scm_connectivity(Some(ServiceState::StopPending)),
+                ServiceConnectivity::Transient
+            );
+            let error = classify_update_service_error(classified_error(
+                ServiceConnectivity::Transient,
+                false,
+                "MioProxy Service 正在停止，等待权威状态",
+            ))
+            .expect_err("StopPending must not become an update stopped snapshot");
+
+            assert_eq!(error.connectivity, ServiceConnectivity::Transient);
+        }
+
+        #[test]
+        fn update_scm_snapshot_requires_a_stable_service_state() {
+            assert!(matches!(
+                update_scm_snapshot_status(None),
+                Ok(Some(UpdateServiceStatus::NotInstalled))
+            ));
+            assert!(matches!(
+                update_scm_snapshot_status(Some(ServiceState::Stopped)),
+                Ok(Some(UpdateServiceStatus::Stopped))
+            ));
+            assert!(update_scm_snapshot_status(Some(ServiceState::Running))
+                .expect("Running keeps the IPC status path")
+                .is_none());
+            assert!(update_scm_snapshot_status(Some(ServiceState::StopPending)).is_err());
+            assert!(update_scm_snapshot_status(Some(ServiceState::StartPending)).is_err());
+        }
+
+        #[test]
+        fn update_blocks_external_controller_ownership_conflict() {
+            assert!(ensure_update_ownership(true).is_err());
+            assert!(ensure_update_ownership(false).is_ok());
         }
 
         #[test]

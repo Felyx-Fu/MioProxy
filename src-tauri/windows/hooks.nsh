@@ -1,3 +1,5 @@
+!include FileFunc.nsh
+
 !macro NSIS_HOOK_PREINSTALL
   ; Stop and remove the previous Service before NSIS replaces its executable.
   ; Use SCM commands because an older installed Service binary may not
@@ -51,7 +53,16 @@ service_preinstall_done:
 !macro NSIS_HOOK_POSTINSTALL
   ; Register the exact Service and Mihomo binaries copied by this installer.
   SetShellVarContext current
-  ExecWait '"$INSTDIR\mioproxy-service.exe" --install --data-dir "$APPDATA\dev.MioProxy" --mihomo-path "$INSTDIR\mihomo.exe"' $0
+  ; The updater passes this explicit marker only for a signed app update.
+  ; Forward it so the Service installer can preserve an authoritative stopped
+  ; checkpoint without changing normal fresh-install startup behavior.
+  StrCpy $1 ""
+  ClearErrors
+  ${GetOptions} "$CMDLINE" "/MIOPROXY_UPDATER" $2
+  ${IfNot} ${Errors}
+    StrCpy $1 "/MIOPROXY_UPDATER"
+  ${EndIf}
+  ExecWait '"$INSTDIR\mioproxy-service.exe" --install --data-dir "$APPDATA\dev.MioProxy" --mihomo-path "$INSTDIR\mihomo.exe" $1' $0
   ${If} $0 != 0
     MessageBox MB_ICONSTOP|MB_OK "MioProxy Service 安装失败，安装未完成。请保留此错误并重试。"
     Abort

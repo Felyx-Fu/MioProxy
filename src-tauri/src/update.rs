@@ -13,6 +13,7 @@ use crate::{config, AppLifecycle};
 pub(crate) const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CHECKPOINT_FILE: &str = "update-checkpoint.json";
 const PREFERENCES_FILE: &str = "update-preferences.json";
+const UPDATER_INSTALLER_ARG: &str = "/MIOPROXY_UPDATER";
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
 fn update_check_disabled_by(value: Option<&str>) -> bool {
@@ -186,6 +187,12 @@ enum CheckpointRecovery {
     NoAction,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartupRuntimeDisposition {
+    Continue,
+    SuppressAutomaticRuntimeStart,
+}
+
 fn checkpoint_recovery(checkpoint: &UpdateCheckpoint) -> CheckpointRecovery {
     if checkpoint.target_version != CURRENT_VERSION {
         return CheckpointRecovery::VersionMismatch;
@@ -252,19 +259,39 @@ pub(crate) fn recover_checkpoint<R: Runtime>(app: &AppHandle<R>) -> Result<Optio
     }
 }
 
-pub(crate) async fn recover_after_startup(app: AppHandle) {
+fn startup_runtime_disposition(
+    recovery: CheckpointRecovery,
+    checkpoint: &UpdateCheckpoint,
+) -> StartupRuntimeDisposition {
+    let stopped_checkpoint_recovery = matches!(
+        recovery,
+        CheckpointRecovery::CompleteUpgrade | CheckpointRecovery::MarkInterrupted
+    ) || (recovery == CheckpointRecovery::NoAction
+        && checkpoint.phase == UpdatePhase::Failed);
+    if stopped_checkpoint_recovery
+        && !checkpoint.service_was_running
+        && !checkpoint.core_was_running
+    {
+        StartupRuntimeDisposition::SuppressAutomaticRuntimeStart
+    } else {
+        StartupRuntimeDisposition::Continue
+    }
+}
+
+pub(crate) async fn recover_after_startup(app: AppHandle) -> StartupRuntimeDisposition {
     let checkpoint = match checkpoint_for_app(&app) {
         Ok(checkpoint) => checkpoint,
         Err(error) => {
             eprintln!("读取更新恢复检查点失败：{error}");
-            return;
+            return StartupRuntimeDisposition::Continue;
         }
     };
     let Some(checkpoint) = checkpoint else {
-        return;
+        return StartupRuntimeDisposition::Continue;
     };
 
     let recovery = checkpoint_recovery(&checkpoint);
+    let disposition = startup_runtime_disposition(recovery, &checkpoint);
     let result = match recovery {
         CheckpointRecovery::CompleteUpgrade => restore_previous_state(&app, &checkpoint).await,
         CheckpointRecovery::MarkInterrupted => recover_after_update_failure(&app).await,
@@ -289,6 +316,8 @@ pub(crate) async fn recover_after_startup(app: AppHandle) {
             let _ = mark_failed(&app, &error);
         }
     }
+
+    disposition
 }
 
 fn checkpoint_error(checkpoint: &UpdateCheckpoint) -> Option<String> {
@@ -357,21 +386,40 @@ fn core_was_running_for_update(service: &ServiceRuntimeState, gui_core_was_runni
     }
 }
 
+fn tun_runtime_state_for_update(
+    service: &ServiceRuntimeState,
+    gui_tun_was_enabled: bool,
+    gui_tun_profile_id: Option<String>,
+) -> (bool, Option<String>) {
+    if service.installed {
+        (
+            service.service_tun_was_enabled,
+            service.tun_profile_id.clone(),
+        )
+    } else {
+        (gui_tun_was_enabled, gui_tun_profile_id)
+    }
+}
+
 async fn capture_runtime_snapshot(app: &AppHandle) -> Result<UpdateRuntimeSnapshot, String> {
     let service = crate::service::request_service_status_for_update(app).await?;
     let service_state = service_runtime_state(&service);
-    let local_tun_enabled = crate::tun::is_active(app);
+    let (gui_tun_was_enabled, gui_tun_profile_id) = if service_state.installed {
+        (false, None)
+    } else {
+        (
+            crate::tun::is_active(app),
+            crate::tun::active_profile_id(app),
+        )
+    };
     let gui_core_was_running = if service_state.installed {
         false
     } else {
         crate::mihomo::owns_core(app) && crate::mihomo::is_running().await
     };
     let core_was_running = core_was_running_for_update(&service_state, gui_core_was_running);
-    let tun_was_enabled = local_tun_enabled || service_state.service_tun_was_enabled;
-    let tun_profile_id = service_state
-        .tun_profile_id
-        .clone()
-        .or_else(|| crate::tun::active_profile_id(app));
+    let (tun_was_enabled, tun_profile_id) =
+        tun_runtime_state_for_update(&service_state, gui_tun_was_enabled, gui_tun_profile_id);
     Ok(UpdateRuntimeSnapshot {
         system_proxy_was_enabled: crate::system_proxy::is_enabled_for_update(app)?,
         system_proxy_was_managed: crate::system_proxy::is_managed_for_update(app)?,
@@ -571,6 +619,7 @@ pub(crate) async fn update_check<R: Runtime>(
     let hook_app = registered_app_handle()?;
     let updater = webview
         .updater_builder()
+        .installer_arg(UPDATER_INSTALLER_ARG)
         .on_before_exit(move || {
             if let Err(error) = before_updater_exit(&hook_app) {
                 eprintln!("更新安装器退出前安全检查失败：{error}");
@@ -785,6 +834,17 @@ mod tests {
     }
 
     #[test]
+    fn stopped_service_does_not_merge_stale_gui_tun_state() {
+        let service = crate::service::UpdateServiceStatus::Stopped;
+        let state = service_runtime_state(&service);
+
+        assert_eq!(
+            tun_runtime_state_for_update(&state, true, Some("stale-gui-profile".to_string()),),
+            (false, None)
+        );
+    }
+
+    #[test]
     fn update_snapshot_preserves_gui_core_fallback_without_service() {
         let service = crate::service::UpdateServiceStatus::NotInstalled;
         let state = service_runtime_state(&service);
@@ -795,10 +855,50 @@ mod tests {
     }
 
     #[test]
+    fn not_installed_snapshot_keeps_gui_tun_fallback() {
+        let service = crate::service::UpdateServiceStatus::NotInstalled;
+        let state = service_runtime_state(&service);
+
+        assert_eq!(
+            tun_runtime_state_for_update(&state, true, Some("gui-profile".to_string())),
+            (true, Some("gui-profile".to_string()))
+        );
+    }
+
+    #[test]
     fn stopped_before_update_does_not_select_service_recovery() {
         let checkpoint = checkpoint_for_runtime(false, false, true);
 
         assert!(!should_restore_service_after_update(&checkpoint));
+    }
+
+    #[test]
+    fn stopped_checkpoint_suppresses_only_the_recovery_startup_path() {
+        let stopped = checkpoint_for_runtime(false, false, false);
+        assert_eq!(
+            startup_runtime_disposition(CheckpointRecovery::CompleteUpgrade, &stopped),
+            StartupRuntimeDisposition::SuppressAutomaticRuntimeStart
+        );
+        assert_eq!(
+            startup_runtime_disposition(CheckpointRecovery::MarkInterrupted, &stopped),
+            StartupRuntimeDisposition::SuppressAutomaticRuntimeStart
+        );
+        assert_eq!(
+            startup_runtime_disposition(CheckpointRecovery::NoAction, &stopped),
+            StartupRuntimeDisposition::Continue
+        );
+        let mut failed = stopped.clone();
+        failed.phase = UpdatePhase::Failed;
+        assert_eq!(
+            startup_runtime_disposition(CheckpointRecovery::NoAction, &failed),
+            StartupRuntimeDisposition::SuppressAutomaticRuntimeStart
+        );
+
+        let running_service = checkpoint_for_runtime(true, false, false);
+        assert_eq!(
+            startup_runtime_disposition(CheckpointRecovery::CompleteUpgrade, &running_service),
+            StartupRuntimeDisposition::Continue
+        );
     }
 
     #[test]

@@ -12,6 +12,7 @@ mod windows_service_host {
     };
 
     use mioproxy_lib::service::{self, SERVICE_NAME};
+    use serde::Deserialize;
     use tokio::sync::watch;
     use windows_service::{
         define_windows_service,
@@ -29,10 +30,75 @@ mod windows_service_host {
     const SERVICE_DISPLAY_NAME: &str = "MioProxy Service";
     const FAILURE_RESET_PERIOD_SECS: u64 = 60 * 60;
     const FAILURE_RESTART_DELAYS_SECS: [u64; 3] = [5, 15, 30];
+    const UPDATER_INSTALLER_FLAG: &str = "/MIOPROXY_UPDATER";
+    const UPDATE_CHECKPOINT_FILE: &str = "update-checkpoint.json";
     // With this flag disabled, SCM only queues failure actions when the
     // process exits without reporting SERVICE_STOPPED. Normal Stop/Shutdown
     // therefore remains intentional, including installer and uninstall stops.
     const FAILURE_ACTIONS_ON_NON_CRASH_FAILURES: bool = false;
+
+    #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+    #[serde(rename_all = "lowercase")]
+    enum UpdateInstallPhase {
+        Preparing,
+        Installing,
+        Restarting,
+        Completed,
+        Failed,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct UpdaterInstallCheckpoint {
+        previous_version: String,
+        target_version: String,
+        #[serde(default)]
+        service_was_running: bool,
+        #[serde(default)]
+        core_was_running: bool,
+        phase: UpdateInstallPhase,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum InstallStartPolicy {
+        StartService,
+        PreserveStoppedState,
+    }
+
+    fn install_start_policy(
+        updater_invocation: bool,
+        checkpoint: Option<&UpdaterInstallCheckpoint>,
+    ) -> InstallStartPolicy {
+        let preserve_stopped = updater_invocation
+            && checkpoint.is_some_and(|checkpoint| {
+                matches!(
+                    checkpoint.phase,
+                    UpdateInstallPhase::Preparing
+                        | UpdateInstallPhase::Installing
+                        | UpdateInstallPhase::Restarting
+                ) && checkpoint.previous_version != checkpoint.target_version
+                    && !checkpoint.service_was_running
+                    && !checkpoint.core_was_running
+            });
+        if preserve_stopped {
+            InstallStartPolicy::PreserveStoppedState
+        } else {
+            InstallStartPolicy::StartService
+        }
+    }
+
+    fn read_updater_checkpoint(
+        data_dir: &Path,
+    ) -> Result<Option<UpdaterInstallCheckpoint>, String> {
+        let path = data_dir.join(UPDATE_CHECKPOINT_FILE);
+        match fs::read_to_string(&path) {
+            Ok(content) => serde_json::from_str(&content)
+                .map(Some)
+                .map_err(|error| format!("读取更新检查点失败：{error}")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!("读取更新检查点失败：{error}")),
+        }
+    }
 
     pub fn main() -> Result<(), String> {
         let args = env::args_os().skip(1).collect::<Vec<_>>();
@@ -110,9 +176,10 @@ mod windows_service_host {
     #[cfg(test)]
     mod tests {
         use super::{
-            configured_failure_actions, diagnostic_port, has_flag,
+            configured_failure_actions, diagnostic_port, has_flag, install_start_policy,
+            InstallStartPolicy, UpdateInstallPhase, UpdaterInstallCheckpoint,
             FAILURE_ACTIONS_ON_NON_CRASH_FAILURES, FAILURE_RESET_PERIOD_SECS,
-            FAILURE_RESTART_DELAYS_SECS,
+            FAILURE_RESTART_DELAYS_SECS, UPDATER_INSTALLER_FLAG,
         };
         use std::{ffi::OsString, time::Duration};
         use windows_service::service::{ServiceActionType, ServiceFailureResetPeriod};
@@ -136,6 +203,69 @@ mod windows_service_host {
             assert!(
                 diagnostic_port(&[OsString::from("--port-diagnostics"), OsString::from("0")])
                     .is_err()
+            );
+        }
+
+        fn checkpoint(
+            phase: UpdateInstallPhase,
+            service_was_running: bool,
+            core_was_running: bool,
+        ) -> UpdaterInstallCheckpoint {
+            UpdaterInstallCheckpoint {
+                previous_version: "1.0.2".to_string(),
+                target_version: "1.0.3".to_string(),
+                service_was_running,
+                core_was_running,
+                phase,
+            }
+        }
+
+        #[test]
+        fn updater_install_preserves_stopped_service_without_changing_fresh_install() {
+            let stopped = checkpoint(UpdateInstallPhase::Restarting, false, false);
+            assert_eq!(
+                install_start_policy(true, Some(&stopped)),
+                InstallStartPolicy::PreserveStoppedState
+            );
+            assert_eq!(
+                install_start_policy(false, Some(&stopped)),
+                InstallStartPolicy::StartService
+            );
+            assert!(has_flag(
+                &[OsString::from(UPDATER_INSTALLER_FLAG)],
+                UPDATER_INSTALLER_FLAG
+            ));
+        }
+
+        #[test]
+        fn updater_install_keeps_running_service_recovery_possible() {
+            let running = checkpoint(UpdateInstallPhase::Restarting, true, false);
+            assert_eq!(
+                install_start_policy(true, Some(&running)),
+                InstallStartPolicy::StartService
+            );
+            let running_core = checkpoint(UpdateInstallPhase::Restarting, false, true);
+            assert_eq!(
+                install_start_policy(true, Some(&running_core)),
+                InstallStartPolicy::StartService
+            );
+            assert_eq!(
+                install_start_policy(
+                    true,
+                    Some(&checkpoint(UpdateInstallPhase::Preparing, false, false))
+                ),
+                InstallStartPolicy::PreserveStoppedState
+            );
+            assert_eq!(
+                install_start_policy(
+                    true,
+                    Some(&checkpoint(UpdateInstallPhase::Completed, false, false))
+                ),
+                InstallStartPolicy::StartService
+            );
+            assert_eq!(
+                install_start_policy(true, None),
+                InstallStartPolicy::StartService
             );
         }
 
@@ -234,6 +364,12 @@ mod windows_service_host {
         fs::create_dir_all(&data_dir).map_err(|e| format!("创建 Service 数据目录失败：{e}"))?;
         let data_dir =
             fs::canonicalize(&data_dir).map_err(|e| format!("解析 Service 数据目录失败：{e}"))?;
+        let start_policy = if has_flag(args, UPDATER_INSTALLER_FLAG) {
+            let checkpoint = read_updater_checkpoint(&data_dir)?;
+            install_start_policy(true, checkpoint.as_ref())
+        } else {
+            install_start_policy(false, None)
+        };
         let user_sid = option(args, "--user-sid").map(|value| value.to_string_lossy().into_owned());
         service::ensure_install_user_sid(&data_dir, user_sid.as_deref())?;
         service::ensure_install_token(&data_dir)?;
@@ -323,10 +459,13 @@ mod windows_service_host {
             .set_description("Owns MioProxy Mihomo, TUN, routes and recovery lifecycle")
             .map_err(|e| format!("写入 Service 描述失败：{e}"))?;
         configure_failure_actions(&service)?;
-        match service.start::<OsString>(&[]) {
-            Ok(()) => {}
-            Err(windows_service::Error::Winapi(error)) if error.raw_os_error() == Some(1056) => {}
-            Err(error) => return Err(format!("启动 MioProxy Service 失败：{error}")),
+        if start_policy == InstallStartPolicy::StartService {
+            match service.start::<OsString>(&[]) {
+                Ok(()) => {}
+                Err(windows_service::Error::Winapi(error))
+                    if error.raw_os_error() == Some(1056) => {}
+                Err(error) => return Err(format!("启动 MioProxy Service 失败：{error}")),
+            }
         }
         Ok(())
     }

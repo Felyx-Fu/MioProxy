@@ -123,9 +123,20 @@ pub fn run() {
             let recovery_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 tun::recover_after_startup(recovery_app.clone()).await;
-                update::recover_after_startup(recovery_app.clone()).await;
+                let startup_disposition = update::recover_after_startup(recovery_app.clone()).await;
                 if let Err(error) = system_proxy::recover_stale_state(&recovery_app).await {
                     eprintln!("恢复系统代理状态失败：{error}");
+                }
+                if startup_disposition
+                    == update::StartupRuntimeDisposition::SuppressAutomaticRuntimeStart
+                {
+                    diagnostics::record_event(
+                        &recovery_app,
+                        "info",
+                        "update",
+                        "Updater recovery preserved the stopped Service/Core runtime state",
+                    );
+                    return;
                 }
                 let service_start =
                     service::request_core(&recovery_app, service::ServiceCommand::Start).await;
