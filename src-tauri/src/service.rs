@@ -93,6 +93,13 @@ pub struct ServiceStatusData {
     pub core_recovery_message: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum UpdateServiceStatus {
+    NotInstalled,
+    Stopped,
+    Running(Box<ServiceStatusData>),
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceConnectionStatus {
@@ -618,6 +625,19 @@ mod windows_impl {
         ServiceIpcError::new(connectivity, request_written, message)
     }
 
+    fn classify_update_service_error(
+        error: ServiceIpcError,
+    ) -> Result<UpdateServiceStatus, ServiceIpcError> {
+        if error.request_written {
+            return Err(error);
+        }
+        match error.connectivity {
+            ServiceConnectivity::NotInstalled => Ok(UpdateServiceStatus::NotInstalled),
+            ServiceConnectivity::ServiceStopped => Ok(UpdateServiceStatus::Stopped),
+            _ => Err(error),
+        }
+    }
+
     fn response_error_connectivity(error: &str) -> ServiceConnectivity {
         if error.contains("令牌无效") || error.contains("令牌") && error.contains("无效") {
             ServiceConnectivity::AuthenticationFailure
@@ -1017,6 +1037,24 @@ mod windows_impl {
             return Ok(None);
         };
         data(response).map(Some)
+    }
+
+    pub(crate) async fn request_service_status_for_update(
+        app: &AppHandle,
+    ) -> Result<UpdateServiceStatus, String> {
+        match try_request_classified(
+            app,
+            ServiceCommand::Status,
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+        )
+        .await
+        {
+            Ok(Some(response)) => {
+                data(response).map(|status| UpdateServiceStatus::Running(Box::new(status)))
+            }
+            Ok(None) => Ok(UpdateServiceStatus::NotInstalled),
+            Err(error) => classify_update_service_error(error).map_err(|error| error.to_string()),
+        }
     }
 
     pub(crate) async fn request_reload(app: &AppHandle) -> Result<Option<Value>, String> {
@@ -1533,13 +1571,14 @@ mod windows_impl {
 
     pub(crate) async fn prepare_for_update(app: &AppHandle) -> Result<(), String> {
         let installed = service_is_installed()?;
-        let Some(response) = try_request(app, ServiceCommand::Status).await? else {
-            if installed {
+        let status = match request_service_status_for_update(app).await? {
+            UpdateServiceStatus::NotInstalled if installed => {
                 return Err("MioProxy Service 已安装但 IPC 不可用，拒绝更新".to_string());
             }
-            return Ok(());
+            UpdateServiceStatus::NotInstalled => return Ok(()),
+            UpdateServiceStatus::Stopped => return verify_stopped_for_update(),
+            UpdateServiceStatus::Running(status) => status,
         };
-        let status: ServiceStatusData = data(response)?;
         if status.tun_status != "disabled" {
             let Some(response) = try_request(
                 app,
@@ -4870,6 +4909,67 @@ rules:
         }
 
         #[test]
+        fn update_accepts_only_unwritten_authoritative_stopped_or_missing_service() {
+            assert!(matches!(
+                classify_update_service_error(classified_error(
+                    ServiceConnectivity::ServiceStopped,
+                    false,
+                    "MioProxy Service 已安装但当前处于 Stopped：os error 2",
+                )),
+                Ok(UpdateServiceStatus::Stopped)
+            ));
+            assert!(matches!(
+                classify_update_service_error(classified_error(
+                    ServiceConnectivity::NotInstalled,
+                    false,
+                    "MioProxy Service 未安装",
+                )),
+                Ok(UpdateServiceStatus::NotInstalled)
+            ));
+        }
+
+        #[test]
+        fn update_does_not_turn_running_scm_pipe_failure_into_stopped() {
+            let error = classify_update_service_error(classified_error(
+                ServiceConnectivity::PipeNotReady,
+                false,
+                "MioProxy Service 已运行但 Named Pipe 尚未就绪：os error 2",
+            ))
+            .expect_err("a running SCM pipe failure must remain an error");
+
+            assert_eq!(error.connectivity, ServiceConnectivity::PipeNotReady);
+        }
+
+        #[test]
+        fn update_keeps_protocol_and_authentication_failures_blocking() {
+            for connectivity in [
+                ServiceConnectivity::ProtocolFailure,
+                ServiceConnectivity::AuthenticationFailure,
+            ] {
+                let error = classify_update_service_error(classified_error(
+                    connectivity,
+                    false,
+                    "Service status failure",
+                ))
+                .expect_err("terminal IPC failures must remain errors");
+                assert_eq!(error.connectivity, connectivity);
+            }
+        }
+
+        #[test]
+        fn update_does_not_swallow_written_request_even_if_scm_is_stopped() {
+            let error = classify_update_service_error(classified_error(
+                ServiceConnectivity::ServiceStopped,
+                true,
+                "请求结果不明确",
+            ))
+            .expect_err("a written request remains ambiguous");
+
+            assert!(error.request_written);
+            assert_eq!(error.connectivity, ServiceConnectivity::ServiceStopped);
+        }
+
+        #[test]
         fn service_projection_state_serializes_as_lowercase() {
             assert_eq!(
                 serde_json::to_value(ServiceProjectionState::Reconnecting).unwrap(),
@@ -5169,8 +5269,8 @@ pub use windows_impl::{
 #[cfg(windows)]
 pub(crate) use windows_impl::{
     persisted_managed_core_pid, prepare_for_update, request_apply_profile, request_core,
-    request_core_update, request_reload, request_service_status, request_tun,
-    restore_for_lifecycle, resume_after_update_failure, service_tun_status,
+    request_core_update, request_reload, request_service_status, request_service_status_for_update,
+    request_tun, restore_for_lifecycle, resume_after_update_failure, service_tun_status,
     verify_stopped_for_update,
 };
 
@@ -5215,6 +5315,13 @@ pub(crate) async fn request_service_status(
     _app: &AppHandle,
 ) -> Result<Option<ServiceStatusData>, String> {
     Ok(None)
+}
+
+#[cfg(not(windows))]
+pub(crate) async fn request_service_status_for_update(
+    _app: &AppHandle,
+) -> Result<UpdateServiceStatus, String> {
+    Ok(UpdateServiceStatus::NotInstalled)
 }
 
 #[cfg(not(windows))]

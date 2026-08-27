@@ -314,32 +314,68 @@ struct UpdateRuntimeSnapshot {
     tun_profile_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServiceRuntimeState {
+    installed: bool,
+    service_was_running: bool,
+    core_was_running: bool,
+    service_tun_was_enabled: bool,
+    tun_profile_id: Option<String>,
+}
+
+fn service_runtime_state(service: &crate::service::UpdateServiceStatus) -> ServiceRuntimeState {
+    match service {
+        crate::service::UpdateServiceStatus::NotInstalled => ServiceRuntimeState {
+            installed: false,
+            service_was_running: false,
+            core_was_running: false,
+            service_tun_was_enabled: false,
+            tun_profile_id: None,
+        },
+        crate::service::UpdateServiceStatus::Stopped => ServiceRuntimeState {
+            installed: true,
+            service_was_running: false,
+            core_was_running: false,
+            service_tun_was_enabled: false,
+            tun_profile_id: None,
+        },
+        crate::service::UpdateServiceStatus::Running(status) => ServiceRuntimeState {
+            installed: true,
+            service_was_running: true,
+            core_was_running: status.owns_core && status.core.running,
+            service_tun_was_enabled: status.tun_status != "disabled",
+            tun_profile_id: status.tun_profile_id.clone(),
+        },
+    }
+}
+
+fn core_was_running_for_update(service: &ServiceRuntimeState, gui_core_was_running: bool) -> bool {
+    if service.installed {
+        service.core_was_running
+    } else {
+        gui_core_was_running
+    }
+}
+
 async fn capture_runtime_snapshot(app: &AppHandle) -> Result<UpdateRuntimeSnapshot, String> {
-    let service = crate::service::request_service_status(app).await?;
+    let service = crate::service::request_service_status_for_update(app).await?;
+    let service_state = service_runtime_state(&service);
     let local_tun_enabled = crate::tun::is_active(app);
-    let (service_was_running, service_core_was_running, service_tun_was_enabled, profile_id) =
-        service
-            .as_ref()
-            .map(|status| {
-                (
-                    true,
-                    status.owns_core && status.core.running,
-                    status.tun_status != "disabled",
-                    status.tun_profile_id.clone(),
-                )
-            })
-            .unwrap_or((false, false, false, None));
-    let core_was_running = if service_was_running {
-        service_core_was_running
+    let gui_core_was_running = if service_state.installed {
+        false
     } else {
         crate::mihomo::owns_core(app) && crate::mihomo::is_running().await
     };
-    let tun_was_enabled = local_tun_enabled || service_tun_was_enabled;
-    let tun_profile_id = profile_id.or_else(|| crate::tun::active_profile_id(app));
+    let core_was_running = core_was_running_for_update(&service_state, gui_core_was_running);
+    let tun_was_enabled = local_tun_enabled || service_state.service_tun_was_enabled;
+    let tun_profile_id = service_state
+        .tun_profile_id
+        .clone()
+        .or_else(|| crate::tun::active_profile_id(app));
     Ok(UpdateRuntimeSnapshot {
         system_proxy_was_enabled: crate::system_proxy::is_enabled_for_update(app)?,
         system_proxy_was_managed: crate::system_proxy::is_managed_for_update(app)?,
-        service_was_running,
+        service_was_running: service_state.service_was_running,
         core_was_running,
         tun_was_enabled,
         tun_profile_id,
@@ -353,13 +389,17 @@ async fn recover_after_update_failure(app: &AppHandle) -> Result<(), String> {
     restore_previous_state(app, &checkpoint).await
 }
 
+fn should_restore_service_after_update(checkpoint: &UpdateCheckpoint) -> bool {
+    checkpoint.service_was_running
+}
+
 async fn restore_previous_state(
     app: &AppHandle,
     checkpoint: &UpdateCheckpoint,
 ) -> Result<(), String> {
     let mut errors = Vec::new();
 
-    if checkpoint.service_was_running {
+    if should_restore_service_after_update(checkpoint) {
         if let Err(error) = crate::service::resume_after_update_failure(app, true).await {
             errors.push(error);
         } else if checkpoint.core_was_running {
@@ -641,6 +681,58 @@ mod tests {
         ))
     }
 
+    fn service_status_for_test(
+        core_running: bool,
+        owns_core: bool,
+        tun_status: &str,
+    ) -> crate::service::ServiceStatusData {
+        crate::service::ServiceStatusData {
+            core: crate::mihomo::CoreStatus {
+                state: if core_running {
+                    crate::mihomo::CoreUserState::Ready
+                } else {
+                    crate::mihomo::CoreUserState::Stopped
+                },
+                running: core_running,
+                controller: String::new(),
+                config_path: String::new(),
+                mixed_port: 0,
+                mode: String::new(),
+                recovery_message: None,
+            },
+            core_update: Default::default(),
+            running: core_running,
+            owns_core,
+            ownership_conflict: false,
+            admin: false,
+            tun_status: tun_status.to_string(),
+            tun_message: None,
+            tun_profile_id: Some("profile-test".to_string()),
+            tun_snapshot: None,
+            desired_core_running: false,
+            core_recovery_message: None,
+        }
+    }
+
+    fn checkpoint_for_runtime(
+        service_was_running: bool,
+        core_was_running: bool,
+        tun_was_enabled: bool,
+    ) -> UpdateCheckpoint {
+        UpdateCheckpoint {
+            previous_version: CURRENT_VERSION.to_string(),
+            target_version: CURRENT_VERSION.to_string(),
+            system_proxy_was_enabled: false,
+            system_proxy_was_managed: false,
+            tun_was_enabled,
+            service_was_running,
+            core_was_running,
+            tun_profile_id: None,
+            update_started_at: "2026-08-27T00:00:00Z".to_string(),
+            phase: UpdatePhase::Installing,
+        }
+    }
+
     #[test]
     fn accepts_only_strict_semver_upgrades() {
         assert!(ensure_upgrade("0.7.0", "0.8.0").is_ok());
@@ -657,6 +749,56 @@ mod tests {
         assert!(!update_check_disabled_by(Some("0")));
         assert!(!update_check_disabled_by(Some("true")));
         assert!(update_check_disabled_by(Some("1")));
+    }
+
+    #[test]
+    fn update_snapshot_records_running_service_state() {
+        let service = crate::service::UpdateServiceStatus::Running(Box::new(
+            service_status_for_test(false, false, "disabled"),
+        ));
+        let state = service_runtime_state(&service);
+
+        assert!(state.installed);
+        assert!(state.service_was_running);
+        assert!(!state.core_was_running);
+        assert!(!state.service_tun_was_enabled);
+    }
+
+    #[test]
+    fn update_snapshot_accepts_stopped_service_without_restore_state() {
+        let service = crate::service::UpdateServiceStatus::Stopped;
+        let state = service_runtime_state(&service);
+
+        assert!(state.installed);
+        assert!(!state.service_was_running);
+        assert!(!state.core_was_running);
+        assert!(!state.service_tun_was_enabled);
+        assert!(!core_was_running_for_update(&state, true));
+        assert!(state.tun_profile_id.is_none());
+
+        let checkpoint = checkpoint_for_runtime(
+            state.service_was_running,
+            state.core_was_running,
+            state.service_tun_was_enabled,
+        );
+        assert!(!should_restore_service_after_update(&checkpoint));
+    }
+
+    #[test]
+    fn update_snapshot_preserves_gui_core_fallback_without_service() {
+        let service = crate::service::UpdateServiceStatus::NotInstalled;
+        let state = service_runtime_state(&service);
+
+        assert!(!state.installed);
+        assert!(!state.service_was_running);
+        assert!(core_was_running_for_update(&state, true));
+    }
+
+    #[test]
+    fn stopped_before_update_does_not_select_service_recovery() {
+        let checkpoint = checkpoint_for_runtime(false, false, true);
+
+        assert!(!should_restore_service_after_update(&checkpoint));
     }
 
     #[test]
