@@ -207,11 +207,12 @@ export default function App({ initialState }: { initialState?: AppInitialState }
     const sequence = ++systemProxyRefreshSequence.current;
     try {
       const next = await mihomoApi.systemProxyStatus();
-      if (sequence === systemProxyRefreshSequence.current && (force || !systemProxyRequestInFlight.current)) {
+      if (appMounted.current && sequence === systemProxyRefreshSequence.current && (force || !systemProxyRequestInFlight.current)) {
         applySystemProxyStatus(next);
       }
       return next;
     } catch (e) {
+      if (!appMounted.current || sequence !== systemProxyRefreshSequence.current) return null;
       if (systemProxyRequestInFlight.current && !force) return null;
       if (isServiceIpcFailure(errorMessage(e))) return null;
       setProxyState("error");
