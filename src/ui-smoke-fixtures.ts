@@ -362,4 +362,27 @@ export const uiSmokeFixture: UiSmokeFixture = {
   },
 };
 
+/** A first-run surface used only by the standalone mock preview. */
+export function getUiSmokeFixture(scenario: string | null): UiSmokeFixture {
+  if (scenario !== "empty") return uiSmokeFixture;
+  return {
+    ...uiSmokeFixture,
+    id: "empty-first-run",
+    initialState: { selectedProfileId: null, appliedProfileSession: null, diagnosticPath: undefined },
+    profiles: [],
+    status: { ...uiSmokeFixture.status, state: "stopped", running: false, mode: "rule" },
+    proxies: { proxies: {}, groupOrder: [] },
+    connections: { downloadTotal: 0, uploadTotal: 0, memory: 0, connections: [] },
+    traffic: { timestamp: FIXTURE_EPOCH_MS, up: 0, down: 0, todayUp: 0, todayDown: 0, history: [] },
+    systemProxy: { ...uiSmokeFixture.systemProxy, coreRunning: false, managed: false, owner: "none", proxyServer: null },
+    tun: { ...uiSmokeFixture.tun, status: "disabled", message: null, profileId: null, snapshot: null, actualState: "disabled", owner: "mioproxy", externalDetected: false, projection: "off" },
+    service: { ...uiSmokeFixture.service, state: "stopped", reachable: true, ownsCore: false, coreRunning: false, tunStatus: "disabled", tunMessage: null, desiredCoreRunning: false },
+    rules: { rules: [] },
+    ruleProviders: { providers: {} },
+    logs: [],
+    preview: { ...uiSmokeFixture.preview, profileId: "", profileName: "", yaml: "", overrideActive: false },
+    configApply: { ...uiSmokeFixture.configApply, profileId: "", profileName: "", controllerValidated: false, overrideActive: false },
+  };
+}
+
 export const uiSmokeFixtureEpoch = FIXTURE_EPOCH_MS;

@@ -1,5 +1,7 @@
+import { TrafficModeControl } from "../components/TrafficModeControl";
+import { NodePicker } from "../components/NodePicker";
 import { ArrowDown, ArrowUp, Laptop, Network, Route, ServerCog, ShieldAlert, SlidersHorizontal, Workflow } from "lucide-react";
-import type { CoreState, CoreStatus, MihomoVersion, Profile, ProxyPathState, ProxyState, SystemProxyStatus, TrafficSnapshot, TunStatusSnapshot } from "../api/mihomo";
+import type { CoreMode, ProxiesResponse, CoreState, CoreStatus, MihomoVersion, Profile, ProxyPathState, ProxyState, SystemProxyStatus, TrafficSnapshot, TunStatusSnapshot } from "../api/mihomo";
 import type { Page } from "../components/Sidebar";
 import { useI18n } from "../i18n/I18nProvider";
 import { formatBytes, formatRate, latencyTone } from "../utils/format";
@@ -139,7 +141,14 @@ export function DashboardPage({
   onRequestProxyTransition,
   onRequestTunTransition,
   onNavigate,
+  modeBusy = false, onModeChange, proxies = null, proxySelectionBusy = false, onSelectNode, activeProfile = null,
 }: {
+  modeBusy?: boolean;
+  onModeChange?: (mode: CoreMode) => Promise<void>;
+  proxies?: ProxiesResponse | null;
+  proxySelectionBusy?: boolean;
+  onSelectNode?: (group: string, node: string) => Promise<void>;
+  activeProfile?: Profile | null;
   status: CoreStatus | null;
   coreState: CoreState;
   version: MihomoVersion | null;
@@ -180,40 +189,43 @@ export function DashboardPage({
 
       {(error || tunError) && <div className="info-bar error dashboard-error-bar" role="alert"><ShieldAlert size={16} /><span>{tunError ?? error}</span></div>}
 
-      <div className="dashboard-upper">
-        <section className="surface-panel summary-panel dashboard-health-card" aria-labelledby="health-heading">
-          <div className="section-title-row"><div><h2 id="health-heading">{t("dashboard.health.title")}</h2><p>{version?.version ? `Mihomo ${version.version}` : t("dashboard.health.managedRuntime")}</p></div><StateValue tone={checking ? "muted" : healthy ? "success" : coreState === "error" ? "error" : "warning"}>{t(checking ? "dashboard.state.checking" : healthy ? "dashboard.state.healthy" : "dashboard.state.attention")}</StateValue></div>
-          <dl className="summary-list">
-            <div className="dashboard-health-row"><dt>{t("dashboard.core")}</dt><dd><StateValue tone={coreTone}>{t(checking ? "dashboard.state.checking" : coreStateKey(coreState))}</StateValue></dd></div>
-            <div className="dashboard-health-row"><dt>{t("dashboard.systemProxy")}</dt><dd><StateValue tone={proxy.tone}>{t(proxy.key)}</StateValue></dd></div>
-            <div className="dashboard-health-row"><dt>TUN</dt><dd><StateValue tone={tun.tone}>{t(tun.key)}</StateValue></dd></div>
-            <div className="dashboard-health-row dashboard-selected-node-row"><dt>{t("dashboard.selectedNode")}</dt><dd>{currentNode ? <button className="inline-link dashboard-current-node" type="button" onClick={() => onNavigate("proxies")}><span className="dashboard-current-node-name">{currentNode}</span>{delay !== null && <span className={`dashboard-current-node-latency latency-${latencyTone(delay)}`}>· {delay} ms</span>}</button> : "—"}</dd></div>
-          </dl>
-          <div className="summary-actions dashboard-health-actions">
-            <button className="secondary-button" type="button" onClick={onRequestProxyTransition} disabled={coreState !== "ready" || proxyBusy || proxy.external}>{t(proxyBusy ? "dashboard.action.working" : proxy.external ? "dashboard.action.externalProxy" : proxy.owned ? "dashboard.action.disableProxy" : "dashboard.action.enableProxy")}</button>
-            <button className="secondary-button" type="button" onClick={onRequestTunTransition} disabled={tunBusy || tunTransitioning || tun.external || (!tunWillDisable && coreState !== "ready")}>{t(tunBusy || tunTransitioning ? "dashboard.action.working" : tun.external ? "dashboard.action.externalTun" : tunWillDisable ? "dashboard.action.disableTun" : "dashboard.action.enableTun")}</button>
-          </div>
+      <div className="home-control-grid">
+        <section className="surface-panel home-card">
+          <div className="section-title-row"><h2>{t("home.subscription")}</h2><button type="button" className="quiet-button" onClick={() => onNavigate("profiles")}>{t("nav.profiles")} →</button></div>
+          <h3 className="home-value">{appliedProfileName ?? t("home.noSubscription")}</h3>
+          {activeProfile && <dl className="home-facts"><div><dt>{t("profiles.details.source")}</dt><dd>{(() => { try { return new URL(activeProfile.url).hostname; } catch { return "—"; } })()}</dd></div><div><dt>{t("profiles.details.nodeCount")}</dt><dd>{activeProfile.nodeCount ?? "—"}</dd></div></dl>}
+          <p className="home-caption">{t(appliedProfileName ? "home.subscriptionActive" : "home.subscriptionHint")}</p>
+          {!appliedProfileName && <button type="button" className="primary-button" onClick={() => onNavigate("profiles")}>{t("home.manageSubscriptions")}</button>}
         </section>
-
+        <section className="surface-panel home-card">
+          <div className="section-title-row"><h2>{t("dashboard.selectedNode")}</h2><button type="button" className="quiet-button" onClick={() => onNavigate("proxies")}>{t("nav.proxies")} →</button></div>
+          <div className="home-node-summary"><Network size={22} /><strong>{currentNode ?? "—"}</strong><span className={`latency-${latencyTone(delay)}`}>{delay === null ? "—" : `${delay} ms`}</span></div>
+          {onSelectNode && <NodePicker data={proxies} busy={proxySelectionBusy} onSelect={onSelectNode} />}
+        </section>
+        <section className="surface-panel home-card">
+          <div className="section-title-row"><h2>{t("home.network")}</h2><dl className="home-core-state"><div><dt>{t("dashboard.core")}</dt><dd><StateValue tone={coreTone}>{t(checking ? "dashboard.state.checking" : coreStateKey(coreState))}</StateValue></dd></div></dl></div>
+          <dl className="home-network-row"><dt>{t("dashboard.systemProxy")}</dt><dd><StateValue tone={proxy.tone}>{t(proxy.key)}</StateValue></dd><button type="button" className="secondary-button" onClick={onRequestProxyTransition} disabled={coreState !== "ready" || proxyBusy || proxy.external}>{t(proxyBusy ? "dashboard.action.working" : proxy.external ? "dashboard.action.externalProxy" : proxy.owned ? "dashboard.action.disableProxy" : "dashboard.action.enableProxy")}</button></dl><p className="home-caption">{t("home.systemProxyHint")}</p>
+          <div className="home-network-row"><div><strong>{t("home.tun")}</strong><p>{t("home.tunHint")}</p></div><button type="button" className="secondary-button" onClick={onRequestTunTransition} disabled={tunBusy || tunTransitioning || tun.external || (!tunWillDisable && coreState !== "ready")}>{t(tunBusy || tunTransitioning ? "dashboard.action.working" : tun.external ? "dashboard.action.externalTun" : tunWillDisable ? "dashboard.action.disableTun" : "dashboard.action.enableTun")}</button></div>
+          <button className="quiet-button" type="button" onClick={() => onNavigate("settings")}>{t("nav.settings")} →</button>
+        </section>
+        <section className="surface-panel home-card">
+          <div className="section-title-row"><h2>{t("proxies.mode.label")}</h2><Workflow size={18} /></div>
+          {onModeChange && <TrafficModeControl mode={status?.mode ?? null} busy={modeBusy} available={coreState === "ready"} onChange={onModeChange} />}
+          <p className="home-caption">{t(status?.mode ? `proxies.mode.${status.mode}Description` : "home.modeUnavailable")}</p>
+          <p className="home-caption">{t("home.modeHint")}</p>
+        </section>
+      </div>
+      <div className="dashboard-metrics">
+        <div className="dashboard-metric surface-panel"><span>{t("dashboard.rate.down")}</span><strong>{formatRate(traffic?.down)}</strong></div>
+        <div className="dashboard-metric surface-panel"><span>{t("dashboard.rate.up")}</span><strong>{formatRate(traffic?.up)}</strong></div>
+        <button type="button" className="dashboard-metric surface-panel" onClick={() => onNavigate("connections")}><span>{t("dashboard.profile.connections")}</span><strong>{connectionCount ?? "—"}</strong></button>
+        <div className="dashboard-metric surface-panel"><span>{t("dashboard.profile.memory")}</span><strong>{formatBytes(memory)}</strong></div>
+      </div>
+      <TrafficChart snapshot={traffic} />
+      <details className="dashboard-path-details surface-panel">
+        <summary>{t("dashboard.hero.inspect")}</summary>
         <MioPathRail status={status} proxyStatus={proxyStatus} tunStatus={tunStatus} currentNode={currentNode} delay={delay} proxyPathState={proxyPathState} />
-      </div>
-
-      <div className="dashboard-lower">
-        <TrafficChart snapshot={traffic} />
-
-        <section className="surface-panel summary-panel dashboard-profile-panel" aria-labelledby="profile-heading">
-          <div className="section-title-row"><div><h2 id="profile-heading">{t("dashboard.profile.title")}</h2><p>{t("dashboard.profile.description")}</p></div><SlidersHorizontal size={17} /></div>
-          <dl className="summary-list">
-            <div className="dashboard-profile-row dashboard-profile-active-row"><dt>{t("dashboard.profile.active")}</dt><dd>{appliedProfileName ? t("dashboard.profile.sessionValue", { name: appliedProfileName }) : "—"}</dd></div>
-            <div className="dashboard-profile-row dashboard-profile-selected-row"><dt>{t("dashboard.profile.selected")}</dt><dd>{selectedProfile?.name ?? "—"}</dd></div>
-            <div className={`dashboard-profile-row dashboard-profile-mode-row${status?.mode ? " has-value" : ""}`}><dt>{t("dashboard.profile.mode")}</dt><dd>{status?.mode?.toUpperCase() ?? "—"}</dd></div>
-            <div className="dashboard-profile-row"><dt>{t("dashboard.profile.nodeCount")}</dt><dd>{selectedProfile?.nodeCount ?? "—"}</dd></div>
-            <div className="dashboard-profile-row"><dt>{t("dashboard.profile.connections")}</dt><dd>{connectionCount ?? "—"}</dd></div>
-            <div className="dashboard-profile-row"><dt>{t("dashboard.profile.memory")}</dt><dd>{formatBytes(memory)}</dd></div>
-          </dl>
-          <button className="secondary-button" type="button" onClick={() => onNavigate("profiles")}>{t("dashboard.profile.open")}</button>
-        </section>
-      </div>
+      </details>
     </section>
   );
 }

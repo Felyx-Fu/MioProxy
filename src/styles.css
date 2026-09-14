@@ -1,3 +1,8 @@
+@layer base, modern;
+@import "./frosted.css" layer(modern);
+
+@layer base {
+
 :root {
   font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   color: #171a1f;
@@ -31,9 +36,9 @@
   --overlay: rgba(12, 18, 28, .38);
   --shadow-soft: rgba(13, 24, 42, .16);
   --shadow-strong: rgba(10, 18, 30, .28);
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
+  --radius-sm: 9px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
   color-scheme: light;
 }
 
@@ -792,4 +797,6 @@ span.statusbar-item { cursor: default; }
 @media (forced-colors: active) {
   .nav-item.active, .master-row.selected, .compact-table tbody tr.selected-row td { outline: 1px solid Highlight; }
   .state-dot { forced-color-adjust: none; }
+}
+
 }
