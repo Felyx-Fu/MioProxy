@@ -17,6 +17,7 @@ export const zhCN: Record<MessageKey, string> = {
   "subscriptions.optionalName": "名称（可选）",
   "subscriptions.import": "导入",
   "subscriptions.active": "本次会话已启用",
+  "subscriptions.reload": "重新加载",
   "subscriptions.activate": "启用",
   "subscriptions.download": "下载",
   "subscriptions.edit": "覆写",

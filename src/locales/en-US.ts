@@ -15,6 +15,7 @@ export const enUS = {
   "subscriptions.optionalName": "Name (optional)",
   "subscriptions.import": "Import",
   "subscriptions.active": "Enabled this session",
+  "subscriptions.reload": "Reload",
   "subscriptions.activate": "Enable",
   "subscriptions.download": "Download",
   "subscriptions.edit": "Overrides",

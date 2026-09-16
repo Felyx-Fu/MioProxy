@@ -64,4 +64,13 @@ describe("ProfilesPage subscription workflow", () => {
     fireEvent.click(within(personalCard!).getByRole("button", { name: "Select" }));
     expect(onSelect).toHaveBeenCalledWith("profile-b");
   });
+
+  it("allows reapplying the active profile after its subscription is updated", async () => {
+    const onApply = vi.fn().mockResolvedValue(undefined);
+    renderPage({ profiles: [profile], appliedId: profile.id, onApply });
+    const reload = screen.getByRole("button", { name: "Reload" });
+    expect(reload).toBeEnabled();
+    fireEvent.click(reload);
+    await waitFor(() => expect(onApply).toHaveBeenCalledWith(profile.id));
+  });
 });
