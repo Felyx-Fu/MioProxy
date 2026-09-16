@@ -115,6 +115,10 @@ Assert-NotContains $detectionFunction 'FindProcess' 'Existing-install detection 
 Assert-Contains $templateText 'StrCpy $INSTDIR $MioProxyExistingInstallPath' 'Overlay mode must reuse the detected installation path.'
 Assert-Contains $templateText 'Function SkipDirectoryIfExisting' 'Overlay mode must not offer a side-by-side directory.'
 Assert-Contains $templateText 'Page custom MioProxyInstallModePage MioProxyInstallModePageLeave' 'The installer must present the explicit MioProxy mode page.'
+$installRegistryMigration = Get-TextRange -Text $templateText -StartMarker 'WriteRegStr SHCTX "${MANUPRODUCTKEY}" "" $INSTDIR' -EndMarker '; Create start menu shortcut'
+Assert-Contains $installRegistryMigration '${If} $MioProxyExistingRegistryRoot == "HKCU"' 'Per-machine install must detect the validated per-user registry root before migration.'
+Assert-Contains $installRegistryMigration 'DeleteRegKey HKCU "${UNINSTKEY}"' 'Per-machine install must remove the superseded per-user uninstall record.'
+Assert-Contains $installRegistryMigration 'DeleteRegValue HKCU "${MANUPRODUCTKEY}" ""' 'Per-machine install must remove the superseded per-user install location.'
 
 # Verify the user-facing mode strings and the required downgrade confirmation.
 $installLabel = -join @([char]0x5B89, [char]0x88C5, [char]0x20, 'MioProxy')
@@ -186,6 +190,8 @@ $nearestNsExecIndex = $hooksText.LastIndexOf('nsExec::ExecToStack', $powerShellI
 Assert-True ($nearestNsExecIndex -ge 0) 'The remaining PowerShell check must be launched through nsExec.'
 Assert-Contains $hooksText 'Call un.MioProxyQueryService' 'The uninstall polling path must call an un-prefixed-compatible query function.'
 Assert-Contains $hooksText 'Call un.MioProxyCheckTunRecovered' 'The uninstall ownership check must call an un-prefixed-compatible function.'
+Assert-Contains $hooksText 'StrReplace "$MioProxyServiceOutput" "STOP_PENDING" "__MIOPROXY_STOP_PENDING__"' 'Service polling must recognize STOP_PENDING as an intermediate state.'
+Assert-Contains $hooksText 'StrCpy $MioProxyServiceState "pending"' 'Service polling must return a pending state instead of aborting.'
 $pluginPathMarker = $templateText.IndexOf('{{#if additional_plugins_path}}', [System.StringComparison]::Ordinal)
 $hookPathMarker = $templateText.IndexOf('{{#if installer_hooks}}', [System.StringComparison]::Ordinal)
 Assert-True ($pluginPathMarker -ge 0 -and $pluginPathMarker -lt $hookPathMarker) 'The NSIS utility plugin path must be registered before hooks are included.'

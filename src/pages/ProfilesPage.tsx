@@ -44,7 +44,7 @@ export function ProfilesPage({ profiles, selectedId, appliedId, busyId, error, o
     </form>
     {profiles.length > 0 && <label className="search-box subscription-search"><Search size={15} /><input data-page-search aria-label={t("profiles.search.label")} placeholder={t("profiles.search.placeholder")} value={query} onChange={event => setQuery(event.target.value)} /></label>}
     <div className="subscription-grid">
-      {visible.map(profile => <article key={profile.id} className={`surface-panel subscription-card${profile.id === appliedId ? " is-active" : ""}`}>
+      {visible.map(profile => <article key={profile.id} className={`surface-panel subscription-card${profile.id === appliedId ? " is-active" : ""}${profile.id === selectedId ? " is-selected" : ""}`}>
         <div className="section-title-row"><h2>{profile.name}</h2>{profile.id === appliedId && <span className="state-value tone-success"><span className="state-dot" />{t("subscriptions.active")}</span>}</div>
         <p className="subscription-source">{sourceHost(profile.url)}</p>
         <dl className="home-facts"><div><dt>{t("profiles.details.lastUpdate")}</dt><dd>{profile.updatedAt ? new Date(profile.updatedAt * 1000).toLocaleString(locale) : t("profiles.state.neverUpdated")}</dd></div><div><dt>{t("profiles.details.nodeCount")}</dt><dd>{profile.nodeCount ?? "—"}</dd></div></dl>
@@ -53,6 +53,7 @@ export function ProfilesPage({ profiles, selectedId, appliedId, busyId, error, o
           <button type="button" className={profile.id === appliedId ? "secondary-button" : "primary-button"} disabled={!profile.filePath || busyId !== null || submitting || profile.id === appliedId} onClick={() => void onApply(profile.id)}>{t(busyId === profile.id ? "profiles.state.working" : profile.id === appliedId ? "subscriptions.active" : "subscriptions.activate")}</button>
           <button type="button" className="secondary-button" disabled={busyId !== null || submitting} onClick={() => void onDownload(profile.id)}><RefreshCw size={14} />{t(profile.filePath ? "profiles.action.update" : "subscriptions.download")}</button>
           <button type="button" className="quiet-button" disabled={busyId !== null} onClick={() => { onSelect(profile.id); onNavigate("overrides"); }}><SlidersHorizontal size={14} />{t("subscriptions.edit")}</button>
+          <button type="button" className="quiet-button" aria-pressed={profile.id === selectedId} disabled={busyId !== null || submitting} onClick={() => onSelect(profile.id)}>{t(profile.id === selectedId ? "subscriptions.selected" : "subscriptions.select")}</button>
           <button type="button" className="icon-button danger" disabled={busyId !== null || submitting} aria-label={t("profiles.action.deleteNamed", { name: profile.name })} onClick={() => setConfirming(profile)}><Trash2 size={15} /></button>
         </div>
       </article>)}

@@ -177,6 +177,7 @@ button.dashboard-metric:hover { background: var(--surface-hover); }
 .subscription-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr)); gap:16px; align-items:start; }
 .subscription-card { padding:20px; min-width:0; }
 .subscription-card.is-active { border-color:var(--accent); box-shadow:inset 3px 0 var(--accent); }
+.subscription-card.is-selected { outline:2px solid var(--accent); outline-offset:-2px; }
 .subscription-card h2 { overflow-wrap:anywhere; font-size:17px; }
 .subscription-source { color:var(--muted); margin:10px 0 20px; }
 .subscription-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:20px; }

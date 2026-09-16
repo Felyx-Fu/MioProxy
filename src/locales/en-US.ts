@@ -18,6 +18,8 @@ export const enUS = {
   "subscriptions.activate": "Enable",
   "subscriptions.download": "Download",
   "subscriptions.edit": "Overrides",
+  "subscriptions.select": "Select",
+  "subscriptions.selected": "Selected",
   "subscriptions.needsDownload": "Download the configuration before enabling it.",
   "subscriptions.emptyHint": "Paste a subscription URL above. Nodes and policy groups appear after the configuration is enabled.",
   "preview.fixtureNotice": "Demo data · Profiles, nodes and traffic are simulated, not your current configuration",

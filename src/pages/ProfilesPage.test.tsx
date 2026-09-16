@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Profile } from "../api/mihomo";
 import { I18nProvider } from "../i18n/I18nProvider";
@@ -54,5 +54,14 @@ describe("ProfilesPage subscription workflow", () => {
     renderPage({ profiles: [{ ...profile, filePath: null, nodeCount: null, updatedAt: null }] });
     expect(screen.getByRole("button", { name: "Enable" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Download" })).toBeEnabled();
+  });
+
+  it("lets the user select a profile for profile-scoped tools", () => {
+    const onSelect = vi.fn();
+    renderPage({ profiles: [profile, { ...profile, id: "profile-b", name: "Personal routes" }], onSelect });
+    const personalCard = screen.getByRole("heading", { name: "Personal routes" }).closest("article");
+    expect(personalCard).not.toBeNull();
+    fireEvent.click(within(personalCard!).getByRole("button", { name: "Select" }));
+    expect(onSelect).toHaveBeenCalledWith("profile-b");
   });
 });

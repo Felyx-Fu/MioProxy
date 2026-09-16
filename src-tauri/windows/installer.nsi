@@ -739,6 +739,16 @@ Section Install
     WriteRegStr SHCTX "${UNINSTKEY}" "HelpLink" "${HOMEPAGE}"
   !endif
 
+  ; A per-machine install supersedes a validated per-user installation. Remove
+  ; only the old per-user uninstall record after the new HKLM record exists.
+  !if "${INSTALLMODE}" == "perMachine"
+    ${If} $MioProxyExistingRegistryRoot == "HKCU"
+      DeleteRegKey HKCU "${UNINSTKEY}"
+      DeleteRegValue HKCU "${MANUPRODUCTKEY}" ""
+      DeleteRegKey /ifempty HKCU "${MANUPRODUCTKEY}"
+    ${EndIf}
+  !endif
+
   ; Create start menu shortcut
   !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
     Call CreateOrUpdateStartMenuShortcut

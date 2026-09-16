@@ -141,7 +141,7 @@ export function DashboardPage({
   onRequestProxyTransition,
   onRequestTunTransition,
   onNavigate,
-  modeBusy = false, onModeChange, proxies = null, proxySelectionBusy = false, onSelectNode, activeProfile = null,
+  modeBusy = false, onModeChange, proxies = null, proxySelectionBusy = false, onSelectNode, activeProfile = null, activeGroup = null,
 }: {
   modeBusy?: boolean;
   onModeChange?: (mode: CoreMode) => Promise<void>;
@@ -149,6 +149,7 @@ export function DashboardPage({
   proxySelectionBusy?: boolean;
   onSelectNode?: (group: string, node: string) => Promise<void>;
   activeProfile?: Profile | null;
+  activeGroup?: string | null;
   status: CoreStatus | null;
   coreState: CoreState;
   version: MihomoVersion | null;
@@ -200,7 +201,7 @@ export function DashboardPage({
         <section className="surface-panel home-card">
           <div className="section-title-row"><h2>{t("dashboard.selectedNode")}</h2><button type="button" className="quiet-button" onClick={() => onNavigate("proxies")}>{t("nav.proxies")} →</button></div>
           <div className="home-node-summary"><Network size={22} /><strong>{currentNode ?? "—"}</strong><span className={`latency-${latencyTone(delay)}`}>{delay === null ? "—" : `${delay} ms`}</span></div>
-          {onSelectNode && <NodePicker data={proxies} busy={proxySelectionBusy} onSelect={onSelectNode} />}
+          {onSelectNode && <NodePicker data={proxies} busy={proxySelectionBusy} activeGroup={activeGroup} onSelect={onSelectNode} />}
         </section>
         <section className="surface-panel home-card">
           <div className="section-title-row"><h2>{t("home.network")}</h2><dl className="home-core-state"><div><dt>{t("dashboard.core")}</dt><dd><StateValue tone={coreTone}>{t(checking ? "dashboard.state.checking" : coreStateKey(coreState))}</StateValue></dd></div></dl></div>

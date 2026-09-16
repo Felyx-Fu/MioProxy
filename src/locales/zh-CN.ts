@@ -20,6 +20,8 @@ export const zhCN: Record<MessageKey, string> = {
   "subscriptions.activate": "启用",
   "subscriptions.download": "下载",
   "subscriptions.edit": "覆写",
+  "subscriptions.select": "选择",
+  "subscriptions.selected": "已选择",
   "subscriptions.needsDownload": "请先下载配置，再启用此订阅。",
   "subscriptions.emptyHint": "在上方粘贴订阅链接。启用配置后，代理页会显示其中的节点和策略组。",
   "preview.fixtureNotice": "模拟数据预览 · 订阅、节点和流量均为测试示例，并非你的当前配置",
