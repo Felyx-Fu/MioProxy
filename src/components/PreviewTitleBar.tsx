@@ -1,4 +1,5 @@
 import { Minus, Square, X } from "lucide-react";
+import { useI18n } from "../i18n/I18nProvider";
 
 declare global {
   interface Window {
@@ -9,11 +10,12 @@ declare global {
 
 /** Browser-only representation of the native Windows caption used by visual QA. */
 export function PreviewTitleBar() {
+  const { t } = useI18n();
   if (window.__TAURI_INTERNALS__ && !window.__MIOPROXY_VISUAL_PREVIEW__) return null;
 
   return (
     <div className="preview-titlebar" aria-label="MioProxy preview window caption">
-      <span className="preview-title">MioProxy</span>
+      <span className="preview-title">MioProxy{window.__MIOPROXY_VISUAL_PREVIEW__ ? ` · ${t("preview.fixtureNotice")}` : ""}</span>
       <div className="preview-window-controls" aria-hidden="true">
         <span><Minus size={13} /></span>
         <span><Square size={11} /></span>

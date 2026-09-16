@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type { InvokeArgs } from "@tauri-apps/api/core";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SystemProxyStatus } from "./api/mihomo";
 import App from "./App";
@@ -11,10 +11,12 @@ type SystemProxyHandler = (command: string, args?: InvokeArgs) => unknown;
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((nextResolve) => {
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
     resolve = nextResolve;
+    reject = nextReject;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function systemProxyStatus(enabled: boolean, external = false): SystemProxyStatus {
@@ -216,6 +218,23 @@ describe("Dashboard System Proxy synchronization", () => {
       expect(systemProxyRow()).toHaveTextContent("Enabled");
       expect(screen.getByRole("button", { name: "Disable proxy" })).toBeInTheDocument();
     });
+  });
+
+  it("ignores an old refresh failure after a newer enable is confirmed", async () => {
+    const old = deferred<SystemProxyStatus>();
+    let calls = 0;
+    let enabled = false;
+    installIPC((command) => {
+      if (command === "system_proxy_status") return ++calls === 1 ? old.promise : systemProxyStatus(enabled);
+      enabled = true;
+      return systemProxyStatus(true);
+    });
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Enable proxy" }));
+    await screen.findByRole("button", { name: "Disable proxy" });
+    await act(async () => { old.reject(new Error("obsolete status read failed")); });
+    expect(systemProxyRow()).toHaveTextContent("Enabled");
+    expect(screen.queryByText("obsolete status read failed")).not.toBeInTheDocument();
   });
 
   it("does not take over an externally owned System Proxy", async () => {

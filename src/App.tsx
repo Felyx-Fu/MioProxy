@@ -207,11 +207,12 @@ export default function App({ initialState }: { initialState?: AppInitialState }
     const sequence = ++systemProxyRefreshSequence.current;
     try {
       const next = await mihomoApi.systemProxyStatus();
-      if (sequence === systemProxyRefreshSequence.current && (force || !systemProxyRequestInFlight.current)) {
+      if (appMounted.current && sequence === systemProxyRefreshSequence.current && (force || !systemProxyRequestInFlight.current)) {
         applySystemProxyStatus(next);
       }
       return next;
     } catch (e) {
+      if (!appMounted.current || sequence !== systemProxyRefreshSequence.current) return null;
       if (systemProxyRequestInFlight.current && !force) return null;
       if (isServiceIpcFailure(errorMessage(e))) return null;
       setProxyState("error");
@@ -574,7 +575,15 @@ export default function App({ initialState }: { initialState?: AppInitialState }
       const profile = await mihomoApi.profileAdd(name, url);
       setProfiles((current) => [...current, profile]);
       setSelectedProfileId(profile.id);
-      pushToast("success", "Profile 已添加");
+      try {
+        const downloaded = await mihomoApi.profileDownload(profile.id);
+        setProfiles(current => current.map(item => item.id === profile.id ? downloaded : item));
+        pushToast("success", "订阅已导入，点击启用后加载节点和规则");
+      } catch (downloadError) {
+        const message = errorMessage(downloadError);
+        setError(message);
+        pushToast("error", "订阅已保存，但下载失败；可在订阅卡片中重试下载。");
+      }
     } catch (e) {
       setError(errorMessage(e));
       throw e;
@@ -902,7 +911,7 @@ export default function App({ initialState }: { initialState?: AppInitialState }
       <div className="app-shell">
         <Sidebar page={page} onChange={setPage} />
         <main className="content" id="main-content">
-          {page === "home" && <DashboardPage status={status} coreState={coreState} version={version} proxyStatus={proxyStatus} proxyState={proxyState} tunStatus={tunSnapshot} tunBusy={tunBusy} traffic={traffic.snapshot} connectionCount={connectionCount} currentNode={currentNode} delay={currentDelayKey ? delayByKey[currentDelayKey] ?? null : null} proxyPathState={proxyPathState} memory={connections.data?.memory ?? null} selectedProfile={selectedProfile} appliedProfileName={appliedProfileSession?.name ?? null} error={coreRecoveryError ?? error} tunError={tunError} onRequestProxyTransition={() => void requestSystemProxyTransition()} onRequestTunTransition={() => void requestTunTransition()} onNavigate={setPage} />}
+          {page === "home" && <DashboardPage activeProfile={profiles.find(profile => profile.id === appliedProfileSession?.id) ?? null} activeGroup={resolvedProxyGroup} proxies={proxies} proxySelectionBusy={proxyBusy !== null} onSelectNode={selectProxy} modeBusy={modeBusy} onModeChange={setCoreMode} status={status} coreState={coreState} version={version} proxyStatus={proxyStatus} proxyState={proxyState} tunStatus={tunSnapshot} tunBusy={tunBusy} traffic={traffic.snapshot} connectionCount={connectionCount} currentNode={currentNode} delay={currentDelayKey ? delayByKey[currentDelayKey] ?? null : null} proxyPathState={proxyPathState} memory={connections.data?.memory ?? null} selectedProfile={selectedProfile} appliedProfileName={appliedProfileSession?.name ?? null} error={coreRecoveryError ?? error} tunError={tunError} onRequestProxyTransition={() => void requestSystemProxyTransition()} onRequestTunTransition={() => void requestTunTransition()} onNavigate={setPage} />}
           {page === "connections" && <ConnectionsPage state={connections} onRefresh={connections.refresh} onClose={connections.closeConnection} onCloseAll={connections.closeAllConnections} />}
           {page === "logs" && <LogsPage state={logs} />}
           {page === "profiles" && <ProfilesPage profiles={profiles} selectedId={selectedProfileId} appliedId={appliedProfileSession?.id ?? null} busyId={profileBusyId} error={error} onSelect={setSelectedProfileId} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} onNavigate={setPage} />}

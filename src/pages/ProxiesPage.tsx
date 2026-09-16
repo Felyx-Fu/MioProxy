@@ -1,3 +1,4 @@
+import { TrafficModeControl } from "../components/TrafficModeControl";
 import { ArrowDownAZ, Check, ChevronDown, ChevronRight, Eye, Gauge, Globe2, GripVertical, ListOrdered, LocateFixed, Network, RefreshCw, RotateCcw, Search, Star } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
@@ -418,36 +419,16 @@ export function ProxiesPage({ data, mode, modeBusy, loading, busyProxy, delayByK
     <section className="page-stack proxies-page">
       <header className="page-header compact-header">
         <div><h1>{t("proxies.title")}</h1><p>{data ? t("proxies.description.count", { nodes: totalNodes, groups: groups.length }) : t("proxies.description.waiting")}</p></div>
+        <TrafficModeControl mode={mode} busy={modeBusy} onChange={onModeChange} />
       </header>
 
-      <section className="proxy-mode-panel surface-panel" aria-labelledby="proxy-mode-title">
-        <div className="proxy-mode-copy">
-          <span className="section-kicker">{t("proxies.mode.label")}</span>
-          <strong id="proxy-mode-title">{t("proxies.mode.title")}</strong>
-          <p>{t("proxies.mode.description")}</p>
-        </div>
-        <div className="proxy-mode-options" role="group" aria-label={t("proxies.mode.label")}>
-          {CORE_MODES.map((coreMode) => (
-            <button
-              key={coreMode}
-              type="button"
-              className={`proxy-mode-option${mode === coreMode ? " active" : ""}`}
-              aria-pressed={mode === coreMode}
-              disabled={modeBusy || mode === null}
-              onClick={() => void onModeChange(coreMode)}
-            >
-              <span>{t(MODE_LABELS[coreMode])}</span>
-              <small>{t(MODE_DESCRIPTIONS[coreMode])}</small>
-            </button>
-          ))}
-        </div>
-        {modeBusy && <span className="proxy-mode-pending"><span className="state-dot" />{t("proxies.mode.switching")}</span>}
-      </section>
+      {window.__MIOPROXY_VISUAL_PREVIEW__ && <div className="info-bar warning" role="note">{t("preview.fixtureNotice")}</div>}
 
       {groups.length === 0 ? (
         <div className="empty-card surface-panel proxy-empty-card"><Network size={22} /><strong>{t(!profilesLoaded ? "proxies.empty.loadingTitle" : profileCount === 0 ? "proxies.empty.noProfilesTitle" : "proxies.empty.noGroupsTitle")}</strong><p>{t(!profilesLoaded ? "proxies.empty.loadingDescription" : profileCount === 0 ? "proxies.empty.noProfilesDescription" : "proxies.empty.noGroupsDescription")}</p></div>
       ) : (
         <div className="proxy-center-stack">
+          <div className="section-title-row"><div><h2>{t("proxies.groups.sourceTitle")}</h2><p>{t("proxies.groups.sourceDescription")}</p></div></div>
           <div className="proxy-center-toolbar surface-panel">
             <label className="search-box"><Search size={15} /><input data-page-search value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("proxies.search.placeholder")} aria-label={t("proxies.search.label")} /></label>
             <label className="select-field"><ArrowDownAZ size={14} /><select value={sort} onChange={(event) => setSort(event.target.value as SortMode)} aria-label={t("proxies.sort.label")}><option value="name">{t("proxies.sort.name")}</option><option value="delay">{t("proxies.sort.latency")}</option></select></label>

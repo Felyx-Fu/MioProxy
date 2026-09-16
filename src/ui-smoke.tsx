@@ -1,6 +1,6 @@
 import { AppearanceProvider, bootstrapAppearance } from "./appearance/AppearanceProvider";
 import { I18nProvider } from "./i18n/I18nProvider";
-import { uiSmokeFixture } from "./ui-smoke-fixtures";
+import { getUiSmokeFixture } from "./ui-smoke-fixtures";
 import { emitUiSmokeEvents, installUiSmokeTauriMock, type UiSmokeAudit } from "./ui-smoke-tauri";
 import "./styles.css";
 
@@ -10,7 +10,9 @@ declare global {
   }
 }
 
-const localePreference = new URLSearchParams(window.location.search).get("locale");
+const searchParams = new URLSearchParams(window.location.search);
+const localePreference = searchParams.get("locale");
+const uiSmokeFixture = getUiSmokeFixture(searchParams.get("scenario"));
 if (localePreference === "zh-CN" || localePreference === "en-US") {
   window.localStorage.setItem("mioproxy.ui.language:v1", localePreference);
 } else {
