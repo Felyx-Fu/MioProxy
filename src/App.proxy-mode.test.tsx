@@ -72,7 +72,7 @@ describe("Proxy traffic mode synchronization", () => {
 
     renderApp();
     fireEvent.click(await screen.findByRole("button", { name: "Proxies" }));
-    await screen.findByText("Choose how traffic is routed");
+    await screen.findByRole("group", { name: "Traffic mode" });
     const modeGroup = screen.getByRole("group", { name: "Traffic mode" });
     fireEvent.click(within(modeGroup).getByRole("button", { name: /Global/ }));
 
@@ -93,7 +93,7 @@ describe("Proxy traffic mode synchronization", () => {
 
     renderApp();
     fireEvent.click(await screen.findByRole("button", { name: "Proxies" }));
-    await screen.findByText("Choose how traffic is routed");
+    await screen.findByRole("group", { name: "Traffic mode" });
     const modeGroup = screen.getByRole("group", { name: "Traffic mode" });
     fireEvent.click(within(modeGroup).getByRole("button", { name: /Global/ }));
 

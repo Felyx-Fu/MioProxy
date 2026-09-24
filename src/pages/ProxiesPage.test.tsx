@@ -91,13 +91,15 @@ function renderPage({
   mode = "rule",
   modeBusy = false,
   preferenceProfileId = "test-profile",
+  profileCount = 1,
 }: {
   onDelay?: ReturnType<typeof vi.fn>;
   onSelect?: ReturnType<typeof vi.fn>;
   onModeChange?: ReturnType<typeof vi.fn>;
   delayByKey?: Record<string, number>;
   delayStatusByKey?: Record<string, "available" | "unavailable">;
-  pageData?: ProxiesResponse;
+  pageData?: ProxiesResponse | null;
+  profileCount?: number;
   mode?: CoreMode | null;
   modeBusy?: boolean;
   preferenceProfileId?: string | null;
@@ -113,7 +115,7 @@ function renderPage({
         delayByKey={delayByKey}
         delayStatusByKey={delayStatusByKey}
         profilesLoaded
-        profileCount={1}
+        profileCount={profileCount}
         preferenceProfileId={preferenceProfileId}
         onRefresh={vi.fn()}
         onModeChange={onModeChange}
@@ -140,6 +142,14 @@ function filterChipLabels(filters: HTMLElement) {
 
 describe("ProxiesPage strategy center", () => {
   afterEach(() => cleanup());
+
+  it.each([null, { proxies: {} }])("does not invent groups, nodes or region filters without profiles and runtime data (%j)", (pageData) => {
+    renderPage({ pageData, profileCount: 0, mode: null });
+    expect(screen.getByText("No Profiles yet")).toBeInTheDocument();
+    expect(strategyHeaderNames()).toEqual([]);
+    expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
+    expect(document.querySelector(".proxy-region-filters")).toBeNull();
+  });
 
   it("renders real group names in explicit groupOrder and expands only the first group by default", () => {
     renderPage();
@@ -474,7 +484,7 @@ describe("ProxiesPage strategy center", () => {
   it("calls the mode change command with the selected mode and exposes contextual descriptions", () => {
     const onModeChange = vi.fn().mockResolvedValue(undefined);
     renderPage({ onModeChange });
-    expect(screen.getByText("Route traffic according to the configured rules.")).toBeInTheDocument();
+    expect(screen.getByTitle("Route traffic according to the configured rules.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Global/ }));
     expect(onModeChange).toHaveBeenCalledWith("global");
   });

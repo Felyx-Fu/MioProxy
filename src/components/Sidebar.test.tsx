@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "./Sidebar";
 import { I18nProvider, useI18n } from "../i18n/I18nProvider";
 
@@ -15,6 +15,23 @@ function LanguageTestControl() {
 }
 
 describe("Sidebar i18n", () => {
+  afterEach(cleanup);
+  it("filters navigation and resets the query after opening a network tool", () => {
+    const onChange = vi.fn();
+    render(<I18nProvider><Sidebar page="dns" onChange={onChange} /></I18nProvider>);
+    const search = screen.getByRole("searchbox");
+    fireEvent.change(search, { target: { value: "dns" } });
+    const dns = screen.getByRole("button", { name: "DNS" });
+    expect(dns).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("button", { name: "TUN" })).not.toBeInTheDocument();
+    fireEvent.click(dns);
+    expect(onChange).toHaveBeenCalledWith("dns");
+    expect(search).toHaveValue("");
+    expect(screen.getByRole("button", { name: "TUN" })).toBeInTheDocument();
+    fireEvent.change(search, { target: { value: "missing-page" } });
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect(search).toHaveValue("");
+  });
   it("updates visible labels, aria labels, and tooltips without remounting", () => {
     render(
       <I18nProvider>
