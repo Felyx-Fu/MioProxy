@@ -24,6 +24,15 @@ Function MioProxyQueryService
   ${EndIf}
 
   StrCpy $MioProxyServicePresent 1
+<<<<<<< HEAD
+=======
+  nsis_tauri_utils::StrReplace "$MioProxyServiceOutput" "STOP_PENDING" "__MIOPROXY_STOP_PENDING__"
+  Pop $0
+  StrCmp $0 "$MioProxyServiceOutput" mio_proxy_query_running_check
+  StrCpy $MioProxyServiceState "pending"
+  Return
+mio_proxy_query_running_check:
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
   nsis_tauri_utils::StrReplace "$MioProxyServiceOutput" "RUNNING" "__MIOPROXY_RUNNING__"
   Pop $0
   StrCmp $0 "$MioProxyServiceOutput" mio_proxy_query_stopped_check
@@ -71,6 +80,15 @@ Function un.MioProxyQueryService
   ${EndIf}
 
   StrCpy $MioProxyServicePresent 1
+<<<<<<< HEAD
+=======
+  nsis_tauri_utils::StrReplace "$MioProxyServiceOutput" "STOP_PENDING" "__MIOPROXY_STOP_PENDING__"
+  Pop $0
+  StrCmp $0 "$MioProxyServiceOutput" un_mio_proxy_query_running_check
+  StrCpy $MioProxyServiceState "pending"
+  Return
+un_mio_proxy_query_running_check:
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
   nsis_tauri_utils::StrReplace "$MioProxyServiceOutput" "RUNNING" "__MIOPROXY_RUNNING__"
   Pop $0
   StrCmp $0 "$MioProxyServiceOutput" un_mio_proxy_query_stopped_check

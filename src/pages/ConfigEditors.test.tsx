@@ -61,4 +61,7 @@ describe("configuration editors", () => {
     expect(mihomoApi.overrideSet).not.toHaveBeenCalled();
   });
 });
+<<<<<<< HEAD
 
+=======
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7

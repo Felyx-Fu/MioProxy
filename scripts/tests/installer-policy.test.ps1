@@ -115,6 +115,20 @@ Assert-NotContains $detectionFunction 'FindProcess' 'Existing-install detection 
 Assert-Contains $templateText 'StrCpy $INSTDIR $MioProxyExistingInstallPath' 'Overlay mode must reuse the detected installation path.'
 Assert-Contains $templateText 'Function SkipDirectoryIfExisting' 'Overlay mode must not offer a side-by-side directory.'
 Assert-Contains $templateText 'Page custom MioProxyInstallModePage MioProxyInstallModePageLeave' 'The installer must present the explicit MioProxy mode page.'
+<<<<<<< HEAD
+=======
+$initFunction = Get-TextRange -Text $templateText -StartMarker 'Function .onInit' -EndMarker 'Section EarlyChecks'
+Assert-Contains $initFunction '$MioProxyExistingRegistryRoot == "HKCU"' 'Per-machine legacy per-user detection must branch before choosing the install path.'
+Assert-Contains $initFunction 'StrCpy $MioProxyLegacyInstallPath $MioProxyExistingInstallPath' 'Per-machine migration must retain the legacy per-user path for cleanup.'
+Assert-Contains $initFunction 'Call MioProxySetDefaultInstallPath' 'Per-machine migration must use the machine-wide default install path.'
+$legacyCleanupFunction = Get-TextRange -Text $templateText -StartMarker 'Function MioProxyRemoveLegacyInstall' -EndMarker 'Function .onInit'
+Assert-Contains $legacyCleanupFunction 'Delete "$MioProxyLegacyInstallPath\${MAINBINARYNAME}.exe"' 'Legacy cleanup must remove the old application binary.'
+Assert-NotContains $legacyCleanupFunction 'RMDir /r' 'Legacy cleanup must not recursively delete unrelated files.'
+$installRegistryMigration = Get-TextRange -Text $templateText -StartMarker 'WriteRegStr SHCTX "${MANUPRODUCTKEY}" "" $INSTDIR' -EndMarker '; Create start menu shortcut'
+Assert-Contains $templateText '${If} $MioProxyExistingRegistryRoot == "HKCU"' 'Per-machine install must detect the validated per-user registry root before migration.'
+Assert-Contains $templateText 'DeleteRegKey HKCU "${UNINSTKEY}"' 'Per-machine install must remove the superseded per-user uninstall record.'
+Assert-Contains $templateText 'DeleteRegValue HKCU "${MANUPRODUCTKEY}" ""' 'Per-machine install must remove the superseded per-user install location.'
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
 
 # Verify the user-facing mode strings and the required downgrade confirmation.
 $installLabel = -join @([char]0x5B89, [char]0x88C5, [char]0x20, 'MioProxy')
@@ -186,6 +200,11 @@ $nearestNsExecIndex = $hooksText.LastIndexOf('nsExec::ExecToStack', $powerShellI
 Assert-True ($nearestNsExecIndex -ge 0) 'The remaining PowerShell check must be launched through nsExec.'
 Assert-Contains $hooksText 'Call un.MioProxyQueryService' 'The uninstall polling path must call an un-prefixed-compatible query function.'
 Assert-Contains $hooksText 'Call un.MioProxyCheckTunRecovered' 'The uninstall ownership check must call an un-prefixed-compatible function.'
+<<<<<<< HEAD
+=======
+Assert-Contains $hooksText 'StrReplace "$MioProxyServiceOutput" "STOP_PENDING" "__MIOPROXY_STOP_PENDING__"' 'Service polling must recognize STOP_PENDING as an intermediate state.'
+Assert-Contains $hooksText 'StrCpy $MioProxyServiceState "pending"' 'Service polling must return a pending state instead of aborting.'
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
 $pluginPathMarker = $templateText.IndexOf('{{#if additional_plugins_path}}', [System.StringComparison]::Ordinal)
 $hookPathMarker = $templateText.IndexOf('{{#if installer_hooks}}', [System.StringComparison]::Ordinal)
 Assert-True ($pluginPathMarker -ge 0 -and $pluginPathMarker -lt $hookPathMarker) 'The NSIS utility plugin path must be registered before hooks are included.'
@@ -199,6 +218,13 @@ Assert-NotContains $templateText '!insertmacro CheckIfAppIsRunning' 'The stock T
 $installAppCheckIndex = $installSection.IndexOf('Call MioProxyCheckAppNotRunning', [System.StringComparison]::Ordinal)
 $installHookIndex = $installSection.IndexOf('!insertmacro NSIS_HOOK_PREINSTALL', [System.StringComparison]::Ordinal)
 Assert-True ($installAppCheckIndex -ge 0 -and $installAppCheckIndex -lt $installHookIndex) 'Install must check the running MioProxy process before changing Service/TUN state.'
+<<<<<<< HEAD
+=======
+$legacyCleanupIndex = $installSection.IndexOf('Call MioProxyRemoveLegacyInstall', [System.StringComparison]::Ordinal)
+$postInstallHookIndex = $installSection.IndexOf('!insertmacro NSIS_HOOK_POSTINSTALL', [System.StringComparison]::Ordinal)
+$legacyRegistryIndex = $installSection.IndexOf('DeleteRegKey HKCU "${UNINSTKEY}"', [System.StringComparison]::Ordinal)
+Assert-True ($legacyCleanupIndex -gt $postInstallHookIndex -and $legacyRegistryIndex -gt $legacyCleanupIndex) 'Legacy cleanup and HKCU migration must happen only after post-install Service setup succeeds.'
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
 $uninstallAppCheckIndex = $uninstallSection.IndexOf('Call un.MioProxyCheckAppNotRunning', [System.StringComparison]::Ordinal)
 $uninstallHookIndex = $uninstallSection.IndexOf('!insertmacro NSIS_HOOK_PREUNINSTALL', [System.StringComparison]::Ordinal)
 Assert-True ($uninstallAppCheckIndex -ge 0 -and $uninstallAppCheckIndex -lt $uninstallHookIndex) 'Uninstall must check the running MioProxy process before changing Service/TUN state.'

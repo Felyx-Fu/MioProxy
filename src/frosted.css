@@ -149,8 +149,14 @@ button.dashboard-metric:hover { background: var(--surface-hover); }
 .settings-page .settings-workspace { gap: 16px; align-content: start; }
 @media (max-width: 839px) { .settings-page .settings-workspace { min-height: 0; grid-template-rows: auto auto; } }
 /* Task-oriented desktop layout. */
+<<<<<<< HEAD
 .home-control-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
 .home-card { padding:20px; min-width:0; display:flex; flex-direction:column; gap:14px; }
+=======
+.home-control-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; align-items:start; align-content:start; }
+.home-card { padding:16px; min-width:0; display:flex; flex-direction:column; gap:10px; }
+.home-control-grid > .home-card:nth-child(-n + 2) { align-self:stretch; }
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
 .home-card h2 { font-size:14px; }
 .home-value { margin:4px 0; font-size:23px; overflow-wrap:anywhere; }
 .home-caption { color:var(--muted); font-size:12px; line-height:1.7; margin:0; }
@@ -158,6 +164,7 @@ button.dashboard-metric:hover { background: var(--surface-hover); }
 .home-facts > div { display:flex; justify-content:space-between; gap:16px; }
 .home-facts dt { color:var(--muted); }
 .home-facts dd { margin:0; overflow-wrap:anywhere; text-align:right; }
+<<<<<<< HEAD
 .home-network-row { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:10px 0; border-bottom:1px solid var(--border); }
 .home-network-row p { margin:5px 0 0; color:var(--muted); font-size:11px; }
 .home-node-summary { display:flex; align-items:center; gap:12px; padding:14px; background:var(--surface-subtle); border-radius:10px; }
@@ -167,6 +174,17 @@ button.dashboard-metric:hover { background: var(--surface-hover); }
 .node-picker select, .subscription-import input { width:100%; min-width:0; height:36px; border:1px solid var(--border-strong); border-radius:8px; padding:0 10px; background:var(--surface); color:var(--text); }
 .traffic-mode-control { display:flex; width:fit-content; border:1px solid var(--border-strong); border-radius:9px; overflow:hidden; flex-shrink:0; }
 .traffic-mode-control button { border:0; padding:9px 18px; background:var(--surface); color:var(--muted); cursor:pointer; }
+=======
+.home-network-row { display:flex; justify-content:space-between; align-items:center; gap:16px; margin:0; padding:8px 0; border-bottom:1px solid var(--border); }
+.home-network-row p { margin:5px 0 0; color:var(--muted); font-size:11px; }
+.home-node-summary { display:flex; align-items:center; gap:12px; padding:10px 12px; background:var(--surface-subtle); border-radius:10px; }
+.home-node-summary strong { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.node-picker { display:grid; gap:8px; }
+.node-picker label { display:grid; gap:5px; color:var(--muted); }
+.node-picker select, .subscription-import input { width:100%; min-width:0; height:36px; border:1px solid var(--border-strong); border-radius:8px; padding:0 10px; background:var(--surface); color:var(--text); }
+.traffic-mode-control { display:flex; width:fit-content; border:1px solid var(--border-strong); border-radius:9px; overflow:hidden; flex-shrink:0; }
+.traffic-mode-control button { border:0; padding:8px 18px; background:var(--surface); color:var(--muted); cursor:pointer; }
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
 .traffic-mode-control button + button { border-left:1px solid var(--border); }
 .traffic-mode-control button[aria-pressed="true"] { background:var(--accent); color:var(--accent-foreground); }
 .traffic-mode-control button:focus-visible { outline-offset:-3px; }
@@ -176,6 +194,10 @@ button.dashboard-metric:hover { background: var(--surface-hover); }
 .subscription-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr)); gap:16px; align-items:start; }
 .subscription-card { padding:20px; min-width:0; }
 .subscription-card.is-active { border-color:var(--accent); box-shadow:inset 3px 0 var(--accent); }
+<<<<<<< HEAD
+=======
+.subscription-card.is-selected { outline:2px solid var(--accent); outline-offset:-2px; }
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
 .subscription-card h2 { overflow-wrap:anywhere; font-size:17px; }
 .subscription-source { color:var(--muted); margin:10px 0 20px; }
 .subscription-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:20px; }
@@ -184,3 +206,7 @@ button.dashboard-metric:hover { background: var(--surface-hover); }
 .proxies-page .proxy-strategy-heading strong { font-size:14px; }
 .proxies-page .proxy-strategy-header { min-height:70px; }
 @media(max-width:839px) { .home-control-grid { grid-template-columns:minmax(0,1fr); } .subscription-import { flex-wrap:wrap; } .subscription-url { flex-basis:100%; } .proxies-page .page-header { flex-wrap:wrap; } }
+<<<<<<< HEAD
+=======
+@media(max-width:560px) { .home-card { padding:14px; gap:9px; } .home-network-row { gap:10px; padding:7px 0; } .home-node-summary { padding:9px 10px; } .traffic-mode-control button { padding-inline:14px; } }
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7

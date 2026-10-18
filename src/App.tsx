@@ -575,7 +575,10 @@ export default function App({ initialState }: { initialState?: AppInitialState }
     setError(null);
     let profile: Profile;
     try {
-      profile = await mihomoApi.profileAdd(name, url);
+      const profile = await mihomoApi.profileAdd(name, url);
+      setProfiles((current) => [...current, profile]);
+      setSelectedProfileId(profile.id);
+      pushToast("success", "Profile 已添加");
     } catch (e) {
       setError(errorMessage(e));
       throw e;
@@ -922,7 +925,7 @@ export default function App({ initialState }: { initialState?: AppInitialState }
       <div className="app-shell">
         <Sidebar page={page} onChange={setPage} />
         <main className="content" id="main-content">
-          {page === "home" && <DashboardPage activeProfile={profiles.find(profile => profile.id === appliedProfileSession?.id) ?? null} proxies={proxies} proxySelectionBusy={proxyBusy !== null} onSelectNode={selectProxy} modeBusy={modeBusy} onModeChange={setCoreMode} status={status} coreState={coreState} version={version} proxyStatus={proxyStatus} proxyState={proxyState} tunStatus={tunSnapshot} tunBusy={tunBusy} traffic={traffic.snapshot} connectionCount={connectionCount} currentNode={currentNode} delay={currentDelayKey ? delayByKey[currentDelayKey] ?? null : null} proxyPathState={proxyPathState} memory={connections.data?.memory ?? null} selectedProfile={selectedProfile} appliedProfileName={appliedProfileSession?.name ?? null} error={coreRecoveryError ?? error} tunError={tunError} onRequestProxyTransition={() => void requestSystemProxyTransition()} onRequestTunTransition={() => void requestTunTransition()} onNavigate={setPage} />}
+          {page === "home" && <DashboardPage status={status} coreState={coreState} version={version} proxyStatus={proxyStatus} proxyState={proxyState} tunStatus={tunSnapshot} tunBusy={tunBusy} traffic={traffic.snapshot} connectionCount={connectionCount} currentNode={currentNode} delay={currentDelayKey ? delayByKey[currentDelayKey] ?? null : null} proxyPathState={proxyPathState} memory={connections.data?.memory ?? null} selectedProfile={selectedProfile} appliedProfileName={appliedProfileSession?.name ?? null} error={coreRecoveryError ?? error} tunError={tunError} onRequestProxyTransition={() => void requestSystemProxyTransition()} onRequestTunTransition={() => void requestTunTransition()} onNavigate={setPage} />}
           {page === "connections" && <ConnectionsPage state={connections} onRefresh={connections.refresh} onClose={connections.closeConnection} onCloseAll={connections.closeAllConnections} />}
           {page === "logs" && <LogsPage state={logs} />}
           {page === "profiles" && <ProfilesPage profiles={profiles} selectedId={selectedProfileId} appliedId={appliedProfileSession?.id ?? null} busyId={profileBusyId} error={error} onSelect={setSelectedProfileId} onAdd={addProfile} onDownload={downloadProfile} onApply={applyProfile} onRemove={removeProfile} onNavigate={setPage} />}

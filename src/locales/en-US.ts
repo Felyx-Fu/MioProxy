@@ -3,7 +3,11 @@ export const enUS = {
   "home.subscription": "Current subscription",
   "home.noSubscription": "No subscription enabled",
   "home.subscriptionActive": "Enabled during this session.",
+<<<<<<< HEAD
   "home.subscriptionHint": "Import a subscription; MioProxy downloads and enables it in the background, then you choose a node.",
+=======
+  "home.subscriptionHint": "Import a subscription and enable it to load its nodes and rules.",
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
   "home.manageSubscriptions": "Manage subscriptions",
   "home.network": "Network access",
   "home.systemProxyHint": "For apps that follow Windows proxy settings.",
@@ -11,6 +15,7 @@ export const enUS = {
   "home.tunHint": "Route traffic through the virtual adapter.",
   "home.modeHint": "Routing mode is independent of system proxy and TUN.",
   "home.modeUnavailable": "Waiting for the running core.",
+<<<<<<< HEAD
   "subscriptions.flow": "Import a link → background download and enable → choose a node.",
   "subscriptions.optionalName": "Name (optional)",
   "subscriptions.import": "Import",
@@ -19,6 +24,18 @@ export const enUS = {
   "subscriptions.download": "Download",
   "subscriptions.edit": "Overrides",
   "subscriptions.processing": "Processing in the background…",
+=======
+  "subscriptions.flow": "Import a link, enable a subscription, then choose a node.",
+  "subscriptions.optionalName": "Name (optional)",
+  "subscriptions.import": "Import",
+  "subscriptions.active": "Enabled this session",
+  "subscriptions.reload": "Reload",
+  "subscriptions.activate": "Enable",
+  "subscriptions.download": "Download",
+  "subscriptions.edit": "Overrides",
+  "subscriptions.select": "Select",
+  "subscriptions.selected": "Selected",
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
   "subscriptions.needsDownload": "Download the configuration before enabling it.",
   "subscriptions.emptyHint": "Paste a subscription URL above. Nodes and policy groups appear after the configuration is enabled.",
   "preview.fixtureNotice": "Demo data · Profiles, nodes and traffic are simulated, not your current configuration",

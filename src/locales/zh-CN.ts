@@ -5,7 +5,11 @@ export const zhCN: Record<MessageKey, string> = {
   "home.subscription": "当前订阅",
   "home.noSubscription": "尚未启用订阅",
   "home.subscriptionActive": "已在本次会话中启用。",
+<<<<<<< HEAD
   "home.subscriptionHint": "导入订阅后，后台会自动下载并启用，然后由你选择节点。",
+=======
+  "home.subscriptionHint": "导入并启用订阅后，加载其中的节点与规则。",
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
   "home.manageSubscriptions": "管理订阅",
   "home.network": "网络接管方式",
   "home.systemProxyHint": "供遵循 Windows 代理设置的应用使用。",
@@ -13,6 +17,7 @@ export const zhCN: Record<MessageKey, string> = {
   "home.tunHint": "通过虚拟网卡接管网络流量。",
   "home.modeHint": "流量模式与系统代理、TUN 开关相互独立。",
   "home.modeUnavailable": "等待运行中的内核。",
+<<<<<<< HEAD
   "subscriptions.flow": "导入订阅 → 后台下载并启用 → 手动选择节点",
   "subscriptions.optionalName": "名称（可选）",
   "subscriptions.import": "导入",
@@ -21,6 +26,18 @@ export const zhCN: Record<MessageKey, string> = {
   "subscriptions.download": "下载",
   "subscriptions.edit": "覆写",
   "subscriptions.processing": "后台处理中…",
+=======
+  "subscriptions.flow": "导入订阅 → 启用配置 → 选择节点",
+  "subscriptions.optionalName": "名称（可选）",
+  "subscriptions.import": "导入",
+  "subscriptions.active": "本次会话已启用",
+  "subscriptions.reload": "重新加载",
+  "subscriptions.activate": "启用",
+  "subscriptions.download": "下载",
+  "subscriptions.edit": "覆写",
+  "subscriptions.select": "选择",
+  "subscriptions.selected": "已选择",
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
   "subscriptions.needsDownload": "请先下载配置，再启用此订阅。",
   "subscriptions.emptyHint": "在上方粘贴订阅链接。启用配置后，代理页会显示其中的节点和策略组。",
   "preview.fixtureNotice": "模拟数据预览 · 订阅、节点和流量均为测试示例，并非你的当前配置",

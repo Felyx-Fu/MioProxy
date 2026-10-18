@@ -141,7 +141,11 @@ export function DashboardPage({
   onRequestProxyTransition,
   onRequestTunTransition,
   onNavigate,
+<<<<<<< HEAD
   modeBusy = false, onModeChange, proxies = null, proxySelectionBusy = false, onSelectNode, activeProfile = null,
+=======
+  modeBusy = false, onModeChange, proxies = null, proxySelectionBusy = false, onSelectNode, activeProfile = null, activeGroup = null,
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
 }: {
   modeBusy?: boolean;
   onModeChange?: (mode: CoreMode) => Promise<void>;
@@ -149,6 +153,10 @@ export function DashboardPage({
   proxySelectionBusy?: boolean;
   onSelectNode?: (group: string, node: string) => Promise<void>;
   activeProfile?: Profile | null;
+<<<<<<< HEAD
+=======
+  activeGroup?: string | null;
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
   status: CoreStatus | null;
   coreState: CoreState;
   version: MihomoVersion | null;
@@ -200,17 +208,29 @@ export function DashboardPage({
         <section className="surface-panel home-card">
           <div className="section-title-row"><h2>{t("dashboard.selectedNode")}</h2><button type="button" className="quiet-button" onClick={() => onNavigate("proxies")}>{t("nav.proxies")} →</button></div>
           <div className="home-node-summary"><Network size={22} /><strong>{currentNode ?? "—"}</strong><span className={`latency-${latencyTone(delay)}`}>{delay === null ? "—" : `${delay} ms`}</span></div>
+<<<<<<< HEAD
           {onSelectNode && <NodePicker data={proxies} busy={proxySelectionBusy} onSelect={onSelectNode} />}
         </section>
         <section className="surface-panel home-card">
           <div className="section-title-row"><h2>{t("home.network")}</h2><dl className="home-core-state"><div><dt>{t("dashboard.core")}</dt><dd><StateValue tone={coreTone}>{t(checking ? "dashboard.state.checking" : coreStateKey(coreState))}</StateValue></dd></div></dl></div>
           <dl className="home-network-row"><dt><span>{t("dashboard.systemProxy")}</span></dt><dd><StateValue tone={proxy.tone}>{t(proxy.key)}</StateValue></dd><button type="button" className="secondary-button" onClick={onRequestProxyTransition} disabled={coreState !== "ready" || proxyBusy || proxy.external}>{t(proxyBusy ? "dashboard.action.working" : proxy.external ? "dashboard.action.externalProxy" : proxy.owned ? "dashboard.action.disableProxy" : "dashboard.action.enableProxy")}</button></dl><p className="home-caption">{t("home.systemProxyHint")}</p>
+=======
+          {onSelectNode && <NodePicker data={proxies} busy={proxySelectionBusy} activeGroup={activeGroup} onSelect={onSelectNode} />}
+        </section>
+        <section className="surface-panel home-card">
+          <div className="section-title-row"><h2>{t("home.network")}</h2><dl className="home-core-state"><div><dt>{t("dashboard.core")}</dt><dd><StateValue tone={coreTone}>{t(checking ? "dashboard.state.checking" : coreStateKey(coreState))}</StateValue></dd></div></dl></div>
+          <dl className="home-network-row"><dt>{t("dashboard.systemProxy")}</dt><dd><StateValue tone={proxy.tone}>{t(proxy.key)}</StateValue></dd><button type="button" className="secondary-button" onClick={onRequestProxyTransition} disabled={coreState !== "ready" || proxyBusy || proxy.external}>{t(proxyBusy ? "dashboard.action.working" : proxy.external ? "dashboard.action.externalProxy" : proxy.owned ? "dashboard.action.disableProxy" : "dashboard.action.enableProxy")}</button></dl><p className="home-caption">{t("home.systemProxyHint")}</p>
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
           <div className="home-network-row"><div><strong>{t("home.tun")}</strong><p>{t("home.tunHint")}</p></div><button type="button" className="secondary-button" onClick={onRequestTunTransition} disabled={tunBusy || tunTransitioning || tun.external || (!tunWillDisable && coreState !== "ready")}>{t(tunBusy || tunTransitioning ? "dashboard.action.working" : tun.external ? "dashboard.action.externalTun" : tunWillDisable ? "dashboard.action.disableTun" : "dashboard.action.enableTun")}</button></div>
           <button className="quiet-button" type="button" onClick={() => onNavigate("settings")}>{t("nav.settings")} →</button>
         </section>
         <section className="surface-panel home-card">
           <div className="section-title-row"><h2>{t("proxies.mode.label")}</h2><Workflow size={18} /></div>
+<<<<<<< HEAD
           {onModeChange && <TrafficModeControl mode={status?.mode ?? null} busy={modeBusy} onChange={onModeChange} />}
+=======
+          {onModeChange && <TrafficModeControl mode={status?.mode ?? null} busy={modeBusy} available={coreState === "ready"} onChange={onModeChange} />}
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
           <p className="home-caption">{t(status?.mode ? `proxies.mode.${status.mode}Description` : "home.modeUnavailable")}</p>
           <p className="home-caption">{t("home.modeHint")}</p>
         </section>

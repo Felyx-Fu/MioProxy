@@ -90,6 +90,10 @@ Var MioProxyExistingInvalid
 Var MioProxyExistingVersion
 Var MioProxyExistingInstallPath
 Var MioProxyExistingRegistryRoot
+<<<<<<< HEAD
+=======
+Var MioProxyLegacyInstallPath
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
 Var MioProxyVersionComparison
 Var MioProxyDowngradeConfirmed
 Var MioProxyModeTitle
@@ -365,6 +369,10 @@ Function MioProxyDetectExistingInstall
   StrCpy $MioProxyExistingVersion ""
   StrCpy $MioProxyExistingInstallPath ""
   StrCpy $MioProxyExistingRegistryRoot ""
+<<<<<<< HEAD
+=======
+  StrCpy $MioProxyLegacyInstallPath ""
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
   StrCpy $MioProxyVersionComparison 99
   !if "${INSTALLMODE}" == "perMachine"
     ${If} ${RunningX64}
@@ -412,6 +420,27 @@ Function MioProxySetInstallPresentation
   ${EndIf}
 FunctionEnd
 
+<<<<<<< HEAD
+=======
+Function MioProxySetDefaultInstallPath
+  !if "${INSTALLMODE}" == "perMachine"
+    ${If} ${RunningX64}
+      !if "${ARCH}" == "x64"
+        StrCpy $INSTDIR "$PROGRAMFILES64\${PRODUCTNAME}"
+      !else if "${ARCH}" == "arm64"
+        StrCpy $INSTDIR "$PROGRAMFILES64\${PRODUCTNAME}"
+      !else
+        StrCpy $INSTDIR "$PROGRAMFILES\${PRODUCTNAME}"
+      !endif
+    ${Else}
+      StrCpy $INSTDIR "$PROGRAMFILES\${PRODUCTNAME}"
+    ${EndIf}
+  !else if "${INSTALLMODE}" == "currentUser"
+    StrCpy $INSTDIR "$LOCALAPPDATA\${PRODUCTNAME}"
+  !endif
+FunctionEnd
+
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
 Function MioProxyInstallModePage
   ${If} $PassiveMode == 1
     Abort
@@ -489,6 +518,35 @@ Function SkipDirectoryIfExisting
   ${EndIf}
 FunctionEnd
 
+<<<<<<< HEAD
+=======
+Function MioProxyRemoveLegacyInstall
+  ${If} $MioProxyLegacyInstallPath == ""
+    Return
+  ${EndIf}
+  ${If} $MioProxyLegacyInstallPath == $INSTDIR
+    Return
+  ${EndIf}
+
+  ; Remove only files owned by the legacy installation. Keep unrelated files
+  ; in a user-selected directory instead of recursively deleting the folder.
+  DetailPrint "Removing legacy per-user MioProxy files from $MioProxyLegacyInstallPath"
+  Delete "$MioProxyLegacyInstallPath\${MAINBINARYNAME}.exe"
+  Delete "$MioProxyLegacyInstallPath\uninstall.exe"
+  Delete "$MioProxyLegacyInstallPath\mihomo.exe"
+  Delete "$MioProxyLegacyInstallPath\mioproxy-service.exe"
+  Delete "$MioProxyLegacyInstallPath\verify-updater-signature.exe"
+  Delete "$MioProxyLegacyInstallPath\binaries\GeoIP.dat"
+  Delete "$MioProxyLegacyInstallPath\binaries\GeoSite.dat"
+  Delete "$MioProxyLegacyInstallPath\binaries\README.md"
+  Delete "$MioProxyLegacyInstallPath\binaries\THIRD_PARTY_NOTICES.txt"
+  Delete "$MioProxyLegacyInstallPath\binaries\mihomo-x86_64-pc-windows-msvc.exe"
+  Delete "$MioProxyLegacyInstallPath\binaries\mioproxy-service-x86_64-pc-windows-msvc.exe"
+  RMDir /REBOOTOK "$MioProxyLegacyInstallPath\binaries"
+  RMDir "$MioProxyLegacyInstallPath"
+FunctionEnd
+
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
 Function .onInit
   ${GetOptions} $CMDLINE "/P" $PassiveMode
   ${IfNot} ${Errors}
@@ -517,6 +575,7 @@ Function .onInit
   ${EndIf}
 
   ${If} $MioProxyExistingDetected == 1
+<<<<<<< HEAD
     StrCpy $INSTDIR $MioProxyExistingInstallPath
   ${ElseIf} $INSTDIR == "${PLACEHOLDER_INSTALL_DIR}"
     ; Set default install location
@@ -536,6 +595,21 @@ Function .onInit
       StrCpy $INSTDIR "$LOCALAPPDATA\${PRODUCTNAME}"
     !endif
 
+=======
+    !if "${INSTALLMODE}" == "perMachine"
+      ${If} $MioProxyExistingRegistryRoot == "HKCU"
+        StrCpy $MioProxyLegacyInstallPath $MioProxyExistingInstallPath
+        Call MioProxySetDefaultInstallPath
+      ${Else}
+        StrCpy $INSTDIR $MioProxyExistingInstallPath
+      ${EndIf}
+    !else
+      StrCpy $INSTDIR $MioProxyExistingInstallPath
+    !endif
+  ${ElseIf} $INSTDIR == "${PLACEHOLDER_INSTALL_DIR}"
+    ; Set default install location
+    Call MioProxySetDefaultInstallPath
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
     Call RestorePreviousInstallLocation
   ${EndIf}
 
@@ -755,6 +829,20 @@ Section Install
     !insertmacro NSIS_HOOK_POSTINSTALL
   !endif
 
+<<<<<<< HEAD
+=======
+  ; A per-machine install supersedes a validated per-user installation only
+  ; after the new Service and application files have been installed.
+  Call MioProxyRemoveLegacyInstall
+  !if "${INSTALLMODE}" == "perMachine"
+    ${If} $MioProxyExistingRegistryRoot == "HKCU"
+      DeleteRegKey HKCU "${UNINSTKEY}"
+      DeleteRegValue HKCU "${MANUPRODUCTKEY}" ""
+      DeleteRegKey /ifempty HKCU "${MANUPRODUCTKEY}"
+    ${EndIf}
+  !endif
+
+>>>>>>> a131c10b1e6f0d0a927fe847504073c7eec134b7
   ; Auto close this page for passive mode
   ${If} $PassiveMode = 1
     SetAutoClose true
