@@ -1,0 +1,3844 @@
+
+> mioproxy@1.0.3 test:ui
+> vitest run --config vitest.config.ts
+
+
+ RUN  v2.1.9 E:/One/MioProxy
+
+ ✓ src/utils/latency.test.ts (6 tests) 7ms
+ ✓ src/utils/nodeRegion.test.ts (4 tests) 8ms
+ ✓ src/utils/proxyPreferences.test.ts (9 tests) 11ms
+ ✓ src/hooks/useConnections.test.tsx (5 tests) 37ms
+(node:17608) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1052) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/components/Sidebar.test.tsx (2 tests) 278ms
+(node:3852) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:11572) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36120) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/pages/ConfigEditors.test.tsx (4 tests) 349ms
+ ✓ src/App.test.tsx (1 test) 213ms
+(node:38652) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/App.proxy-mode.test.tsx (2 tests) 618ms
+   ✓ Proxy traffic mode synchronization > updates the selector only after the follow-up authoritative status read 415ms
+ ✓ src/App.refresh-sequencing.test.tsx (6 tests) 1112ms
+(node:16924) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/pages/ProxiesPage.test.tsx (31 tests) 2259ms
+ ❯ src/App.system-proxy.test.tsx (7 tests | 6 failed) 6034ms
+   × Dashboard System Proxy synchronization > renders an initially disabled snapshot with an Enable proxy action 1156ms
+     → Unable to find an element with the text: System Proxy, which matches selector 'dt'. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"app-frame"[39m
+      [33mdata-context-menu-policy[39m=[32m"block-browser"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33maria-label[39m=[32m"MioProxy preview window caption"[39m
+        [33mclass[39m=[32m"preview-titlebar"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"preview-title"[39m
+        [36m>[39m
+          [0mMioProxy[0m
+          [0m · Demo data · Profiles, nodes and traffic are simulated, not your current configuration[0m
+        [36m</span>[39m
+        [36m<div[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"preview-window-controls"[39m
+        [36m>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-minus"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"13"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"13"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M5 12h14"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-square"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"11"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"11"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<rect[39m
+                [33mheight[39m=[32m"18"[39m
+                [33mrx[39m=[32m"2"[39m
+                [33mwidth[39m=[32m"18"[39m
+                [33mx[39m=[32m"3"[39m
+                [33my[39m=[32m"3"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-x"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"13"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"13"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M18 6 6 18"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m6 6 12 12"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"app-shell"[39m
+      [36m>[39m
+        [36m<aside[39m
+          [33maria-label[39m=[32m"Main navigation"[39m
+          [33mclass[39m=[32m"sidebar"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33maria-label[39m=[32m"MioProxy"[39m
+            [33mclass[39m=[32m"sidebar-brand"[39m
+          [36m>[39m
+            [36m<span[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"sidebar-brand-mark"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-network"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"21"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"1.7"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"21"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"16"[39m
+                  [33my[39m=[32m"16"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"2"[39m
+                  [33my[39m=[32m"16"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"9"[39m
+                  [33my[39m=[32m"2"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M12 12V8"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"sidebar-brand-name"[39m
+            [36m>[39m
+              [0mMio[0m
+              [36m<span>[39m
+                [0mProxy[0m
+              [36m</span>[39m
+            [36m</span>[39m
+          [36m</div>[39m
+          [36m<label[39m
+            [33mclass[39m=[32m"sidebar-search"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-search"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"14"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"14"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<circle[39m
+                [33mcx[39m=[32m"11"[39m
+                [33mcy[39m=[32m"11"[39m
+                [33mr[39...
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"app-frame"[39m
+      [33mdata-context-menu-policy[39m=[32m"block-browser"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33maria-label[39m=[32m"MioProxy preview window caption"[39m
+        [33mclass[39m=[32m"preview-titlebar"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"preview-title"[39m
+        [36m>[39m
+          [0mMioProxy[0m
+          [0m · Demo data · Profiles, nodes and traffic are simulated, not your current configuration[0m
+        [36m</span>[39m
+        [36m<div[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"preview-window-controls"[39m
+        [36m>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-minus"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"13"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"13"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M5 12h14"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-square"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"11"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"11"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<rect[39m
+                [33mheight[39m=[32m"18"[39m
+                [33mrx[39m=[32m"2"[39m
+                [33mwidth[39m=[32m"18"[39m
+                [33mx[39m=[32m"3"[39m
+                [33my[39m=[32m"3"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-x"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"13"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"13"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M18 6 6 18"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m6 6 12 12"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"app-shell"[39m
+      [36m>[39m
+        [36m<aside[39m
+          [33maria-label[39m=[32m"Main navigation"[39m
+          [33mclass[39m=[32m"sidebar"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33maria-label[39m=[32m"MioProxy"[39m
+            [33mclass[39m=[32m"sidebar-brand"[39m
+          [36m>[39m
+            [36m<span[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"sidebar-brand-mark"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-network"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"21"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"1.7"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"21"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"16"[39m
+                  [33my[39m=[32m"16"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"2"[39m
+                  [33my[39m=[32m"16"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"9"[39m
+                  [33my[39m=[32m"2"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M12 12V8"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"sidebar-brand-name"[39m
+            [36m>[39m
+              [0mMio[0m
+              [36m<span>[39m
+                [0mProxy[0m
+              [36m</span>[39m
+            [36m</span>[39m
+          [36m</div>[39m
+          [36m<label[39m
+            [33mclass[39m=[32m"sidebar-search"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-search"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"14"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"14"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<circle[39m
+                [33mcx[39m=[32m"11"[39m
+                [33mcy[39m=[32m"11"[39m
+                [33mr[39...
+   × Dashboard System Proxy synchronization > waits for authoritative enable status before showing the success toast 1226ms
+     → Unable to find an element with the text: System Proxy, which matches selector 'dt'. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"app-frame"[39m
+      [33mdata-context-menu-policy[39m=[32m"block-browser"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33maria-label[39m=[32m"MioProxy preview window caption"[39m
+        [33mclass[39m=[32m"preview-titlebar"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"preview-title"[39m
+        [36m>[39m
+          [0mMioProxy[0m
+          [0m · Demo data · Profiles, nodes and traffic are simulated, not your current configuration[0m
+        [36m</span>[39m
+        [36m<div[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"preview-window-controls"[39m
+        [36m>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-minus"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"13"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"13"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M5 12h14"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-square"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"11"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"11"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<rect[39m
+                [33mheight[39m=[32m"18"[39m
+                [33mrx[39m=[32m"2"[39m
+                [33mwidth[39m=[32m"18"[39m
+                [33mx[39m=[32m"3"[39m
+                [33my[39m=[32m"3"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-x"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"13"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"13"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M18 6 6 18"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m6 6 12 12"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"app-shell"[39m
+      [36m>[39m
+        [36m<aside[39m
+          [33maria-label[39m=[32m"Main navigation"[39m
+          [33mclass[39m=[32m"sidebar"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33maria-label[39m=[32m"MioProxy"[39m
+            [33mclass[39m=[32m"sidebar-brand"[39m
+          [36m>[39m
+            [36m<span[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"sidebar-brand-mark"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-network"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"21"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"1.7"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"21"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"16"[39m
+                  [33my[39m=[32m"16"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"2"[39m
+                  [33my[39m=[32m"16"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"9"[39m
+                  [33my[39m=[32m"2"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M12 12V8"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"sidebar-brand-name"[39m
+            [36m>[39m
+              [0mMio[0m
+              [36m<span>[39m
+                [0mProxy[0m
+              [36m</span>[39m
+            [36m</span>[39m
+          [36m</div>[39m
+          [36m<label[39m
+            [33mclass[39m=[32m"sidebar-search"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-search"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"14"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"14"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<circle[39m
+                [33mcx[39m=[32m"11"[39m
+                [33mcy[39m=[32m"11"[39m
+                [33mr[39...
+
+Ignored nodes: comments, script, style
+[36m<html[39m
+  [33mdata-language-preference[39m=[32m"system"[39m
+  [33mdata-locale[39m=[32m"en-US"[39m
+  [33mlang[39m=[32m"en-US"[39m
+[36m>[39m
+  [36m<head />[39m
+  [36m<body>[39m
+    [36m<div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"app-frame"[39m
+        [33mdata-context-menu-policy[39m=[32m"block-browser"[39m
+      [36m>[39m
+        [36m<div[39m
+          [33maria-label[39m=[32m"MioProxy preview window caption"[39m
+          [33mclass[39m=[32m"preview-titlebar"[39m
+        [36m>[39m
+          [36m<span[39m
+            [33mclass[39m=[32m"preview-title"[39m
+          [36m>[39m
+            [0mMioProxy[0m
+            [0m · Demo data · Profiles, nodes and traffic are simulated, not your current configuration[0m
+          [36m</span>[39m
+          [36m<div[39m
+            [33maria-hidden[39m=[32m"true"[39m
+            [33mclass[39m=[32m"preview-window-controls"[39m
+          [36m>[39m
+            [36m<span>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-minus"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"13"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"13"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M5 12h14"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-square"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"11"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"11"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"18"[39m
+                  [33mrx[39m=[32m"2"[39m
+                  [33mwidth[39m=[32m"18"[39m
+                  [33mx[39m=[32m"3"[39m
+                  [33my[39m=[32m"3"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-x"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"13"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"13"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M18 6 6 18"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m6 6 12 12"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+          [36m</div>[39m
+        [36m</div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"app-shell"[39m
+        [36m>[39m
+          [36m<aside[39m
+            [33maria-label[39m=[32m"Main navigation"[39m
+            [33mclass[39m=[32m"sidebar"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33maria-label[39m=[32m"MioProxy"[39m
+              [33mclass[39m=[32m"sidebar-brand"[39m
+            [36m>[39m
+              [36m<span[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"sidebar-brand-mark"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33mclass[39m=[32m"lucide lucide-network"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"21"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"1.7"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"21"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"6"[39m
+                    [33mrx[39m=[32m"1"[39m
+                    [33mwidth[39m=[32m"6"[39m
+                    [33mx[39m=[32m"16"[39m
+                    [33my[39m=[32m"16"[39m
+                  [36m/>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"6"[39m
+                    [33mrx[39m=[32m"1"[39m
+                    [33mwidth[39m=[32m"6"[39m
+                    [33mx[39m=[32m"2"[39m
+                    [33my[39m=[32m"16"[39m
+                  [36m/>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"6"[39m
+                    [33mrx[39m=[32m"1"[39m
+                    [33mwidth[39m=[32m"6"[39m
+                    [33mx[39m=[32m"9"[39m
+                    [33my[39m=[32m"2"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M12 12V8"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+              [36m</span>[39m
+              [36m<span[39m
+                [33mclass[39m=[32m"sidebar-brand-name"[39m
+              [36m>[39m
+                [0mMio[0m
+                [36m<span>[39m
+                  [0mProxy[0m
+                [36m</span>[39m
+              [36m</span>[39m
+            [36m</div>[39m
+            [36m<label[39m
+              [33mclass[39m=[32m"sidebar-search"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-search"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"14"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+        ...
+   × Dashboard System Proxy synchronization > keeps the observed state and reports a mismatch when enable is not confirmed 1110ms
+     → Unable to find an element with the text: System Proxy, which matches selector 'dt'. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"app-frame"[39m
+      [33mdata-context-menu-policy[39m=[32m"block-browser"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33maria-label[39m=[32m"MioProxy preview window caption"[39m
+        [33mclass[39m=[32m"preview-titlebar"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"preview-title"[39m
+        [36m>[39m
+          [0mMioProxy[0m
+          [0m · Demo data · Profiles, nodes and traffic are simulated, not your current configuration[0m
+        [36m</span>[39m
+        [36m<div[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"preview-window-controls"[39m
+        [36m>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-minus"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"13"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"13"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M5 12h14"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-square"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"11"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"11"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<rect[39m
+                [33mheight[39m=[32m"18"[39m
+                [33mrx[39m=[32m"2"[39m
+                [33mwidth[39m=[32m"18"[39m
+                [33mx[39m=[32m"3"[39m
+                [33my[39m=[32m"3"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-x"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"13"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"13"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M18 6 6 18"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m6 6 12 12"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"app-shell"[39m
+      [36m>[39m
+        [36m<aside[39m
+          [33maria-label[39m=[32m"Main navigation"[39m
+          [33mclass[39m=[32m"sidebar"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33maria-label[39m=[32m"MioProxy"[39m
+            [33mclass[39m=[32m"sidebar-brand"[39m
+          [36m>[39m
+            [36m<span[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"sidebar-brand-mark"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-network"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"21"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"1.7"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"21"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"16"[39m
+                  [33my[39m=[32m"16"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"2"[39m
+                  [33my[39m=[32m"16"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"9"[39m
+                  [33my[39m=[32m"2"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M12 12V8"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"sidebar-brand-name"[39m
+            [36m>[39m
+              [0mMio[0m
+              [36m<span>[39m
+                [0mProxy[0m
+              [36m</span>[39m
+            [36m</span>[39m
+          [36m</div>[39m
+          [36m<label[39m
+            [33mclass[39m=[32m"sidebar-search"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-search"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"14"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"14"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<circle[39m
+                [33mcx[39m=[32m"11"[39m
+                [33mcy[39m=[32m"11"[39m
+                [33mr[39...
+
+Ignored nodes: comments, script, style
+[36m<html[39m
+  [33mdata-language-preference[39m=[32m"system"[39m
+  [33mdata-locale[39m=[32m"en-US"[39m
+  [33mlang[39m=[32m"en-US"[39m
+[36m>[39m
+  [36m<head />[39m
+  [36m<body>[39m
+    [36m<div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"app-frame"[39m
+        [33mdata-context-menu-policy[39m=[32m"block-browser"[39m
+      [36m>[39m
+        [36m<div[39m
+          [33maria-label[39m=[32m"MioProxy preview window caption"[39m
+          [33mclass[39m=[32m"preview-titlebar"[39m
+        [36m>[39m
+          [36m<span[39m
+            [33mclass[39m=[32m"preview-title"[39m
+          [36m>[39m
+            [0mMioProxy[0m
+            [0m · Demo data · Profiles, nodes and traffic are simulated, not your current configuration[0m
+          [36m</span>[39m
+          [36m<div[39m
+            [33maria-hidden[39m=[32m"true"[39m
+            [33mclass[39m=[32m"preview-window-controls"[39m
+          [36m>[39m
+            [36m<span>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-minus"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"13"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"13"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M5 12h14"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-square"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"11"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"11"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"18"[39m
+                  [33mrx[39m=[32m"2"[39m
+                  [33mwidth[39m=[32m"18"[39m
+                  [33mx[39m=[32m"3"[39m
+                  [33my[39m=[32m"3"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-x"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"13"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"13"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M18 6 6 18"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m6 6 12 12"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+          [36m</div>[39m
+        [36m</div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"app-shell"[39m
+        [36m>[39m
+          [36m<aside[39m
+            [33maria-label[39m=[32m"Main navigation"[39m
+            [33mclass[39m=[32m"sidebar"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33maria-label[39m=[32m"MioProxy"[39m
+              [33mclass[39m=[32m"sidebar-brand"[39m
+            [36m>[39m
+              [36m<span[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"sidebar-brand-mark"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33mclass[39m=[32m"lucide lucide-network"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"21"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"1.7"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"21"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"6"[39m
+                    [33mrx[39m=[32m"1"[39m
+                    [33mwidth[39m=[32m"6"[39m
+                    [33mx[39m=[32m"16"[39m
+                    [33my[39m=[32m"16"[39m
+                  [36m/>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"6"[39m
+                    [33mrx[39m=[32m"1"[39m
+                    [33mwidth[39m=[32m"6"[39m
+                    [33mx[39m=[32m"2"[39m
+                    [33my[39m=[32m"16"[39m
+                  [36m/>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"6"[39m
+                    [33mrx[39m=[32m"1"[39m
+                    [33mwidth[39m=[32m"6"[39m
+                    [33mx[39m=[32m"9"[39m
+                    [33my[39m=[32m"2"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M12 12V8"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+              [36m</span>[39m
+              [36m<span[39m
+                [33mclass[39m=[32m"sidebar-brand-name"[39m
+              [36m>[39m
+                [0mMio[0m
+                [36m<span>[39m
+                  [0mProxy[0m
+                [36m</span>[39m
+              [36m</span>[39m
+            [36m</div>[39m
+            [36m<label[39m
+              [33mclass[39m=[32m"sidebar-search"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-search"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"14"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+        ...
+   × Dashboard System Proxy synchronization > uses the refreshed disabled snapshot after a successful disable 1148ms
+     → Unable to find an element with the text: System Proxy, which matches selector 'dt'. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"app-frame"[39m
+      [33mdata-context-menu-policy[39m=[32m"block-browser"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33maria-label[39m=[32m"MioProxy preview window caption"[39m
+        [33mclass[39m=[32m"preview-titlebar"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"preview-title"[39m
+        [36m>[39m
+          [0mMioProxy[0m
+          [0m · Demo data · Profiles, nodes and traffic are simulated, not your current configuration[0m
+        [36m</span>[39m
+        [36m<div[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"preview-window-controls"[39m
+        [36m>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-minus"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"13"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"13"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M5 12h14"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-square"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"11"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"11"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<rect[39m
+                [33mheight[39m=[32m"18"[39m
+                [33mrx[39m=[32m"2"[39m
+                [33mwidth[39m=[32m"18"[39m
+                [33mx[39m=[32m"3"[39m
+                [33my[39m=[32m"3"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-x"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"13"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"13"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M18 6 6 18"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m6 6 12 12"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"app-shell"[39m
+      [36m>[39m
+        [36m<aside[39m
+          [33maria-label[39m=[32m"Main navigation"[39m
+          [33mclass[39m=[32m"sidebar"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33maria-label[39m=[32m"MioProxy"[39m
+            [33mclass[39m=[32m"sidebar-brand"[39m
+          [36m>[39m
+            [36m<span[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"sidebar-brand-mark"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-network"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"21"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"1.7"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"21"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"16"[39m
+                  [33my[39m=[32m"16"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"2"[39m
+                  [33my[39m=[32m"16"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"9"[39m
+                  [33my[39m=[32m"2"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M12 12V8"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"sidebar-brand-name"[39m
+            [36m>[39m
+              [0mMio[0m
+              [36m<span>[39m
+                [0mProxy[0m
+              [36m</span>[39m
+            [36m</span>[39m
+          [36m</div>[39m
+          [36m<label[39m
+            [33mclass[39m=[32m"sidebar-search"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-search"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"14"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"14"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<circle[39m
+                [33mcx[39m=[32m"11"[39m
+                [33mcy[39m=[32m"11"[39m
+                [33mr[39...
+
+Ignored nodes: comments, script, style
+[36m<html[39m
+  [33mdata-language-preference[39m=[32m"system"[39m
+  [33mdata-locale[39m=[32m"en-US"[39m
+  [33mlang[39m=[32m"en-US"[39m
+[36m>[39m
+  [36m<head />[39m
+  [36m<body>[39m
+    [36m<div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"app-frame"[39m
+        [33mdata-context-menu-policy[39m=[32m"block-browser"[39m
+      [36m>[39m
+        [36m<div[39m
+          [33maria-label[39m=[32m"MioProxy preview window caption"[39m
+          [33mclass[39m=[32m"preview-titlebar"[39m
+        [36m>[39m
+          [36m<span[39m
+            [33mclass[39m=[32m"preview-title"[39m
+          [36m>[39m
+            [0mMioProxy[0m
+            [0m · Demo data · Profiles, nodes and traffic are simulated, not your current configuration[0m
+          [36m</span>[39m
+          [36m<div[39m
+            [33maria-hidden[39m=[32m"true"[39m
+            [33mclass[39m=[32m"preview-window-controls"[39m
+          [36m>[39m
+            [36m<span>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-minus"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"13"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"13"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M5 12h14"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-square"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"11"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"11"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"18"[39m
+                  [33mrx[39m=[32m"2"[39m
+                  [33mwidth[39m=[32m"18"[39m
+                  [33mx[39m=[32m"3"[39m
+                  [33my[39m=[32m"3"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-x"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"13"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"13"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M18 6 6 18"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m6 6 12 12"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+          [36m</div>[39m
+        [36m</div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"app-shell"[39m
+        [36m>[39m
+          [36m<aside[39m
+            [33maria-label[39m=[32m"Main navigation"[39m
+            [33mclass[39m=[32m"sidebar"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33maria-label[39m=[32m"MioProxy"[39m
+              [33mclass[39m=[32m"sidebar-brand"[39m
+            [36m>[39m
+              [36m<span[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"sidebar-brand-mark"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33mclass[39m=[32m"lucide lucide-network"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"21"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"1.7"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"21"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"6"[39m
+                    [33mrx[39m=[32m"1"[39m
+                    [33mwidth[39m=[32m"6"[39m
+                    [33mx[39m=[32m"16"[39m
+                    [33my[39m=[32m"16"[39m
+                  [36m/>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"6"[39m
+                    [33mrx[39m=[32m"1"[39m
+                    [33mwidth[39m=[32m"6"[39m
+                    [33mx[39m=[32m"2"[39m
+                    [33my[39m=[32m"16"[39m
+                  [36m/>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"6"[39m
+                    [33mrx[39m=[32m"1"[39m
+                    [33mwidth[39m=[32m"6"[39m
+                    [33mx[39m=[32m"9"[39m
+                    [33my[39m=[32m"2"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M12 12V8"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+              [36m</span>[39m
+              [36m<span[39m
+                [33mclass[39m=[32m"sidebar-brand-name"[39m
+              [36m>[39m
+                [0mMio[0m
+                [36m<span>[39m
+                  [0mProxy[0m
+                [36m</span>[39m
+              [36m</span>[39m
+            [36m</div>[39m
+            [36m<label[39m
+              [33mclass[39m=[32m"sidebar-search"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-search"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"14"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+        ...
+   × Dashboard System Proxy synchronization > ignores an older in-flight refresh after the successful enable action 1106ms
+     → Unable to find an element with the text: System Proxy, which matches selector 'dt'. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"app-frame"[39m
+      [33mdata-context-menu-policy[39m=[32m"block-browser"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33maria-label[39m=[32m"MioProxy preview window caption"[39m
+        [33mclass[39m=[32m"preview-titlebar"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"preview-title"[39m
+        [36m>[39m
+          [0mMioProxy[0m
+          [0m · Demo data · Profiles, nodes and traffic are simulated, not your current configuration[0m
+        [36m</span>[39m
+        [36m<div[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"preview-window-controls"[39m
+        [36m>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-minus"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"13"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"13"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M5 12h14"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-square"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"11"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"11"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<rect[39m
+                [33mheight[39m=[32m"18"[39m
+                [33mrx[39m=[32m"2"[39m
+                [33mwidth[39m=[32m"18"[39m
+                [33mx[39m=[32m"3"[39m
+                [33my[39m=[32m"3"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-x"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"13"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"13"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M18 6 6 18"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m6 6 12 12"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"app-shell"[39m
+      [36m>[39m
+        [36m<aside[39m
+          [33maria-label[39m=[32m"Main navigation"[39m
+          [33mclass[39m=[32m"sidebar"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33maria-label[39m=[32m"MioProxy"[39m
+            [33mclass[39m=[32m"sidebar-brand"[39m
+          [36m>[39m
+            [36m<span[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"sidebar-brand-mark"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-network"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"21"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"1.7"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"21"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"16"[39m
+                  [33my[39m=[32m"16"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"2"[39m
+                  [33my[39m=[32m"16"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"9"[39m
+                  [33my[39m=[32m"2"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M12 12V8"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"sidebar-brand-name"[39m
+            [36m>[39m
+              [0mMio[0m
+              [36m<span>[39m
+                [0mProxy[0m
+              [36m</span>[39m
+            [36m</span>[39m
+          [36m</div>[39m
+          [36m<label[39m
+            [33mclass[39m=[32m"sidebar-search"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-search"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"14"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"14"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<circle[39m
+                [33mcx[39m=[32m"11"[39m
+                [33mcy[39m=[32m"11"[39m
+                [33mr[39...
+
+Ignored nodes: comments, script, style
+[36m<html[39m
+  [33mdata-language-preference[39m=[32m"system"[39m
+  [33mdata-locale[39m=[32m"en-US"[39m
+  [33mlang[39m=[32m"en-US"[39m
+[36m>[39m
+  [36m<head />[39m
+  [36m<body>[39m
+    [36m<div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"app-frame"[39m
+        [33mdata-context-menu-policy[39m=[32m"block-browser"[39m
+      [36m>[39m
+        [36m<div[39m
+          [33maria-label[39m=[32m"MioProxy preview window caption"[39m
+          [33mclass[39m=[32m"preview-titlebar"[39m
+        [36m>[39m
+          [36m<span[39m
+            [33mclass[39m=[32m"preview-title"[39m
+          [36m>[39m
+            [0mMioProxy[0m
+            [0m · Demo data · Profiles, nodes and traffic are simulated, not your current configuration[0m
+          [36m</span>[39m
+          [36m<div[39m
+            [33maria-hidden[39m=[32m"true"[39m
+            [33mclass[39m=[32m"preview-window-controls"[39m
+          [36m>[39m
+            [36m<span>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-minus"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"13"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"13"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M5 12h14"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-square"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"11"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"11"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"18"[39m
+                  [33mrx[39m=[32m"2"[39m
+                  [33mwidth[39m=[32m"18"[39m
+                  [33mx[39m=[32m"3"[39m
+                  [33my[39m=[32m"3"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-x"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"13"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"13"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M18 6 6 18"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m6 6 12 12"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+          [36m</div>[39m
+        [36m</div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"app-shell"[39m
+        [36m>[39m
+          [36m<aside[39m
+            [33maria-label[39m=[32m"Main navigation"[39m
+            [33mclass[39m=[32m"sidebar"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33maria-label[39m=[32m"MioProxy"[39m
+              [33mclass[39m=[32m"sidebar-brand"[39m
+            [36m>[39m
+              [36m<span[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"sidebar-brand-mark"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33mclass[39m=[32m"lucide lucide-network"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"21"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"1.7"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"21"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"6"[39m
+                    [33mrx[39m=[32m"1"[39m
+                    [33mwidth[39m=[32m"6"[39m
+                    [33mx[39m=[32m"16"[39m
+                    [33my[39m=[32m"16"[39m
+                  [36m/>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"6"[39m
+                    [33mrx[39m=[32m"1"[39m
+                    [33mwidth[39m=[32m"6"[39m
+                    [33mx[39m=[32m"2"[39m
+                    [33my[39m=[32m"16"[39m
+                  [36m/>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"6"[39m
+                    [33mrx[39m=[32m"1"[39m
+                    [33mwidth[39m=[32m"6"[39m
+                    [33mx[39m=[32m"9"[39m
+                    [33my[39m=[32m"2"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M12 12V8"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+              [36m</span>[39m
+              [36m<span[39m
+                [33mclass[39m=[32m"sidebar-brand-name"[39m
+              [36m>[39m
+                [0mMio[0m
+                [36m<span>[39m
+                  [0mProxy[0m
+                [36m</span>[39m
+              [36m</span>[39m
+            [36m</div>[39m
+            [36m<label[39m
+              [33mclass[39m=[32m"sidebar-search"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-search"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"14"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+        ...
+   × Dashboard System Proxy synchronization > ignores an old refresh failure after a newer enable is confirmed 176ms
+     → Unable to find an element with the text: System Proxy, which matches selector 'dt'. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"app-frame"[39m
+      [33mdata-context-menu-policy[39m=[32m"block-browser"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33maria-label[39m=[32m"MioProxy preview window caption"[39m
+        [33mclass[39m=[32m"preview-titlebar"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"preview-title"[39m
+        [36m>[39m
+          [0mMioProxy[0m
+          [0m · Demo data · Profiles, nodes and traffic are simulated, not your current configuration[0m
+        [36m</span>[39m
+        [36m<div[39m
+          [33maria-hidden[39m=[32m"true"[39m
+          [33mclass[39m=[32m"preview-window-controls"[39m
+        [36m>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-minus"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"13"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"13"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M5 12h14"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-square"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"11"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"11"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<rect[39m
+                [33mheight[39m=[32m"18"[39m
+                [33mrx[39m=[32m"2"[39m
+                [33mwidth[39m=[32m"18"[39m
+                [33mx[39m=[32m"3"[39m
+                [33my[39m=[32m"3"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+          [36m<span>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"lucide lucide-x"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"13"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"13"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M18 6 6 18"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m6 6 12 12"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</span>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"app-shell"[39m
+      [36m>[39m
+        [36m<aside[39m
+          [33maria-label[39m=[32m"Main navigation"[39m
+          [33mclass[39m=[32m"sidebar"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33maria-label[39m=[32m"MioProxy"[39m
+            [33mclass[39m=[32m"sidebar-brand"[39m
+          [36m>[39m
+            [36m<span[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"sidebar-brand-mark"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-network"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"21"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"1.7"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"21"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"16"[39m
+                  [33my[39m=[32m"16"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"2"[39m
+                  [33my[39m=[32m"16"[39m
+                [36m/>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"6"[39m
+                  [33mrx[39m=[32m"1"[39m
+                  [33mwidth[39m=[32m"6"[39m
+                  [33mx[39m=[32m"9"[39m
+                  [33my[39m=[32m"2"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M12 12V8"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</span>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"sidebar-brand-name"[39m
+            [36m>[39m
+              [0mMio[0m
+              [36m<span>[39m
+                [0mProxy[0m
+              [36m</span>[39m
+            [36m</span>[39m
+          [36m</div>[39m
+          [36m<label[39m
+            [33mclass[39m=[32m"sidebar-search"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-search"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"14"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"14"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<circle[39m
+                [33mcx[39m=[32m"11"[39m
+                [33mcy[39m=[32m"11"[39m
+                [33mr[39...
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/App.system-proxy.test.tsx > Dashboard System Proxy synchronization > renders an initially disabled snapshot with an Enable proxy action
+TestingLibraryElementError: Unable to find an element with the text: System Proxy, which matches selector 'dt'. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+<body>
+  <div>
+    <div
+      class="app-frame"
+      data-context-menu-policy="block-browser"
+    >
+      <div
+        aria-label="MioProxy preview window caption"
+        class="preview-titlebar"
+      >
+        <span
+          class="preview-title"
+        >
+          MioProxy
+           · Demo data · Profiles, nodes and traffic are simulated, not your current configuration
+        </span>
+        <div
+          aria-hidden="true"
+          class="preview-window-controls"
+        >
+          <span>
+            <svg
+              class="lucide lucide-minus"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M5 12h14"
+              />
+            </svg>
+          </span>
+          <span>
+            <svg
+              class="lucide lucide-square"
+              fill="none"
+              height="11"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="11"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <rect
+                height="18"
+                rx="2"
+                width="18"
+                x="3"
+                y="3"
+              />
+            </svg>
+          </span>
+          <span>
+            <svg
+              class="lucide lucide-x"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M18 6 6 18"
+              />
+              <path
+                d="m6 6 12 12"
+              />
+            </svg>
+          </span>
+        </div>
+      </div>
+      <div
+        class="app-shell"
+      >
+        <aside
+          aria-label="Main navigation"
+          class="sidebar"
+        >
+          <div
+            aria-label="MioProxy"
+            class="sidebar-brand"
+          >
+            <span
+              aria-hidden="true"
+              class="sidebar-brand-mark"
+            >
+              <svg
+                class="lucide lucide-network"
+                fill="none"
+                height="21"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.7"
+                viewBox="0 0 24 24"
+                width="21"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="16"
+                  y="16"
+                />
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="2"
+                  y="16"
+                />
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="9"
+                  y="2"
+                />
+                <path
+                  d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"
+                />
+                <path
+                  d="M12 12V8"
+                />
+              </svg>
+            </span>
+            <span
+              class="sidebar-brand-name"
+            >
+              Mio
+              <span>
+                Proxy
+              </span>
+            </span>
+          </div>
+          <label
+            class="sidebar-search"
+          >
+            <svg
+              aria-hidden="true"
+              class="lucide lucide-search"
+              fill="none"
+              height="14"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="14"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <circle
+                cx="11"
+                cy="11"
+                r[39...
+
+Ignored nodes: comments, script, style
+<body>
+  <div>
+    <div
+      class="app-frame"
+      data-context-menu-policy="block-browser"
+    >
+      <div
+        aria-label="MioProxy preview window caption"
+        class="preview-titlebar"
+      >
+        <span
+          class="preview-title"
+        >
+          MioProxy
+           · Demo data · Profiles, nodes and traffic are simulated, not your current configuration
+        </span>
+        <div
+          aria-hidden="true"
+          class="preview-window-controls"
+        >
+          <span>
+            <svg
+              class="lucide lucide-minus"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M5 12h14"
+              />
+            </svg>
+          </span>
+          <span>
+            <svg
+              class="lucide lucide-square"
+              fill="none"
+              height="11"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="11"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <rect
+                height="18"
+                rx="2"
+                width="18"
+                x="3"
+                y="3"
+              />
+            </svg>
+          </span>
+          <span>
+            <svg
+              class="lucide lucide-x"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M18 6 6 18"
+              />
+              <path
+                d="m6 6 12 12"
+              />
+            </svg>
+          </span>
+        </div>
+      </div>
+      <div
+        class="app-shell"
+      >
+        <aside
+          aria-label="Main navigation"
+          class="sidebar"
+        >
+          <div
+            aria-label="MioProxy"
+            class="sidebar-brand"
+          >
+            <span
+              aria-hidden="true"
+              class="sidebar-brand-mark"
+            >
+              <svg
+                class="lucide lucide-network"
+                fill="none"
+                height="21"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.7"
+                viewBox="0 0 24 24"
+                width="21"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="16"
+                  y="16"
+                />
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="2"
+                  y="16"
+                />
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="9"
+                  y="2"
+                />
+                <path
+                  d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"
+                />
+                <path
+                  d="M12 12V8"
+                />
+              </svg>
+            </span>
+            <span
+              class="sidebar-brand-name"
+            >
+              Mio
+              <span>
+                Proxy
+              </span>
+            </span>
+          </div>
+          <label
+            class="sidebar-search"
+          >
+            <svg
+              aria-hidden="true"
+              class="lucide lucide-search"
+              fill="none"
+              height="14"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="14"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <circle
+                cx="11"
+                cy="11"
+                r[39...
+ ❯ waitForWrapper node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+ ❯ src/App.system-proxy.test.tsx:99:18
+     97|     renderApp();
+     98| 
+     99|     await screen.findByText("System Proxy", { exact: true, selector: "…
+       |                  ^
+    100|     expect(systemProxyRow()).toHaveTextContent("Disabled");
+    101|     expect(screen.getByRole("button", { name: "Enable proxy" })).toBeI…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯
+
+ FAIL  src/App.system-proxy.test.tsx > Dashboard System Proxy synchronization > waits for authoritative enable status before showing the success toast
+TestingLibraryElementError: Unable to find an element with the text: System Proxy, which matches selector 'dt'. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+<body>
+  <div>
+    <div
+      class="app-frame"
+      data-context-menu-policy="block-browser"
+    >
+      <div
+        aria-label="MioProxy preview window caption"
+        class="preview-titlebar"
+      >
+        <span
+          class="preview-title"
+        >
+          MioProxy
+           · Demo data · Profiles, nodes and traffic are simulated, not your current configuration
+        </span>
+        <div
+          aria-hidden="true"
+          class="preview-window-controls"
+        >
+          <span>
+            <svg
+              class="lucide lucide-minus"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M5 12h14"
+              />
+            </svg>
+          </span>
+          <span>
+            <svg
+              class="lucide lucide-square"
+              fill="none"
+              height="11"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="11"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <rect
+                height="18"
+                rx="2"
+                width="18"
+                x="3"
+                y="3"
+              />
+            </svg>
+          </span>
+          <span>
+            <svg
+              class="lucide lucide-x"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M18 6 6 18"
+              />
+              <path
+                d="m6 6 12 12"
+              />
+            </svg>
+          </span>
+        </div>
+      </div>
+      <div
+        class="app-shell"
+      >
+        <aside
+          aria-label="Main navigation"
+          class="sidebar"
+        >
+          <div
+            aria-label="MioProxy"
+            class="sidebar-brand"
+          >
+            <span
+              aria-hidden="true"
+              class="sidebar-brand-mark"
+            >
+              <svg
+                class="lucide lucide-network"
+                fill="none"
+                height="21"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.7"
+                viewBox="0 0 24 24"
+                width="21"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="16"
+                  y="16"
+                />
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="2"
+                  y="16"
+                />
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="9"
+                  y="2"
+                />
+                <path
+                  d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"
+                />
+                <path
+                  d="M12 12V8"
+                />
+              </svg>
+            </span>
+            <span
+              class="sidebar-brand-name"
+            >
+              Mio
+              <span>
+                Proxy
+              </span>
+            </span>
+          </div>
+          <label
+            class="sidebar-search"
+          >
+            <svg
+              aria-hidden="true"
+              class="lucide lucide-search"
+              fill="none"
+              height="14"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="14"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <circle
+                cx="11"
+                cy="11"
+                r[39...
+
+Ignored nodes: comments, script, style
+<html
+  data-language-preference="system"
+  data-locale="en-US"
+  lang="en-US"
+>
+  <head />
+  <body>
+    <div>
+      <div
+        class="app-frame"
+        data-context-menu-policy="block-browser"
+      >
+        <div
+          aria-label="MioProxy preview window caption"
+          class="preview-titlebar"
+        >
+          <span
+            class="preview-title"
+          >
+            MioProxy
+             · Demo data · Profiles, nodes and traffic are simulated, not your current configuration
+          </span>
+          <div
+            aria-hidden="true"
+            class="preview-window-controls"
+          >
+            <span>
+              <svg
+                class="lucide lucide-minus"
+                fill="none"
+                height="13"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="13"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M5 12h14"
+                />
+              </svg>
+            </span>
+            <span>
+              <svg
+                class="lucide lucide-square"
+                fill="none"
+                height="11"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="11"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <rect
+                  height="18"
+                  rx="2"
+                  width="18"
+                  x="3"
+                  y="3"
+                />
+              </svg>
+            </span>
+            <span>
+              <svg
+                class="lucide lucide-x"
+                fill="none"
+                height="13"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="13"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M18 6 6 18"
+                />
+                <path
+                  d="m6 6 12 12"
+                />
+              </svg>
+            </span>
+          </div>
+        </div>
+        <div
+          class="app-shell"
+        >
+          <aside
+            aria-label="Main navigation"
+            class="sidebar"
+          >
+            <div
+              aria-label="MioProxy"
+              class="sidebar-brand"
+            >
+              <span
+                aria-hidden="true"
+                class="sidebar-brand-mark"
+              >
+                <svg
+                  class="lucide lucide-network"
+                  fill="none"
+                  height="21"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.7"
+                  viewBox="0 0 24 24"
+                  width="21"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <rect
+                    height="6"
+                    rx="1"
+                    width="6"
+                    x="16"
+                    y="16"
+                  />
+                  <rect
+                    height="6"
+                    rx="1"
+                    width="6"
+                    x="2"
+                    y="16"
+                  />
+                  <rect
+                    height="6"
+                    rx="1"
+                    width="6"
+                    x="9"
+                    y="2"
+                  />
+                  <path
+                    d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"
+                  />
+                  <path
+                    d="M12 12V8"
+                  />
+                </svg>
+              </span>
+              <span
+                class="sidebar-brand-name"
+              >
+                Mio
+                <span>
+                  Proxy
+                </span>
+              </span>
+            </div>
+            <label
+              class="sidebar-search"
+            >
+              <svg
+                aria-hidden="true"
+                class="lucide lucide-search"
+                fill="none"
+                height="14"
+                stroke="currentColor"
+        ...
+ ❯ Proxy.waitForWrapper node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ src/App.system-proxy.test.tsx:136:11
+    134|     authoritativeRefresh.resolve(systemProxyStatus(true));
+    135| 
+    136|     await waitFor(() => {
+       |           ^
+    137|       expect(systemProxyRow()).toHaveTextContent("Enabled");
+    138|       expect(screen.getByRole("button", { name: "Disable proxy" })).to…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯
+
+ FAIL  src/App.system-proxy.test.tsx > Dashboard System Proxy synchronization > keeps the observed state and reports a mismatch when enable is not confirmed
+TestingLibraryElementError: Unable to find an element with the text: System Proxy, which matches selector 'dt'. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+<body>
+  <div>
+    <div
+      class="app-frame"
+      data-context-menu-policy="block-browser"
+    >
+      <div
+        aria-label="MioProxy preview window caption"
+        class="preview-titlebar"
+      >
+        <span
+          class="preview-title"
+        >
+          MioProxy
+           · Demo data · Profiles, nodes and traffic are simulated, not your current configuration
+        </span>
+        <div
+          aria-hidden="true"
+          class="preview-window-controls"
+        >
+          <span>
+            <svg
+              class="lucide lucide-minus"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M5 12h14"
+              />
+            </svg>
+          </span>
+          <span>
+            <svg
+              class="lucide lucide-square"
+              fill="none"
+              height="11"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="11"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <rect
+                height="18"
+                rx="2"
+                width="18"
+                x="3"
+                y="3"
+              />
+            </svg>
+          </span>
+          <span>
+            <svg
+              class="lucide lucide-x"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M18 6 6 18"
+              />
+              <path
+                d="m6 6 12 12"
+              />
+            </svg>
+          </span>
+        </div>
+      </div>
+      <div
+        class="app-shell"
+      >
+        <aside
+          aria-label="Main navigation"
+          class="sidebar"
+        >
+          <div
+            aria-label="MioProxy"
+            class="sidebar-brand"
+          >
+            <span
+              aria-hidden="true"
+              class="sidebar-brand-mark"
+            >
+              <svg
+                class="lucide lucide-network"
+                fill="none"
+                height="21"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.7"
+                viewBox="0 0 24 24"
+                width="21"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="16"
+                  y="16"
+                />
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="2"
+                  y="16"
+                />
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="9"
+                  y="2"
+                />
+                <path
+                  d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"
+                />
+                <path
+                  d="M12 12V8"
+                />
+              </svg>
+            </span>
+            <span
+              class="sidebar-brand-name"
+            >
+              Mio
+              <span>
+                Proxy
+              </span>
+            </span>
+          </div>
+          <label
+            class="sidebar-search"
+          >
+            <svg
+              aria-hidden="true"
+              class="lucide lucide-search"
+              fill="none"
+              height="14"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="14"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <circle
+                cx="11"
+                cy="11"
+                r[39...
+
+Ignored nodes: comments, script, style
+<html
+  data-language-preference="system"
+  data-locale="en-US"
+  lang="en-US"
+>
+  <head />
+  <body>
+    <div>
+      <div
+        class="app-frame"
+        data-context-menu-policy="block-browser"
+      >
+        <div
+          aria-label="MioProxy preview window caption"
+          class="preview-titlebar"
+        >
+          <span
+            class="preview-title"
+          >
+            MioProxy
+             · Demo data · Profiles, nodes and traffic are simulated, not your current configuration
+          </span>
+          <div
+            aria-hidden="true"
+            class="preview-window-controls"
+          >
+            <span>
+              <svg
+                class="lucide lucide-minus"
+                fill="none"
+                height="13"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="13"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M5 12h14"
+                />
+              </svg>
+            </span>
+            <span>
+              <svg
+                class="lucide lucide-square"
+                fill="none"
+                height="11"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="11"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <rect
+                  height="18"
+                  rx="2"
+                  width="18"
+                  x="3"
+                  y="3"
+                />
+              </svg>
+            </span>
+            <span>
+              <svg
+                class="lucide lucide-x"
+                fill="none"
+                height="13"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="13"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M18 6 6 18"
+                />
+                <path
+                  d="m6 6 12 12"
+                />
+              </svg>
+            </span>
+          </div>
+        </div>
+        <div
+          class="app-shell"
+        >
+          <aside
+            aria-label="Main navigation"
+            class="sidebar"
+          >
+            <div
+              aria-label="MioProxy"
+              class="sidebar-brand"
+            >
+              <span
+                aria-hidden="true"
+                class="sidebar-brand-mark"
+              >
+                <svg
+                  class="lucide lucide-network"
+                  fill="none"
+                  height="21"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.7"
+                  viewBox="0 0 24 24"
+                  width="21"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <rect
+                    height="6"
+                    rx="1"
+                    width="6"
+                    x="16"
+                    y="16"
+                  />
+                  <rect
+                    height="6"
+                    rx="1"
+                    width="6"
+                    x="2"
+                    y="16"
+                  />
+                  <rect
+                    height="6"
+                    rx="1"
+                    width="6"
+                    x="9"
+                    y="2"
+                  />
+                  <path
+                    d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"
+                  />
+                  <path
+                    d="M12 12V8"
+                  />
+                </svg>
+              </span>
+              <span
+                class="sidebar-brand-name"
+              >
+                Mio
+                <span>
+                  Proxy
+                </span>
+              </span>
+            </div>
+            <label
+              class="sidebar-search"
+            >
+              <svg
+                aria-hidden="true"
+                class="lucide lucide-search"
+                fill="none"
+                height="14"
+                stroke="currentColor"
+        ...
+ ❯ Proxy.waitForWrapper node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ src/App.system-proxy.test.tsx:157:11
+    155|     fireEvent.click(await screen.findByRole("button", { name: "Enable …
+    156| 
+    157|     await waitFor(() => {
+       |           ^
+    158|       expect(commandReturned).toBe(true);
+    159|       expect(systemProxyRow()).toHaveTextContent("Disabled");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯
+
+ FAIL  src/App.system-proxy.test.tsx > Dashboard System Proxy synchronization > uses the refreshed disabled snapshot after a successful disable
+TestingLibraryElementError: Unable to find an element with the text: System Proxy, which matches selector 'dt'. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+<body>
+  <div>
+    <div
+      class="app-frame"
+      data-context-menu-policy="block-browser"
+    >
+      <div
+        aria-label="MioProxy preview window caption"
+        class="preview-titlebar"
+      >
+        <span
+          class="preview-title"
+        >
+          MioProxy
+           · Demo data · Profiles, nodes and traffic are simulated, not your current configuration
+        </span>
+        <div
+          aria-hidden="true"
+          class="preview-window-controls"
+        >
+          <span>
+            <svg
+              class="lucide lucide-minus"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M5 12h14"
+              />
+            </svg>
+          </span>
+          <span>
+            <svg
+              class="lucide lucide-square"
+              fill="none"
+              height="11"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="11"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <rect
+                height="18"
+                rx="2"
+                width="18"
+                x="3"
+                y="3"
+              />
+            </svg>
+          </span>
+          <span>
+            <svg
+              class="lucide lucide-x"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M18 6 6 18"
+              />
+              <path
+                d="m6 6 12 12"
+              />
+            </svg>
+          </span>
+        </div>
+      </div>
+      <div
+        class="app-shell"
+      >
+        <aside
+          aria-label="Main navigation"
+          class="sidebar"
+        >
+          <div
+            aria-label="MioProxy"
+            class="sidebar-brand"
+          >
+            <span
+              aria-hidden="true"
+              class="sidebar-brand-mark"
+            >
+              <svg
+                class="lucide lucide-network"
+                fill="none"
+                height="21"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.7"
+                viewBox="0 0 24 24"
+                width="21"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="16"
+                  y="16"
+                />
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="2"
+                  y="16"
+                />
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="9"
+                  y="2"
+                />
+                <path
+                  d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"
+                />
+                <path
+                  d="M12 12V8"
+                />
+              </svg>
+            </span>
+            <span
+              class="sidebar-brand-name"
+            >
+              Mio
+              <span>
+                Proxy
+              </span>
+            </span>
+          </div>
+          <label
+            class="sidebar-search"
+          >
+            <svg
+              aria-hidden="true"
+              class="lucide lucide-search"
+              fill="none"
+              height="14"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="14"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <circle
+                cx="11"
+                cy="11"
+                r[39...
+
+Ignored nodes: comments, script, style
+<html
+  data-language-preference="system"
+  data-locale="en-US"
+  lang="en-US"
+>
+  <head />
+  <body>
+    <div>
+      <div
+        class="app-frame"
+        data-context-menu-policy="block-browser"
+      >
+        <div
+          aria-label="MioProxy preview window caption"
+          class="preview-titlebar"
+        >
+          <span
+            class="preview-title"
+          >
+            MioProxy
+             · Demo data · Profiles, nodes and traffic are simulated, not your current configuration
+          </span>
+          <div
+            aria-hidden="true"
+            class="preview-window-controls"
+          >
+            <span>
+              <svg
+                class="lucide lucide-minus"
+                fill="none"
+                height="13"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="13"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M5 12h14"
+                />
+              </svg>
+            </span>
+            <span>
+              <svg
+                class="lucide lucide-square"
+                fill="none"
+                height="11"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="11"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <rect
+                  height="18"
+                  rx="2"
+                  width="18"
+                  x="3"
+                  y="3"
+                />
+              </svg>
+            </span>
+            <span>
+              <svg
+                class="lucide lucide-x"
+                fill="none"
+                height="13"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="13"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M18 6 6 18"
+                />
+                <path
+                  d="m6 6 12 12"
+                />
+              </svg>
+            </span>
+          </div>
+        </div>
+        <div
+          class="app-shell"
+        >
+          <aside
+            aria-label="Main navigation"
+            class="sidebar"
+          >
+            <div
+              aria-label="MioProxy"
+              class="sidebar-brand"
+            >
+              <span
+                aria-hidden="true"
+                class="sidebar-brand-mark"
+              >
+                <svg
+                  class="lucide lucide-network"
+                  fill="none"
+                  height="21"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.7"
+                  viewBox="0 0 24 24"
+                  width="21"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <rect
+                    height="6"
+                    rx="1"
+                    width="6"
+                    x="16"
+                    y="16"
+                  />
+                  <rect
+                    height="6"
+                    rx="1"
+                    width="6"
+                    x="2"
+                    y="16"
+                  />
+                  <rect
+                    height="6"
+                    rx="1"
+                    width="6"
+                    x="9"
+                    y="2"
+                  />
+                  <path
+                    d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"
+                  />
+                  <path
+                    d="M12 12V8"
+                  />
+                </svg>
+              </span>
+              <span
+                class="sidebar-brand-name"
+              >
+                Mio
+                <span>
+                  Proxy
+                </span>
+              </span>
+            </div>
+            <label
+              class="sidebar-search"
+            >
+              <svg
+                aria-hidden="true"
+                class="lucide lucide-search"
+                fill="none"
+                height="14"
+                stroke="currentColor"
+        ...
+ ❯ Proxy.waitForWrapper node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ src/App.system-proxy.test.tsx:180:11
+    178|     fireEvent.click(await screen.findByRole("button", { name: "Disable…
+    179| 
+    180|     await waitFor(() => {
+       |           ^
+    181|       expect(systemProxyRow()).toHaveTextContent("Disabled");
+    182|       expect(screen.getByRole("button", { name: "Enable proxy" })).toB…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯
+
+ FAIL  src/App.system-proxy.test.tsx > Dashboard System Proxy synchronization > ignores an older in-flight refresh after the successful enable action
+TestingLibraryElementError: Unable to find an element with the text: System Proxy, which matches selector 'dt'. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+<body>
+  <div>
+    <div
+      class="app-frame"
+      data-context-menu-policy="block-browser"
+    >
+      <div
+        aria-label="MioProxy preview window caption"
+        class="preview-titlebar"
+      >
+        <span
+          class="preview-title"
+        >
+          MioProxy
+           · Demo data · Profiles, nodes and traffic are simulated, not your current configuration
+        </span>
+        <div
+          aria-hidden="true"
+          class="preview-window-controls"
+        >
+          <span>
+            <svg
+              class="lucide lucide-minus"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M5 12h14"
+              />
+            </svg>
+          </span>
+          <span>
+            <svg
+              class="lucide lucide-square"
+              fill="none"
+              height="11"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="11"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <rect
+                height="18"
+                rx="2"
+                width="18"
+                x="3"
+                y="3"
+              />
+            </svg>
+          </span>
+          <span>
+            <svg
+              class="lucide lucide-x"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M18 6 6 18"
+              />
+              <path
+                d="m6 6 12 12"
+              />
+            </svg>
+          </span>
+        </div>
+      </div>
+      <div
+        class="app-shell"
+      >
+        <aside
+          aria-label="Main navigation"
+          class="sidebar"
+        >
+          <div
+            aria-label="MioProxy"
+            class="sidebar-brand"
+          >
+            <span
+              aria-hidden="true"
+              class="sidebar-brand-mark"
+            >
+              <svg
+                class="lucide lucide-network"
+                fill="none"
+                height="21"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.7"
+                viewBox="0 0 24 24"
+                width="21"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="16"
+                  y="16"
+                />
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="2"
+                  y="16"
+                />
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="9"
+                  y="2"
+                />
+                <path
+                  d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"
+                />
+                <path
+                  d="M12 12V8"
+                />
+              </svg>
+            </span>
+            <span
+              class="sidebar-brand-name"
+            >
+              Mio
+              <span>
+                Proxy
+              </span>
+            </span>
+          </div>
+          <label
+            class="sidebar-search"
+          >
+            <svg
+              aria-hidden="true"
+              class="lucide lucide-search"
+              fill="none"
+              height="14"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="14"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <circle
+                cx="11"
+                cy="11"
+                r[39...
+
+Ignored nodes: comments, script, style
+<html
+  data-language-preference="system"
+  data-locale="en-US"
+  lang="en-US"
+>
+  <head />
+  <body>
+    <div>
+      <div
+        class="app-frame"
+        data-context-menu-policy="block-browser"
+      >
+        <div
+          aria-label="MioProxy preview window caption"
+          class="preview-titlebar"
+        >
+          <span
+            class="preview-title"
+          >
+            MioProxy
+             · Demo data · Profiles, nodes and traffic are simulated, not your current configuration
+          </span>
+          <div
+            aria-hidden="true"
+            class="preview-window-controls"
+          >
+            <span>
+              <svg
+                class="lucide lucide-minus"
+                fill="none"
+                height="13"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="13"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M5 12h14"
+                />
+              </svg>
+            </span>
+            <span>
+              <svg
+                class="lucide lucide-square"
+                fill="none"
+                height="11"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="11"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <rect
+                  height="18"
+                  rx="2"
+                  width="18"
+                  x="3"
+                  y="3"
+                />
+              </svg>
+            </span>
+            <span>
+              <svg
+                class="lucide lucide-x"
+                fill="none"
+                height="13"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="13"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M18 6 6 18"
+                />
+                <path
+                  d="m6 6 12 12"
+                />
+              </svg>
+            </span>
+          </div>
+        </div>
+        <div
+          class="app-shell"
+        >
+          <aside
+            aria-label="Main navigation"
+            class="sidebar"
+          >
+            <div
+              aria-label="MioProxy"
+              class="sidebar-brand"
+            >
+              <span
+                aria-hidden="true"
+                class="sidebar-brand-mark"
+              >
+                <svg
+                  class="lucide lucide-network"
+                  fill="none"
+                  height="21"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.7"
+                  viewBox="0 0 24 24"
+                  width="21"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <rect
+                    height="6"
+                    rx="1"
+                    width="6"
+                    x="16"
+                    y="16"
+                  />
+                  <rect
+                    height="6"
+                    rx="1"
+                    width="6"
+                    x="2"
+                    y="16"
+                  />
+                  <rect
+                    height="6"
+                    rx="1"
+                    width="6"
+                    x="9"
+                    y="2"
+                  />
+                  <path
+                    d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"
+                  />
+                  <path
+                    d="M12 12V8"
+                  />
+                </svg>
+              </span>
+              <span
+                class="sidebar-brand-name"
+              >
+                Mio
+                <span>
+                  Proxy
+                </span>
+              </span>
+            </div>
+            <label
+              class="sidebar-search"
+            >
+              <svg
+                aria-hidden="true"
+                class="lucide lucide-search"
+                fill="none"
+                height="14"
+                stroke="currentColor"
+        ...
+ ❯ Proxy.waitForWrapper node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ src/App.system-proxy.test.tsx:210:11
+    208|     fireEvent.click(await screen.findByRole("button", { name: "Enable …
+    209| 
+    210|     await waitFor(() => {
+       |           ^
+    211|       expect(systemProxyRow()).toHaveTextContent("Enabled");
+    212|       expect(screen.getByRole("button", { name: "Disable proxy" })).to…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯
+
+ FAIL  src/App.system-proxy.test.tsx > Dashboard System Proxy synchronization > ignores an old refresh failure after a newer enable is confirmed
+TestingLibraryElementError: Unable to find an element with the text: System Proxy, which matches selector 'dt'. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+<body>
+  <div>
+    <div
+      class="app-frame"
+      data-context-menu-policy="block-browser"
+    >
+      <div
+        aria-label="MioProxy preview window caption"
+        class="preview-titlebar"
+      >
+        <span
+          class="preview-title"
+        >
+          MioProxy
+           · Demo data · Profiles, nodes and traffic are simulated, not your current configuration
+        </span>
+        <div
+          aria-hidden="true"
+          class="preview-window-controls"
+        >
+          <span>
+            <svg
+              class="lucide lucide-minus"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M5 12h14"
+              />
+            </svg>
+          </span>
+          <span>
+            <svg
+              class="lucide lucide-square"
+              fill="none"
+              height="11"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="11"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <rect
+                height="18"
+                rx="2"
+                width="18"
+                x="3"
+                y="3"
+              />
+            </svg>
+          </span>
+          <span>
+            <svg
+              class="lucide lucide-x"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M18 6 6 18"
+              />
+              <path
+                d="m6 6 12 12"
+              />
+            </svg>
+          </span>
+        </div>
+      </div>
+      <div
+        class="app-shell"
+      >
+        <aside
+          aria-label="Main navigation"
+          class="sidebar"
+        >
+          <div
+            aria-label="MioProxy"
+            class="sidebar-brand"
+          >
+            <span
+              aria-hidden="true"
+              class="sidebar-brand-mark"
+            >
+              <svg
+                class="lucide lucide-network"
+                fill="none"
+                height="21"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.7"
+                viewBox="0 0 24 24"
+                width="21"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="16"
+                  y="16"
+                />
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="2"
+                  y="16"
+                />
+                <rect
+                  height="6"
+                  rx="1"
+                  width="6"
+                  x="9"
+                  y="2"
+                />
+                <path
+                  d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"
+                />
+                <path
+                  d="M12 12V8"
+                />
+              </svg>
+            </span>
+            <span
+              class="sidebar-brand-name"
+            >
+              Mio
+              <span>
+                Proxy
+              </span>
+            </span>
+          </div>
+          <label
+            class="sidebar-search"
+          >
+            <svg
+              aria-hidden="true"
+              class="lucide lucide-search"
+              fill="none"
+              height="14"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="14"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <circle
+                cx="11"
+                cy="11"
+                r[39...
+ ❯ Object.getElementError node_modules/@testing-library/dom/dist/config.js:37:19
+ ❯ node_modules/@testing-library/dom/dist/query-helpers.js:76:38
+ ❯ node_modules/@testing-library/dom/dist/query-helpers.js:52:17
+ ❯ node_modules/@testing-library/dom/dist/query-helpers.js:95:19
+ ❯ systemProxyRow src/App.system-proxy.test.tsx:86:17
+     84| 
+     85| function systemProxyRow() {
+     86|   return screen.getByText("System Proxy", { exact: true, selector: "dt…
+       |                 ^
+     87| }
+     88| 
+ ❯ src/App.system-proxy.test.tsx:236:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/6]⎯
+
+ Test Files  1 failed | 10 passed (11)
+      Tests  6 failed | 71 passed (77)
+   Start at  18:18:58
+   Duration  9.59s (transform 795ms, setup 0ms, collect 6.42s, tests 10.93s, environment 22.80s, prepare 2.30s)
+

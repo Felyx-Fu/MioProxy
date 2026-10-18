@@ -1,0 +1,18 @@
+[   31188ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:1427/favicon.ico:0
+[   31279ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:1427/node_modules/.vite/deps/react-dom_client.js?v=6b70f0ca:20102
+[   49665ms] Error: useI18n must be used within I18nProvider
+    at useI18n (http://127.0.0.1:1427/src/i18n/I18nProvider.tsx?t=1788795024824:93:21)
+    at Sidebar (http://127.0.0.1:1427/src/components/Sidebar.tsx?t=1788795024812:31:17)
+    at Object.react_stack_bottom_frame (http://127.0.0.1:1427/node_modules/.vite/deps/react-dom_client.js?v=6b70f0ca:18509:20)
+    at renderWithHooks (http://127.0.0.1:1427/node_modules/.vite/deps/react-dom_client.js?v=6b70f0ca:5654:24)
+    at updateFunctionComponent (http://127.0.0.1:1427/node_modules/.vite/deps/react-dom_client.js?v=6b70f0ca:7475:21)
+    at beginWork (http://127.0.0.1:1427/node_modules/.vite/deps/react-dom_client.js?v=6b70f0ca:8525:20)
+    at runWithFiberInDEV (http://127.0.0.1:1427/node_modules/.vite/deps/react-dom_client.js?v=6b70f0ca:997:72)
+    at performUnitOfWork (http://127.0.0.1:1427/node_modules/.vite/deps/react-dom_client.js?v=6b70f0ca:12561:98)
+    at workLoopSync (http://127.0.0.1:1427/node_modules/.vite/deps/react-dom_client.js?v=6b70f0ca:12424:43)
+    at renderRootSync (http://127.0.0.1:1427/node_modules/.vite/deps/react-dom_client.js?v=6b70f0ca:12408:13)
+[   49666ms] [WARNING] %s
+
+%s
+ An error occurred in the <Sidebar> component. Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://react.dev/link/error-boundaries to learn more about error boundaries. @ http://127.0.0.1:1427/node_modules/.vite/deps/react-dom_client.js?v=6b70f0ca:6965
