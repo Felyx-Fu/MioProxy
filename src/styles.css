@@ -575,9 +575,9 @@ span.statusbar-item { cursor: default; }
 .settings-page .setting-icon { width: 28px; height: 28px; flex: 0 0 28px; display: grid; place-items: center; margin-top: 1px; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--muted); background: var(--surface-subtle); }
 .settings-page .setting-copy { min-width: 0; flex: 1; padding-top: 1px; }
 .settings-page .setting-copy strong { color: var(--text); font-size: 11px; font-weight: 650; }
-.settings-page .setting-copy .setting-description { min-width: 0; display: -webkit-box; margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 9.5px; line-height: 14px; text-overflow: ellipsis; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.settings-page .setting-copy .setting-description { min-width: 0; display: -webkit-box; margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 9.5px; line-height: 14px; text-overflow: ellipsis; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .settings-page .setting-copy .setting-description.tone-error { color: var(--danger) !important; }
-.settings-page .settings-update-row .setting-description { -webkit-line-clamp: 3; }
+.settings-page .settings-update-row .setting-description { -webkit-line-clamp: 3; line-clamp: 3; }
 .settings-page .setting-value { min-width: 0; max-width: 100%; display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; overflow: hidden; color: var(--text); font-size: 9px; font-weight: 650; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
 .settings-page .setting-value .state-dot { width: 5px; height: 5px; flex-basis: 5px; }
 .settings-page .setting-value.tone-accent { color: var(--accent) !important; }

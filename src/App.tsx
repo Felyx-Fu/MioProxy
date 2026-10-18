@@ -575,8 +575,7 @@ export default function App({ initialState }: { initialState?: AppInitialState }
     setError(null);
     let profile: Profile;
     try {
-      const profile = await mihomoApi.profileAdd(name, url);
-      setProfiles((current) => [...current, profile]);
+      profile = await mihomoApi.profileAdd(name, url);
       setSelectedProfileId(profile.id);
       pushToast("success", "Profile 已添加");
     } catch (e) {
